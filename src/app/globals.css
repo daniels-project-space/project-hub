@@ -63,3 +63,10 @@
 @utility pulse-dot {
   animation: pulse-dot 2.4s ease-in-out infinite;
 }
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
