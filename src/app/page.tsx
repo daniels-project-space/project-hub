@@ -18,12 +18,15 @@ export default function HomePage() {
 
       <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-10">
         {/* Hero */}
-        <header className="mb-12">
-          <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-amber/80">
+        <header className="mb-10">
+          <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-brass/80">
             Daniel&apos;s Project Space / 2026
           </p>
-          <h1 className="mt-2 font-display text-[64px] leading-[1.02] tracking-tight text-paper">
-            Project <span className="italic text-paper-dim">Hub</span>
+          <h1 className="mt-3 font-display text-[64px] leading-[1.02] tracking-tight text-paper">
+            Project{" "}
+            <span className="font-display italic font-light text-paper-dim">
+              Hub
+            </span>
           </h1>
           <p className="mt-3 max-w-xl text-paper-dim text-[15px] leading-relaxed">
             Umbrella dashboard. Each tile is an app. Widgets are embedded
@@ -31,18 +34,18 @@ export default function HomePage() {
           </p>
         </header>
 
-        {/* Stats bar */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-rule-soft/40 mb-12">
+        {/* Stats — editorial row, italic serif numbers */}
+        <div className="grid grid-cols-2 md:grid-cols-4 mb-12 border-t border-rule-soft/60">
           <Stat label="Apps · live" value={liveCount} tone="emerald" />
           <Stat label="Apps · wip" value={wipCount} tone="amber" />
           <Stat
             label="Secrets vaulted"
             value={secretsSummary ? secretsSummary.total : "—"}
           />
-          <Stat label="Free deploys left" value="38" />
+          <Stat label="Free deploys" value="38" />
         </div>
 
-        {/* Apps row */}
+        {/* Apps dock */}
         <AppsRow />
 
         {/* Widgets */}
@@ -59,7 +62,7 @@ export default function HomePage() {
         {/* Inline status row */}
         <section className="mb-12">
           <SectionLabel title="Infra · Live" />
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-rule-soft/40">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <InfraTile name="Convex" detail="reactive backend · 2 deployments" tone="emerald" />
             <InfraTile name="Vercel" detail="2 projects · auto-deploy" tone="emerald" />
             <InfraTile name="GitHub" detail="daniels-project-space · 3 repos" tone="emerald" />
@@ -69,7 +72,7 @@ export default function HomePage() {
         {/* Roadmap line */}
         <section className="mb-12">
           <SectionLabel title="Next" hint="In flight / on deck" />
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-px bg-rule-soft/40">
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
             <NextItem n="01" title="Migrate apps from VPS → Vercel" detail="rental-manager, app-factory, aria, lofi-generator first" />
             <NextItem n="02" title="Iframe embed each app as widget" detail="As they go live on Vercel, drop them into the Widgets row" />
             <NextItem n="03" title="Auth gate the hub" detail="Single-user Clerk/Convex Auth so the URL isn't open" />
@@ -83,7 +86,7 @@ export default function HomePage() {
         <div className="rule-hairline mb-4" />
         <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.28em] text-paper-faint">
           <span>project-hub · convex · vercel · github</span>
-          <span>v0.2</span>
+          <span>v0.3</span>
         </div>
       </footer>
     </main>
@@ -106,11 +109,13 @@ function Stat({
         ? "text-amber"
         : "text-paper";
   return (
-    <div className="bg-ink p-5">
-      <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-paper-faint">
+    <div className="px-5 py-6 border-r border-b border-rule-soft/60 last:border-r-0 md:[&:nth-child(4n)]:border-r-0">
+      <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
         {label}
       </p>
-      <p className={`mt-2 font-display text-3xl tabular-nums ${color}`}>
+      <p
+        className={`mt-2 font-display italic font-light text-[44px] leading-none tabular-nums ${color}`}
+      >
         {value}
       </p>
     </div>
@@ -127,10 +132,10 @@ function InfraTile({
   tone: "emerald";
 }) {
   return (
-    <div className="bg-ink p-5 flex items-start justify-between gap-3">
+    <div className="border border-rule-soft/60 rounded-xl bg-ink-2/40 p-5 flex items-start justify-between gap-3 backdrop-blur-sm">
       <div>
         <p className="font-display text-2xl text-paper">{name}</p>
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint mt-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint mt-2">
           {detail}
         </p>
       </div>
@@ -153,9 +158,9 @@ function NextItem({
   detail: string;
 }) {
   return (
-    <li className="bg-ink p-5">
+    <li className="py-4 border-b border-rule-soft/40 last:border-b-0">
       <div className="flex items-baseline gap-3">
-        <span className="font-mono text-[11px] text-paper-faint tabular-nums">
+        <span className="font-mono text-[10px] text-brass/70 tabular-nums tracking-[0.1em]">
           /{n}
         </span>
         <h3 className="font-display text-lg text-paper">{title}</h3>

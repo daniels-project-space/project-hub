@@ -10,16 +10,17 @@ export function SectionLabel({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between mb-4">
-      <h2 className="font-mono text-[11px] uppercase tracking-[0.32em] text-paper-faint">
+    <div className="flex items-center gap-3 mb-3">
+      <span className="font-sans text-[11px] font-semibold uppercase tracking-[0.18em] text-paper-faint whitespace-nowrap">
         {title}
-      </h2>
-      <div className="flex items-center gap-3">
-        {hint && (
-          <p className="font-mono text-[11px] text-paper-faint">{hint}</p>
-        )}
-        {action}
-      </div>
+      </span>
+      {hint && (
+        <span className="font-mono text-[10px] text-paper-faint/70 tracking-[0.04em] whitespace-nowrap">
+          · {hint}
+        </span>
+      )}
+      <span className="flex-1 h-px bg-rule-soft/70" />
+      {action && <span className="shrink-0">{action}</span>}
     </div>
   );
 }

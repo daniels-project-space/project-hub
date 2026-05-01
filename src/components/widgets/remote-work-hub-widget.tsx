@@ -34,25 +34,25 @@ export function RemoteWorkHubWidget() {
     <WidgetSlot
       size="full"
       label="Remote Work Hub"
-      status={`embedded · ${activeSlug || "home"}`}
+      status={activeSlug || "home"}
       action={
         <a
           href={iframeSrc}
           target="_blank"
           rel="noreferrer"
-          className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:text-amber transition-colors flex items-center gap-1.5"
+          className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:text-brass transition-colors flex items-center gap-1.5"
         >
           open in tab <ExternalLink className="w-3 h-3" />
         </a>
       }
     >
       {/* Tab carousel */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-rule-soft/60 bg-ink-2/40">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-rule-soft/50">
         <button
           type="button"
           onClick={() => scrollBy(-1)}
           aria-label="scroll tabs left"
-          className="shrink-0 w-7 h-7 grid place-items-center rounded-sm border border-rule-soft/60 bg-ink hover:bg-ink-2 hover:border-amber/40 transition-colors text-paper-faint hover:text-amber"
+          className="shrink-0 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink/50 hover:border-brass/40 hover:text-brass transition-colors text-paper-faint"
         >
           <ChevronLeft className="w-3.5 h-3.5" />
         </button>
@@ -69,17 +69,17 @@ export function RemoteWorkHubWidget() {
                 type="button"
                 onClick={() => setActiveSlug(p.slug)}
                 className={cn(
-                  "shrink-0 flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-sm border transition-colors",
+                  "shrink-0 flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-md border transition-colors",
                   active
-                    ? "border-amber/50 bg-amber/[0.08]"
-                    : "border-rule-soft/60 bg-ink hover:bg-ink-2 hover:border-rule",
+                    ? "border-brass/50 bg-brass/[0.08]"
+                    : "border-rule-soft/60 bg-ink/40 hover:border-rule",
                 )}
               >
                 <span
                   className={cn(
-                    "w-6 h-6 rounded-sm grid place-items-center font-display italic text-[11px] border",
+                    "w-6 h-6 rounded-md grid place-items-center font-display italic text-[11px] border",
                     active
-                      ? "border-amber/40 bg-amber/[0.12] text-amber"
+                      ? "border-brass/40 bg-brass/[0.12] text-brass"
                       : "border-rule-soft/60 bg-ink-2 text-paper-dim",
                   )}
                 >
@@ -105,8 +105,7 @@ export function RemoteWorkHubWidget() {
             );
           })}
 
-          {/* "More coming" ghost tab */}
-          <div className="shrink-0 flex items-center gap-2 px-3 py-1 rounded-sm border border-dashed border-rule-soft/50 text-paper-faint">
+          <div className="shrink-0 flex items-center gap-2 px-3 py-1 rounded-md border border-dashed border-rule-soft/50 text-paper-faint">
             <span className="font-mono text-[10px] uppercase tracking-[0.22em]">
               + more as they migrate
             </span>
@@ -117,13 +116,12 @@ export function RemoteWorkHubWidget() {
           type="button"
           onClick={() => scrollBy(1)}
           aria-label="scroll tabs right"
-          className="shrink-0 w-7 h-7 grid place-items-center rounded-sm border border-rule-soft/60 bg-ink hover:bg-ink-2 hover:border-amber/40 transition-colors text-paper-faint hover:text-amber"
+          className="shrink-0 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink/50 hover:border-brass/40 hover:text-brass transition-colors text-paper-faint"
         >
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Iframe — smaller, per-project */}
       <iframe
         key={activeSlug}
         src={iframeSrc}

@@ -14,9 +14,15 @@ export function AppsRow() {
         title="Apps · Workspaces"
         hint={`${live.length} live · ${wip.length} wip · ${idea.length} idea`}
       />
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-px bg-rule-soft/40">
-        {ordered.map((app) => (
-          <AppTile key={app.slug} app={app} />
+      <div className="flex gap-4 overflow-x-auto no-scrollbar py-4 px-1 -mx-1">
+        {ordered.map((app, i) => (
+          <div
+            key={app.slug}
+            className="dock-rise"
+            style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}
+          >
+            <AppTile app={app} />
+          </div>
         ))}
       </div>
     </section>

@@ -1,24 +1,25 @@
 import type { Metadata } from "next";
-import { Newsreader, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import { Fraunces, Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import { Providers } from "./providers";
 import "./globals.css";
 
-const display = Newsreader({
+const display = Fraunces({
   subsets: ["latin"],
-  weight: ["400", "500"],
+  // variable font: omit weight
   style: ["normal", "italic"],
+  axes: ["SOFT", "opsz"],
   variable: "--font-display",
   display: "swap",
 });
-const sans = IBM_Plex_Sans({
+const sans = Instrument_Sans({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
   variable: "--font-sans",
   display: "swap",
 });
-const mono = IBM_Plex_Mono({
+const mono = JetBrains_Mono({
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400", "500", "600"],
   variable: "--font-mono",
   display: "swap",
 });
@@ -42,20 +43,20 @@ export default function RootLayout({
           className="fixed inset-0 -z-10 overflow-hidden pointer-events-none"
         >
           <div
-            className="absolute -top-[40vh] -left-[30vw] w-[80vw] h-[80vw] rounded-full opacity-70"
+            className="absolute -top-[35vh] left-1/2 -translate-x-1/2 w-[120vw] h-[80vw] rounded-full opacity-100"
             style={{
               background:
-                "radial-gradient(closest-side, oklch(0.82 0.14 65 / 0.10), transparent 70%)",
+                "radial-gradient(ellipse 60% 60% at 50% 50%, oklch(0.78 0.08 65 / 0.10), transparent 70%)",
             }}
           />
           <div
-            className="absolute -bottom-[40vh] -right-[30vw] w-[80vw] h-[80vw] rounded-full opacity-60"
+            className="absolute -bottom-[40vh] -right-[20vw] w-[80vw] h-[80vw] rounded-full opacity-100"
             style={{
               background:
-                "radial-gradient(closest-side, oklch(0.55 0.13 250 / 0.10), transparent 70%)",
+                "radial-gradient(closest-side, oklch(0.78 0.08 175 / 0.06), transparent 70%)",
             }}
           />
-          <div className="absolute inset-0 bg-grain opacity-[0.07] mix-blend-overlay" />
+          <div className="absolute inset-0 bg-grain opacity-[0.06] mix-blend-overlay" />
         </div>
         <Providers>{children}</Providers>
       </body>
