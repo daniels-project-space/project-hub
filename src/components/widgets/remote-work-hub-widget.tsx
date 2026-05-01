@@ -1,43 +1,84 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WidgetSlot } from "../widget-slot";
 
-type ProjectTab = {
+type ProjectTile = {
   slug: string;
   name: string;
   short: string;
+  repo: string;
   status: "live" | "wip" | "idle";
+  blurb: string;
 };
 
-const PROJECTS: ProjectTab[] = [
-  { slug: "test-project", name: "Sandbox Test", short: "ST", status: "live" },
+const PROJECTS: ProjectTile[] = [
+  {
+    slug: "test-project",
+    name: "Sandbox Test",
+    short: "ST",
+    repo: "remoteworkhq/sandbox-test",
+    status: "live",
+    blurb: "Throwaway repo for proving the Claude Code agent flow end-to-end.",
+  },
 ];
 
 const RWH_BASE = "https://remote-work-hub-sepia.vercel.app";
 
 export function RemoteWorkHubWidget() {
-  const [activeSlug, setActiveSlug] = useState<string>(PROJECTS[0]?.slug ?? "");
-  const stripRef = useRef<HTMLDivElement | null>(null);
+  const railRef = useRef<HTMLDivElement | null>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
 
-  const scrollBy = (dir: -1 | 1) => {
-    const el = stripRef.current;
+  const scrollToIdx = (idx: number) => {
+    const el = railRef.current;
     if (!el) return;
-    el.scrollBy({ left: dir * 240, behavior: "smooth" });
+    const card = el.children[idx] as HTMLElement | undefined;
+    if (!card) return;
+    el.scrollTo({ left: card.offsetLeft, behavior: "smooth" });
   };
 
-  const iframeSrc = activeSlug ? `${RWH_BASE}/projects/${activeSlug}` : RWH_BASE;
+  useEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    let frame = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const cards = Array.from(el.children) as HTMLElement[];
+        const center = el.scrollLeft + el.clientWidth / 2;
+        let nearest = 0;
+        let best = Infinity;
+        cards.forEach((c, i) => {
+          const mid = c.offsetLeft + c.offsetWidth / 2;
+          const d = Math.abs(mid - center);
+          if (d < best) {
+            best = d;
+            nearest = i;
+          }
+        });
+        setActiveIdx(nearest);
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  const active = PROJECTS[activeIdx] ?? PROJECTS[0];
+  const activeUrl = `${RWH_BASE}/projects/${active.slug}`;
 
   return (
     <WidgetSlot
       size="full"
       label="Remote Work Hub"
-      status={activeSlug || "home"}
+      status={`${PROJECTS.length} project${PROJECTS.length === 1 ? "" : "s"}`}
       action={
         <a
-          href={iframeSrc}
+          href={activeUrl}
           target="_blank"
           rel="noreferrer"
           className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:text-brass transition-colors flex items-center gap-1.5"
@@ -46,90 +87,130 @@ export function RemoteWorkHubWidget() {
         </a>
       }
     >
-      {/* Tab carousel */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-rule-soft/50">
+      <div className="relative px-4 py-4">
         <button
           type="button"
-          onClick={() => scrollBy(-1)}
-          aria-label="scroll tabs left"
-          className="shrink-0 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink/50 hover:border-brass/40 hover:text-brass transition-colors text-paper-faint"
+          onClick={() => scrollToIdx(Math.max(0, activeIdx - 1))}
+          aria-label="previous project"
+          disabled={activeIdx === 0}
+          className="absolute left-1.5 top-1/2 -translate-y-1/2 z-10 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink-2/80 backdrop-blur hover:border-brass/40 hover:text-brass transition-colors text-paper-faint disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ChevronLeft className="w-3.5 h-3.5" />
         </button>
 
         <div
-          ref={stripRef}
-          className="flex-1 flex items-center gap-2 overflow-x-auto scroll-smooth no-scrollbar"
+          ref={railRef}
+          className="flex gap-3 overflow-x-auto no-scrollbar scroll-smooth snap-x snap-mandatory px-8"
+          style={{ scrollPaddingInline: "2rem" }}
         >
-          {PROJECTS.map((p) => {
-            const active = p.slug === activeSlug;
-            return (
-              <button
-                key={p.slug}
-                type="button"
-                onClick={() => setActiveSlug(p.slug)}
-                className={cn(
-                  "shrink-0 flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-md border transition-colors",
-                  active
-                    ? "border-brass/50 bg-brass/[0.08]"
-                    : "border-rule-soft/60 bg-ink/40 hover:border-rule",
-                )}
-              >
-                <span
-                  className={cn(
-                    "w-6 h-6 rounded-md grid place-items-center font-display italic text-[11px] border",
-                    active
-                      ? "border-brass/40 bg-brass/[0.12] text-brass"
-                      : "border-rule-soft/60 bg-ink-2 text-paper-dim",
-                  )}
-                >
-                  {p.short}
-                </span>
-                <span
-                  className={cn(
-                    "font-mono text-[10px] uppercase tracking-[0.22em]",
-                    active ? "text-paper" : "text-paper-faint",
-                  )}
-                >
-                  {p.name}
-                </span>
-                <span
-                  className={cn(
-                    "w-1.5 h-1.5 rounded-full",
-                    p.status === "live" && "bg-emerald-soft pulse-dot",
-                    p.status === "wip" && "bg-amber",
-                    p.status === "idle" && "bg-paper-faint/50",
-                  )}
-                />
-              </button>
-            );
-          })}
-
-          <div className="shrink-0 flex items-center gap-2 px-3 py-1 rounded-md border border-dashed border-rule-soft/50 text-paper-faint">
-            <span className="font-mono text-[10px] uppercase tracking-[0.22em]">
-              + more as they migrate
-            </span>
-          </div>
+          {PROJECTS.map((p) => (
+            <ProjectCard key={p.slug} p={p} />
+          ))}
         </div>
 
         <button
           type="button"
-          onClick={() => scrollBy(1)}
-          aria-label="scroll tabs right"
-          className="shrink-0 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink/50 hover:border-brass/40 hover:text-brass transition-colors text-paper-faint"
+          onClick={() =>
+            scrollToIdx(Math.min(PROJECTS.length - 1, activeIdx + 1))
+          }
+          aria-label="next project"
+          disabled={activeIdx >= PROJECTS.length - 1}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 z-10 w-7 h-7 grid place-items-center rounded-md border border-rule-soft/60 bg-ink-2/80 backdrop-blur hover:border-brass/40 hover:text-brass transition-colors text-paper-faint disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
-      </div>
 
-      <iframe
-        key={activeSlug}
-        src={iframeSrc}
-        title={`Remote Work Hub — ${activeSlug}`}
-        className="w-full h-[520px] bg-ink"
-        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
-        allow="clipboard-read; clipboard-write"
-      />
+        {PROJECTS.length > 1 && (
+          <div className="mt-3 flex items-center justify-center gap-1.5">
+            {PROJECTS.map((p, i) => (
+              <button
+                key={p.slug}
+                type="button"
+                onClick={() => scrollToIdx(i)}
+                aria-label={`go to ${p.name}`}
+                className={cn(
+                  "h-1 rounded-full transition-all",
+                  i === activeIdx
+                    ? "w-6 bg-brass"
+                    : "w-1.5 bg-paper-faint/30 hover:bg-paper-faint/60",
+                )}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </WidgetSlot>
+  );
+}
+
+const STATUS_DOT: Record<ProjectTile["status"], string> = {
+  live: "bg-emerald-soft",
+  wip: "bg-amber",
+  idle: "bg-paper-faint/60",
+};
+
+function ProjectCard({ p }: { p: ProjectTile }) {
+  const url = `https://remote-work-hub-sepia.vercel.app/projects/${p.slug}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`Open ${p.name} in Remote Work Hub`}
+      className="group shrink-0 w-[300px] snap-center focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/40 rounded-xl"
+    >
+      <div
+        className="rounded-xl border border-rule-soft/70 p-4 transition-colors group-hover:border-brass/40"
+        style={{
+          background:
+            "linear-gradient(160deg, oklch(0.23 0.006 245 / 0.7), oklch(0.18 0.006 245 / 0.6))",
+          boxShadow: "inset 0 1px 0 oklch(1 0 0 / 0.04)",
+        }}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="w-9 h-9 rounded-md grid place-items-center border border-brass/30 bg-brass/[0.08] text-brass font-display italic text-sm">
+            {p.short}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                STATUS_DOT[p.status],
+                p.status === "live" && "pulse-dot",
+              )}
+            />
+            <span
+              className={cn(
+                "font-mono text-[9px] uppercase tracking-[0.22em]",
+                p.status === "live" && "text-emerald-soft",
+                p.status === "wip" && "text-amber",
+                p.status === "idle" && "text-paper-faint",
+              )}
+            >
+              {p.status}
+            </span>
+          </div>
+        </div>
+
+        <h3 className="mt-3 font-display text-[20px] italic leading-tight text-paper">
+          {p.name}
+        </h3>
+        <p className="mt-0.5 font-mono text-[10px] text-paper-faint truncate">
+          {p.repo}
+        </p>
+        <p className="mt-2 text-[12px] text-paper-dim leading-snug line-clamp-2">
+          {p.blurb}
+        </p>
+
+        <div className="mt-3 flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+            /{p.slug}
+          </span>
+          <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint group-hover:text-brass transition-colors">
+            open <ExternalLink className="w-2.5 h-2.5" />
+          </span>
+        </div>
+      </div>
+    </a>
   );
 }
