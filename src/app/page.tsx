@@ -58,16 +58,6 @@ export default function HomePage() {
             <RemoteWorkHubWidget />
           </div>
         </section>
-
-        <section className="mb-12">
-          <SectionLabel title="Next" hint="In flight / on deck" />
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
-            <NextItem n="01" title="Migrate apps from VPS → Vercel" detail="rental-manager, app-factory, aria, lofi-generator first" />
-            <NextItem n="02" title="Iframe embed each app as widget" detail="As they go live on Vercel, drop them into the Widgets row" />
-            <NextItem n="03" title="Auth gate the hub" detail="Single-user Clerk/Convex Auth so the URL isn't open" />
-            <NextItem n="04" title="Edit-mode drag&drop" detail="Reorder widgets and apps; persist to Convex" />
-          </ul>
-        </section>
       </section>
 
       <footer className="max-w-[1440px] mx-auto px-8 lg:px-14 pb-10">
@@ -110,26 +100,3 @@ function Stat({
   );
 }
 
-function NextItem({
-  n,
-  title,
-  detail,
-}: {
-  n: string;
-  title: string;
-  detail: string;
-}) {
-  return (
-    <li className="py-4 border-b border-rule-soft/40 last:border-b-0">
-      <div className="flex items-baseline gap-3">
-        <span className="font-mono text-[10px] text-brass/70 tabular-nums tracking-[0.1em]">
-          /{n}
-        </span>
-        <h3 className="font-display text-lg text-paper">{title}</h3>
-      </div>
-      <p className="mt-1 ml-7 text-sm text-paper-dim leading-relaxed">
-        {detail}
-      </p>
-    </li>
-  );
-}
