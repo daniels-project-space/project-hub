@@ -31,7 +31,7 @@ export function WidgetSlot({
       )}
       style={{
         background:
-          "linear-gradient(160deg, oklch(0.18 0.01 245 / 0.6), oklch(0.13 0.01 245 / 0.5))",
+          "linear-gradient(160deg, oklch(0.21 0.006 245 / 0.6), oklch(0.18 0.006 245 / 0.5))",
         boxShadow:
           "0 8px 32px -8px rgba(0,0,0,0.5), inset 0 1px 0 oklch(1 0 0 / 0.04)",
       }}

@@ -16,39 +16,39 @@ export default function HomePage() {
     <main className="min-h-dvh">
       <TopBar />
 
-      <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-10">
-        {/* Hero */}
-        <header className="mb-10">
-          <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-brass/80">
-            Daniel&apos;s Project Space / 2026
-          </p>
-          <h1 className="mt-3 font-display text-[64px] leading-[1.02] tracking-tight text-paper">
-            Project{" "}
-            <span className="font-display italic font-light text-paper-dim">
-              Hub
-            </span>
-          </h1>
-          <p className="mt-3 max-w-xl text-paper-dim text-[15px] leading-relaxed">
-            Umbrella dashboard. Each tile is an app. Widgets are embedded
-            tools. Backend on Convex, deployed via Vercel.
-          </p>
+      <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-8">
+        {/* Hero — compact */}
+        <header className="mb-6 flex items-end justify-between gap-6 flex-wrap">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-brass/80">
+              Daniel&apos;s Project Space / 2026
+            </p>
+            <h1 className="mt-2 font-display text-[34px] leading-[1.05] tracking-tight text-paper">
+              Project{" "}
+              <span className="font-display italic font-light text-paper-dim">
+                Hub
+              </span>
+            </h1>
+            <p className="mt-1.5 max-w-xl text-paper-dim text-[13px] leading-relaxed">
+              Umbrella dashboard. Each tile is an app. Widgets are embedded
+              tools. Backend on Convex, deployed via Vercel.
+            </p>
+          </div>
+
+          {/* Inline stats — compact chip row */}
+          <ul className="flex items-center gap-x-5 gap-y-2 flex-wrap">
+            <Stat label="live" value={liveCount} tone="emerald" />
+            <Stat label="wip" value={wipCount} tone="amber" />
+            <Stat
+              label="secrets"
+              value={secretsSummary ? secretsSummary.total : "—"}
+            />
+            <Stat label="deploys" value="38" />
+          </ul>
         </header>
 
-        {/* Stats — editorial row, italic serif numbers */}
-        <div className="grid grid-cols-2 md:grid-cols-4 mb-12 border-t border-rule-soft/60">
-          <Stat label="Apps · live" value={liveCount} tone="emerald" />
-          <Stat label="Apps · wip" value={wipCount} tone="amber" />
-          <Stat
-            label="Secrets vaulted"
-            value={secretsSummary ? secretsSummary.total : "—"}
-          />
-          <Stat label="Free deploys" value="38" />
-        </div>
-
-        {/* Apps dock */}
         <AppsRow />
 
-        {/* Widgets */}
         <section className="mb-12">
           <SectionLabel
             title="Widgets"
@@ -59,17 +59,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Inline status row */}
-        <section className="mb-12">
-          <SectionLabel title="Infra · Live" />
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <InfraTile name="Convex" detail="reactive backend · 2 deployments" tone="emerald" />
-            <InfraTile name="Vercel" detail="2 projects · auto-deploy" tone="emerald" />
-            <InfraTile name="GitHub" detail="daniels-project-space · 3 repos" tone="emerald" />
-          </div>
-        </section>
-
-        {/* Roadmap line */}
         <section className="mb-12">
           <SectionLabel title="Next" hint="In flight / on deck" />
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
@@ -81,12 +70,11 @@ export default function HomePage() {
         </section>
       </section>
 
-      {/* Footer */}
       <footer className="max-w-[1440px] mx-auto px-8 lg:px-14 pb-10">
         <div className="rule-hairline mb-4" />
         <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.28em] text-paper-faint">
           <span>project-hub · convex · vercel · github</span>
-          <span>v0.3</span>
+          <span>v0.4</span>
         </div>
       </footer>
     </main>
@@ -109,42 +97,16 @@ function Stat({
         ? "text-amber"
         : "text-paper";
   return (
-    <div className="px-5 py-6 border-r border-b border-rule-soft/60 last:border-r-0 md:[&:nth-child(4n)]:border-r-0">
-      <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
-        {label}
-      </p>
-      <p
-        className={`mt-2 font-display italic font-light text-[44px] leading-none tabular-nums ${color}`}
+    <li className="flex items-baseline gap-1.5">
+      <span
+        className={`font-display italic font-light text-[20px] leading-none tabular-nums ${color}`}
       >
         {value}
-      </p>
-    </div>
-  );
-}
-
-function InfraTile({
-  name,
-  detail,
-  tone,
-}: {
-  name: string;
-  detail: string;
-  tone: "emerald";
-}) {
-  return (
-    <div className="border border-rule-soft/60 rounded-xl bg-ink-2/40 p-5 flex items-start justify-between gap-3 backdrop-blur-sm">
-      <div>
-        <p className="font-display text-2xl text-paper">{name}</p>
-        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint mt-2">
-          {detail}
-        </p>
-      </div>
-      <span
-        className={`w-2 h-2 rounded-full mt-2 ${
-          tone === "emerald" ? "bg-emerald-soft pulse-dot" : "bg-amber"
-        }`}
-      />
-    </div>
+      </span>
+      <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+        {label}
+      </span>
+    </li>
   );
 }
 
