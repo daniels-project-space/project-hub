@@ -83,7 +83,7 @@ export function RemoteWorkHubWidget() {
   }, []);
 
   const active = projects[activeIdx] ?? projects[0];
-  const activeUrl = active ? `${RWH_BASE}/projects/${active.slug}` : RWH_BASE;
+  const activeUrl = RWH_BASE;
   const count = projects.length;
 
   return (
