@@ -3,14 +3,19 @@
 import { useState } from "react";
 import {
   LayoutGrid,
-  Pencil,
   Settings,
   Bell,
-  Zap,
   Search,
-  Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
+  { label: "github", href: "https://github.com/orgs/daniels-project-space/repositories" },
+  { label: "vercel", href: "https://vercel.com/danielmabro-news-projects" },
+  { label: "convex", href: "https://dashboard.convex.dev/t/Daniels-Project-Space" },
+  { label: "trigger", href: "https://cloud.trigger.dev/orgs/daniels-project-space-be0b/projects" },
+  { label: "r2", href: "https://dash.cloudflare.com/64d5a03b934b831bb62fec6893871fd8/r2/default/buckets" },
+];
 
 export function TopBar() {
   const [q, setQ] = useState("");
@@ -47,64 +52,58 @@ export function TopBar() {
           </span>
         </a>
 
-        {/* Search */}
-        <label className="hidden md:flex flex-1 max-w-md items-center gap-2 px-3 h-8 rounded-md bg-ink-2/60 border border-rule-soft/60 focus-within:border-brass/40 transition-colors">
+        {/* Search — compact */}
+        <label className="hidden md:flex w-[200px] items-center gap-2 px-3 h-8 rounded-md bg-ink-2/60 border border-rule-soft/60 focus-within:border-brass/40 transition-colors">
           <Search className="w-3.5 h-3.5 text-paper-faint" />
           <input
             type="text"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search projects..."
+            placeholder="Search..."
             className="bg-transparent text-[12px] text-paper placeholder:text-paper-faint outline-none w-full"
           />
         </label>
 
-        <div className="flex-1 md:hidden" />
+        {/* Dashboard links cluster */}
+        <nav className="hidden lg:flex items-center gap-2 text-paper-faint">
+          {DASHBOARD_LINKS.map((d, i) => (
+            <span key={d.label} className="flex items-center gap-2">
+              {i > 0 && <span className="text-paper-faint/30">·</span>}
+              <a
+                href={d.href}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-[10px] uppercase tracking-[0.2em] hover:text-brass transition-colors"
+              >
+                {d.label}
+              </a>
+            </span>
+          ))}
+        </nav>
 
-        {/* Right cluster */}
+        <div className="flex-1" />
+
+        {/* Right cluster — kept icons only */}
         <div className="flex items-center gap-1.5">
           <BarBtn icon={<LayoutGrid className="w-3.5 h-3.5" />} label="Apps" />
-          <BarBtn icon={<Pencil className="w-3.5 h-3.5" />} label="Edit" />
           <BarIconBtn aria-label="Settings">
             <Settings className="w-4 h-4" />
           </BarIconBtn>
           <BarIconBtn aria-label="Notifications">
             <Bell className="w-4 h-4" />
           </BarIconBtn>
-          <button
-            type="button"
-            aria-label="Autopilot"
-            className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-rule-soft/60 bg-ink-2/40 hover:border-brass/40 text-paper-dim hover:text-brass transition-colors"
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span className="font-mono text-[10px] uppercase tracking-[0.2em]">
-              Autopilot
-            </span>
-            <span className="w-1.5 h-1.5 rounded-full bg-paper-faint/60" />
-          </button>
           <a
             href="https://aria.example"
             target="_blank"
             rel="noreferrer"
-            className="hidden lg:flex items-center gap-2 h-8 pl-1 pr-3 rounded-full border border-brass/30 bg-brass/[0.06] hover:bg-brass/[0.12] transition-colors"
+            aria-label="Open ARIA"
+            className="hidden lg:flex items-center gap-1 h-7 pl-0.5 pr-2 rounded-full border border-brass/30 bg-brass/[0.06] hover:bg-brass/[0.12] transition-colors"
           >
-            <span className="w-6 h-6 rounded-full bg-brass/20 border border-brass/40 grid place-items-center font-display italic text-brass text-[11px]">
+            <span className="w-5 h-5 rounded-full bg-brass/20 border border-brass/40 grid place-items-center font-display italic text-brass text-[10px]">
               A
-            </span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-brass">
-              ARIA
             </span>
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-soft pulse-dot" />
           </a>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-brass/[0.12] border border-brass/40 text-brass hover:bg-brass/[0.18] transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="font-mono text-[10px] uppercase tracking-[0.22em]">
-              New
-            </span>
-          </button>
         </div>
       </div>
     </header>

@@ -111,11 +111,13 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
-    slug: "ai-music-empire",
-    name: "AI Music Empire",
-    short: "AM",
-    description: "Music generation pipelines.",
-    status: "wip",
+    slug: "music-house",
+    name: "Music House",
+    short: "MH",
+    description: "AI music label. Suno + Mureka generation, catalog, lyrics.",
+    status: "live",
+    vercelUrl: "https://music-house-nine.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/music-house",
     category: "creator",
   },
   {
