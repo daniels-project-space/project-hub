@@ -35,16 +35,39 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Inline stats — compact chip row */}
-          <ul className="flex items-center gap-x-5 gap-y-2 flex-wrap">
-            <Stat label="live" value={liveCount} tone="emerald" />
-            <Stat label="wip" value={wipCount} tone="amber" />
-            <Stat
-              label="secrets"
-              value={secretsSummary ? secretsSummary.total : "—"}
-            />
-            <Stat label="deploys" value="38" />
-          </ul>
+          <div className="flex flex-col items-end gap-3">
+            <a
+              href="/handbook.pdf"
+              target="_blank"
+              rel="noreferrer"
+              className="group relative flex items-center gap-3 rounded-md border border-paper/[0.08] bg-paper/[0.025] hover:bg-paper/[0.05] hover:border-paper/[0.14] transition-colors px-3.5 py-2.5"
+            >
+              <span
+                className="w-1 h-8 rounded-sm shrink-0"
+                style={{ background: "linear-gradient(180deg, #ec4899, #8b5cf6, #06b6d4)" }}
+              />
+              <span className="flex flex-col leading-tight">
+                <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                  Handbook · PDF
+                </span>
+                <span className="font-display text-[13px] font-medium text-paper mt-0.5">
+                  Project infrastructure
+                </span>
+              </span>
+              <span className="font-mono text-[10px] text-paper-faint group-hover:text-paper transition-colors ml-1">↗</span>
+            </a>
+
+            {/* Inline stats — compact chip row */}
+            <ul className="flex items-center gap-x-5 gap-y-2 flex-wrap">
+              <Stat label="live" value={liveCount} tone="emerald" />
+              <Stat label="wip" value={wipCount} tone="amber" />
+              <Stat
+                label="secrets"
+                value={secretsSummary ? secretsSummary.total : "—"}
+              />
+              <Stat label="deploys" value="38" />
+            </ul>
+          </div>
         </header>
 
         <AppsRow />
