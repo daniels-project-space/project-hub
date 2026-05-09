@@ -48,16 +48,6 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
-    slug: "rental-manager-v2",
-    name: "Rental Manager v2",
-    short: "R2",
-    description: "Hygglo bot + dashboard, READ-ONLY mode.",
-    status: "live",
-    vercelUrl: "https://rental-manager-v2.vercel.app",
-    githubUrl: "https://github.com/daniels-project-space/rental-manager-v2",
-    category: "ops",
-  },
-  {
     slug: "app-factory",
     name: "App Factory",
     short: "AF",
