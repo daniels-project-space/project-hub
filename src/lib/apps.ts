@@ -37,13 +37,14 @@ export const APPS: AppEntry[] = [
     category: "platform",
   },
 
-  // WIP — code exists on VPS, not yet ported to Vercel
   {
-    slug: "rental-manager",
+    slug: "rental-manager-v2",
     name: "Rental Manager",
     short: "RM",
-    description: "Multi-platform rental ops + AI tiering.",
-    status: "wip",
+    description: "Hygglo rental ops dashboard — DB Cinema + Leo Adams.",
+    status: "live",
+    vercelUrl: "https://rental-manager-v2-nu.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/rental-manager-v2",
     category: "ops",
   },
   {

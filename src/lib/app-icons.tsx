@@ -21,7 +21,7 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M3 6h7v6H3zM14 6h7v4h-7zM14 14h7v4h-7zM3 16h7v2H3z" />
     </svg>
   ),
-  "rental-manager": (
+  "rental-manager-v2": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M4 9l8-6 8 6v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
       <path d="M9 22V12h6v10" />
