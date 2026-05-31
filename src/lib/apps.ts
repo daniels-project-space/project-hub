@@ -122,6 +122,16 @@ export const APPS: AppEntry[] = [
     category: "creator",
   },
   {
+    slug: "youtube-studio-ai",
+    name: "YouTube Studio AI",
+    short: "YS",
+    description: "Modular AI YouTube video factory — block-based pipeline (Convex + Mastra + Trigger + R2 + Higgsfield).",
+    status: "live",
+    vercelUrl: "https://youtube-studio-ai.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/youtube-studio-ai",
+    category: "creator",
+  },
+  {
     slug: "the-council",
     name: "The Council",
     short: "TC",

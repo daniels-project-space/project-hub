@@ -114,6 +114,12 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none" />
     </svg>
   ),
+  "youtube-studio-ai": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <rect x="2" y="5" width="20" height="14" rx="3" />
+      <path d="M10 9l6 3-6 3z" fill="currentColor" stroke="none" />
+    </svg>
+  ),
 };
 
 const fallback = (
