@@ -4,7 +4,8 @@ import { api } from "../../convex/_generated/api";
 import { TopBar } from "@/components/top-bar";
 import { AppsRow } from "@/components/apps-row";
 import { SectionLabel } from "@/components/section-label";
-import { RemoteWorkHubWidget } from "@/components/widgets/remote-work-hub-widget";
+import { DashboardGrid } from "@/components/dashboard-grid";
+import { CommandCenter } from "@/components/command-center";
 import { APPS } from "@/lib/apps";
 
 export default function HomePage() {
@@ -72,14 +73,14 @@ export default function HomePage() {
 
         <AppsRow />
 
+        <CommandCenter />
+
         <section className="mb-12">
           <SectionLabel
             title="Widgets"
-            hint="Embedded tools — one per row by default"
+            hint="Drag to reorder · eye to hide — saved to Convex"
           />
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <RemoteWorkHubWidget />
-          </div>
+          <DashboardGrid />
         </section>
       </section>
 

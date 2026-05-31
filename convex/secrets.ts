@@ -62,6 +62,14 @@ export const bulkInsert = mutation({
   },
 });
 
+export const deleteOne = mutation({
+  args: { id: v.id("secrets") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.delete(id);
+    return { deleted: id };
+  },
+});
+
 export const truncate = mutation({
   args: {},
   handler: async (ctx) => {
