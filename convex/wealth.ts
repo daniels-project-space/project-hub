@@ -819,6 +819,56 @@ export const setManualAssetValue = mutation({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PHASE 18 · IDEMPOTENT BINANCE-SPOT SEED (client-facing, prod-safe).
+// Binance spot auto-fetch is geo-blocked (HTTP 451) so the Binance crypto line is
+// a PERSISTENT MANUAL asset row, sibling to Coinbase. This mutation guarantees
+// that row exists so the Binance sub-line can never silently disappear again
+// (the Phase 17 regression: no auto-fetch AND no stored row → line vanished).
+//
+// Idempotent: if a manual crypto "Binance" row already exists, it is LEFT
+// UNTOUCHED (never clobbers an edited value). Only inserts when missing, with the
+// last-known spot £364 as the editable starting value. Does NOT touch Coinbase,
+// does NOT re-enable any auto-fetch.
+// ─────────────────────────────────────────────────────────────────────────────
+export const seedBinanceSpot = mutation({
+  args: {
+    startingValueGBP: v.optional(v.number()), // default 364 (last-known spot)
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { startingValueGBP, ownerId }) => {
+    const start = startingValueGBP ?? 364;
+    assertFinite("startingValueGBP", start);
+    const cryptoRows = await ctx.db
+      .query("assets")
+      .withIndex("by_category", (q) => q.eq("category", "crypto"))
+      .collect();
+    const existing = cryptoRows.find(
+      (r) =>
+        r.source === "manual" &&
+        (r.label === "Binance" ||
+          (r.label ?? "").toLowerCase().includes("binance")),
+    );
+    if (existing) {
+      return {
+        created: false,
+        id: existing._id,
+        value: existing.lastValueGBP ?? null,
+      };
+    }
+    const id = await ctx.db.insert("assets", {
+      category: "crypto",
+      label: "Binance",
+      source: "manual",
+      currency: GBP,
+      lastValueGBP: start,
+      lastPricedAt: Date.now(),
+      ownerId,
+    });
+    return { created: true, id, value: start };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SNAPSHOT IMPORT (client-facing) — backfill net-worth history at explicit
 // past timestamps. `_recordSnapshot` only ever stamps "now"; these let a one-off
 // migration insert historical rows so getHistory has a real trajectory to draw.

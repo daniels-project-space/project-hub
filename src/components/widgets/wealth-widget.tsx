@@ -417,11 +417,18 @@ export function WealthWidget() {
                             <EditValueButton asset={stocksAsset} />
                           )}
                         </span>
-                        {/* Phase 16: Coinbase vs Binance SPOT split — both
-                            exchanges as their own visible lines under Crypto. */}
+                        {/* Phase 16/18: Coinbase + Binance SPOT split — both
+                            exchanges ALWAYS get their own visible line under
+                            Crypto whenever either has a value OR a manual row
+                            exists. Phase 18: render the Binance line even at £0
+                            so a persisted manual Binance row never disappears,
+                            and keep the "Binance" label as its OWN leaf span
+                            (pencil is a sibling, not a child) so it renders as a
+                            discrete, detectable sub-line exactly like Coinbase. */}
                         {cat === "crypto" &&
                           (cryptoSplit.coinbase > 0 ||
-                            cryptoSplit.binance > 0) && (
+                            cryptoSplit.binance > 0 ||
+                            cryptoSplit.binanceManual) && (
                             <span className="mt-0.5 flex flex-col gap-0.5 border-t border-rule-soft/30 pt-0.5">
                               <span className="flex items-center justify-between">
                                 <span className="text-paper-dim">Coinbase</span>
@@ -431,7 +438,7 @@ export function WealthWidget() {
                               </span>
                               <span className="flex items-center justify-between">
                                 <span className="flex items-center gap-1 text-paper-dim">
-                                  Binance
+                                  <span className="text-paper-dim">Binance</span>
                                   {/* Phase 17: Binance spot is MANUAL now
                                       (geo-blocked auto-fetch removed) — edit £
                                       inline, same pattern as the Stocks line. */}
