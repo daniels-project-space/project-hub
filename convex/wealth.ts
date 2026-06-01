@@ -192,6 +192,180 @@ export const _replaceMarginPositions = internalMutation({
   },
 });
 
+// ─── Phase 17 · MANUAL margin-position CRUD (client-facing) ───────────────────
+// Binance is geo-blocked (HTTP 451) from Convex, so margin/futures positions are
+// now entered BY HAND (like the manual Stocks line) instead of auto-fetched.
+// These three mutations let the tracker tile add / edit / delete positions over
+// the existing `marginPositions` table. Net equity rolls into net worth exactly
+// as before (synthetic "margin" category in getWealth/_recordLive/_recordSnapshot)
+// — no double-counting, no fetch.
+//
+// uPnL derivation: when size + entryPrice + markPrice are all provided, uPnL is
+// DERIVED — (mark − entry) × size for a long, (entry − mark) × size for a short
+// (USD-ish, since these markets quote in USDT≈USD). The caller may instead pass
+// uPnlUsd explicitly (e.g. coin-margined positions). uPnlGbp = uPnlUsd × usdToGbp.
+// netEquityGbp (the figure that rolls into NW) is taken as given (manual), or 0.
+function deriveMarginPnl(args: {
+  side: string;
+  size?: number;
+  entryPrice?: number;
+  markPrice?: number;
+  uPnlUsd?: number;
+  usdToGbp: number;
+}): { uPnlUsd: number; uPnlGbp: number } {
+  const { side, size, entryPrice, markPrice, uPnlUsd, usdToGbp } = args;
+  let pnlUsd: number;
+  if (typeof uPnlUsd === "number" && Number.isFinite(uPnlUsd)) {
+    pnlUsd = uPnlUsd;
+  } else if (
+    typeof size === "number" &&
+    typeof entryPrice === "number" &&
+    typeof markPrice === "number" &&
+    Number.isFinite(size) &&
+    Number.isFinite(entryPrice) &&
+    Number.isFinite(markPrice)
+  ) {
+    const dir = side === "short" ? -1 : 1;
+    pnlUsd = dir * (markPrice - entryPrice) * Math.abs(size);
+  } else {
+    pnlUsd = 0;
+  }
+  return { uPnlUsd: pnlUsd, uPnlGbp: pnlUsd * usdToGbp };
+}
+
+// GBP per 1 USD from the persisted fxRates row (GBP→USD rate, inverted). Falls
+// back to ~0.79 only if FX was never fetched (keeps £/$ derivation sane offline).
+async function usdToGbpRate(ctx: any): Promise<number> {
+  const fx = await ctx.db
+    .query("fxRates")
+    .withIndex("by_pair", (q: any) => q.eq("base", "GBP").eq("quote", "USD"))
+    .first();
+  const usdPerGbp = fx?.rate;
+  return typeof usdPerGbp === "number" && usdPerGbp > 0 ? 1 / usdPerGbp : 0.79;
+}
+
+export const addMarginPosition = mutation({
+  args: {
+    exchange: v.optional(v.string()), // default "Binance"
+    market: v.string(), // isolated | cross | usdm | coinm
+    symbol: v.string(),
+    side: v.string(), // long | short
+    size: v.optional(v.number()),
+    entryPrice: v.optional(v.number()),
+    markPrice: v.optional(v.number()),
+    leverage: v.optional(v.number()),
+    liqPrice: v.optional(v.number()),
+    netEquityGbp: v.optional(v.number()),
+    uPnlUsd: v.optional(v.number()),
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    assertFinite("size", a.size);
+    assertFinite("entryPrice", a.entryPrice);
+    assertFinite("markPrice", a.markPrice);
+    assertFinite("leverage", a.leverage);
+    assertFinite("liqPrice", a.liqPrice);
+    assertFinite("netEquityGbp", a.netEquityGbp);
+    assertFinite("uPnlUsd", a.uPnlUsd);
+    if (!a.symbol.trim()) throw new Error("symbol is required");
+    const usdToGbp = await usdToGbpRate(ctx);
+    const { uPnlUsd, uPnlGbp } = deriveMarginPnl({
+      side: a.side,
+      size: a.size,
+      entryPrice: a.entryPrice,
+      markPrice: a.markPrice,
+      uPnlUsd: a.uPnlUsd,
+      usdToGbp,
+    });
+    return await ctx.db.insert("marginPositions", {
+      exchange: (a.exchange ?? "Binance").trim() || "Binance",
+      market: a.market,
+      symbol: a.symbol.trim(),
+      side: a.side === "short" ? "short" : "long",
+      size: a.size ?? 0,
+      entryPrice: a.entryPrice ?? 0,
+      markPrice: a.markPrice ?? 0,
+      leverage: a.leverage,
+      liqPrice: a.liqPrice,
+      uPnlUsd,
+      uPnlGbp,
+      netEquityGbp: a.netEquityGbp ?? 0,
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const updateMarginPosition = mutation({
+  args: {
+    id: v.id("marginPositions"),
+    exchange: v.optional(v.string()),
+    market: v.optional(v.string()),
+    symbol: v.optional(v.string()),
+    side: v.optional(v.string()),
+    size: v.optional(v.number()),
+    entryPrice: v.optional(v.number()),
+    markPrice: v.optional(v.number()),
+    leverage: v.optional(v.number()),
+    liqPrice: v.optional(v.number()),
+    netEquityGbp: v.optional(v.number()),
+    uPnlUsd: v.optional(v.number()),
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    const existing = await ctx.db.get(a.id);
+    if (!existing) throw new Error("margin position not found");
+    assertFinite("size", a.size);
+    assertFinite("entryPrice", a.entryPrice);
+    assertFinite("markPrice", a.markPrice);
+    assertFinite("leverage", a.leverage);
+    assertFinite("liqPrice", a.liqPrice);
+    assertFinite("netEquityGbp", a.netEquityGbp);
+    assertFinite("uPnlUsd", a.uPnlUsd);
+    const side =
+      a.side !== undefined ? (a.side === "short" ? "short" : "long") : existing.side;
+    const size = a.size ?? existing.size;
+    const entryPrice = a.entryPrice ?? existing.entryPrice;
+    const markPrice = a.markPrice ?? existing.markPrice;
+    const usdToGbp = await usdToGbpRate(ctx);
+    // Re-derive uPnL from the resolved fields unless an explicit uPnlUsd was given.
+    const { uPnlUsd, uPnlGbp } = deriveMarginPnl({
+      side,
+      size,
+      entryPrice,
+      markPrice,
+      uPnlUsd: a.uPnlUsd,
+      usdToGbp,
+    });
+    const patch: Record<string, unknown> = {
+      side,
+      size,
+      entryPrice,
+      markPrice,
+      uPnlUsd,
+      uPnlGbp,
+      updatedAt: Date.now(),
+    };
+    if (a.exchange !== undefined)
+      patch.exchange = a.exchange.trim() || "Binance";
+    if (a.market !== undefined) patch.market = a.market;
+    if (a.symbol !== undefined) patch.symbol = a.symbol.trim();
+    if (a.leverage !== undefined) patch.leverage = a.leverage;
+    if (a.liqPrice !== undefined) patch.liqPrice = a.liqPrice;
+    if (a.netEquityGbp !== undefined) patch.netEquityGbp = a.netEquityGbp;
+    await ctx.db.patch(a.id, patch);
+    return a.id;
+  },
+});
+
+export const removeMarginPosition = mutation({
+  args: { id: v.id("marginPositions"), ownerId: v.optional(v.string()) },
+  handler: async (ctx, { id }) => {
+    await ctx.db.delete(id);
+    return id;
+  },
+});
+
 // Latest cached rental revenue figure → singleton per source.
 export const _setRentalRevenue = internalMutation({
   args: {

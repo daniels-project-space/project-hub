@@ -175,327 +175,13 @@ async function coinbaseBalances(
   return out;
 }
 
-async function binanceBalances(
-  apiKey: string,
-  apiSecret: string,
-): Promise<Record<string, number> | null> {
-  try {
-    const ts = Date.now();
-    const qs = `timestamp=${ts}&recvWindow=5000`;
-    const sig = crypto.createHmac("sha256", apiSecret).update(qs).digest("hex");
-    const j = await safeJson(
-      `https://api.binance.com/api/v3/account?${qs}&signature=${sig}`,
-      { headers: { "X-MBX-APIKEY": apiKey } },
-    );
-    if (!j?.balances) return null;
-    const out: Record<string, number> = {};
-    for (const b of j.balances) {
-      const amt = parseFloat(b.free ?? "0") + parseFloat(b.locked ?? "0");
-      if (b.asset && amt > DUST_EPSILON) out[b.asset] = amt;
-    }
-    return out;
-  } catch (e) {
-    console.warn("wealth: binance balances failed", e);
-    return null;
-  }
-}
-
-// ─── Phase 16 · Binance MARGIN/FUTURES (READ-ONLY) ─────────────────────────────
-//
-// Generic HMAC-SHA256 signed GET against any Binance host (spot api / sapi margin
-// / fapi USDⓂ futures / dapi COINⓂ futures). Mirrors aria/lib/finance.js's
-// binanceRequest. READ-ONLY: only account/position-read endpoints are ever called
-// — never order/withdraw/transfer. Returns parsed JSON, or null on failure (the
-// caller reports which surface failed; never fabricates).
-async function binanceSigned(
-  host: string,
-  path: string,
-  apiKey: string,
-  apiSecret: string,
-  extraParams = "",
-  diag?: { note?: string },
-): Promise<any | null> {
-  try {
-    const ts = Date.now();
-    const qs = `${extraParams ? extraParams + "&" : ""}timestamp=${ts}&recvWindow=5000`;
-    const sig = crypto.createHmac("sha256", apiSecret).update(qs).digest("hex");
-    const res = await fetch(`https://${host}${path}?${qs}&signature=${sig}`, {
-      headers: { "X-MBX-APIKEY": apiKey },
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      const snippet = `HTTP ${res.status} ${body.slice(0, 140)}`;
-      console.warn(`wealth: binance ${host}${path} -> ${snippet}`);
-      if (diag) diag.note = snippet;
-      return null;
-    }
-    return await res.json();
-  } catch (e) {
-    const snippet = `network ${String(e).slice(0, 120)}`;
-    console.warn(`wealth: binance ${host}${path} failed`, e);
-    if (diag) diag.note = snippet;
-    return null;
-  }
-}
-
-type MarginPos = {
-  market: string;
-  symbol: string;
-  base?: string;
-  quote?: string;
-  side: string;
-  size: number;
-  entryPrice: number;
-  markPrice: number;
-  leverage?: number;
-  uPnlUsd: number;
-  uPnlGbp: number;
-  marginLevel?: number;
-  liqPrice?: number;
-  netEquityGbp: number;
-};
-
-// Fetch ALL Binance leveraged surfaces. `usdToGbp` converts USD-denominated PnL
-// and net equity to GBP. `report` accumulates per-surface failure notes so the
-// caller can say exactly which surface (if any) the API rejected.
-async function binanceMarginPositions(
-  apiKey: string,
-  apiSecret: string,
-  usdToGbp: number,
-  report: { errors: string[] },
-): Promise<MarginPos[]> {
-  const out: MarginPos[] = [];
-  const gbp = (usd: number) => usd * usdToGbp;
-
-  // 1) ISOLATED MARGIN — /sapi/v1/margin/isolated/account. Each pair is a short:
-  //    borrow base, sell → profit when price falls. Entry from myTrades (sells).
-  const isoDiag: { note?: string } = {};
-  const iso = await binanceSigned(
-    "api.binance.com",
-    "/sapi/v1/margin/isolated/account",
-    apiKey,
-    apiSecret,
-    "",
-    isoDiag,
-  );
-  if (iso === null)
-    report.errors.push(`isolated-margin: ${isoDiag.note ?? "fetch failed"}`);
-  else {
-    for (const pair of iso.assets ?? []) {
-      const base = pair.baseAsset ?? {};
-      const quote = pair.quoteAsset ?? {};
-      const baseBorrowed = parseFloat(base.borrowed ?? "0");
-      const baseInterest = parseFloat(base.interest ?? "0");
-      const quoteNet = parseFloat(quote.netAsset ?? "0");
-      const owed = baseBorrowed + baseInterest;
-      if (Math.abs(quoteNet) <= 0.01 && owed <= 0.01) continue;
-      const markPrice = parseFloat(pair.indexPrice ?? "0");
-      // Average entry from sell trades matched to the borrowed qty.
-      let avgEntry = 0;
-      const trades = await binanceSigned(
-        "api.binance.com",
-        "/sapi/v1/margin/myTrades",
-        apiKey,
-        apiSecret,
-        `symbol=${pair.symbol}&isIsolated=TRUE&limit=50`,
-      );
-      if (Array.isArray(trades)) {
-        let need = baseBorrowed;
-        let val = 0;
-        let matched = 0;
-        const sells = trades.filter((t: any) => !t.isBuyer).reverse();
-        for (const t of sells) {
-          if (need <= 0) break;
-          const qty = Math.min(parseFloat(t.qty), need);
-          val += qty * parseFloat(t.price);
-          matched += qty;
-          need -= qty;
-        }
-        if (matched > 0) avgEntry = val / matched;
-      }
-      // SHORT PnL (USD-ish, quote currency): borrowed × (entry − mark) − interest×mark
-      const pnlQuote =
-        baseBorrowed * (avgEntry - markPrice) - baseInterest * markPrice;
-      // quote is typically USDT/USDC ≈ USD. Net equity = quote net asset (USD).
-      const netEquityUsd = quoteNet;
-      out.push({
-        market: "isolated",
-        symbol: pair.symbol,
-        base: base.asset,
-        quote: quote.asset,
-        side: "short",
-        size: baseBorrowed,
-        entryPrice: avgEntry,
-        markPrice,
-        marginLevel: parseFloat(pair.marginLevel ?? "0") || undefined,
-        liqPrice: parseFloat(pair.liquidatePrice ?? "0") || undefined,
-        uPnlUsd: pnlQuote,
-        uPnlGbp: gbp(pnlQuote),
-        netEquityGbp: gbp(netEquityUsd),
-      });
-    }
-  }
-
-  // 2) CROSS MARGIN — /sapi/v1/margin/account. Net equity = totalNetAssetOfBtc×BTC.
-  //    Surfaced as a single aggregate "cross equity" line (no per-symbol entry).
-  const crossDiag: { note?: string } = {};
-  const cross = await binanceSigned(
-    "api.binance.com",
-    "/sapi/v1/margin/account",
-    apiKey,
-    apiSecret,
-    "",
-    crossDiag,
-  );
-  if (cross === null)
-    report.errors.push(`cross-margin: ${crossDiag.note ?? "fetch failed"}`);
-  else {
-    const netBtc = parseFloat(cross.totalNetAssetOfBtc ?? "0");
-    if (Math.abs(netBtc) > 1e-6) {
-      // value BTC in USD via a public ticker (no key, READ-ONLY)
-      const tick = await safeJson(
-        "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-      );
-      const btcUsd = tick ? parseFloat(tick.price ?? "0") : 0;
-      const netUsd = netBtc * btcUsd;
-      out.push({
-        market: "cross",
-        symbol: "CROSS (net equity)",
-        side: netBtc >= 0 ? "long" : "short",
-        size: netBtc,
-        entryPrice: 0,
-        markPrice: btcUsd,
-        marginLevel: parseFloat(cross.marginLevel ?? "0") || undefined,
-        uPnlUsd: 0,
-        uPnlGbp: 0,
-        netEquityGbp: gbp(netUsd),
-      });
-    }
-  }
-
-  // 3) USDⓂ FUTURES — /fapi/v2/account (+ positionRisk for entry/mark/liq).
-  const usdmDiag: { note?: string } = {};
-  const usdmAcct = await binanceSigned(
-    "fapi.binance.com",
-    "/fapi/v2/account",
-    apiKey,
-    apiSecret,
-    "",
-    usdmDiag,
-  );
-  if (usdmAcct === null)
-    report.errors.push(`usdm-futures: ${usdmDiag.note ?? "account fetch failed"}`);
-  else {
-    const walletUsd = parseFloat(usdmAcct.totalWalletBalance ?? "0");
-    const uPnlUsd = parseFloat(usdmAcct.totalUnrealizedProfit ?? "0");
-    const positions = (usdmAcct.positions ?? []).filter(
-      (p: any) => Math.abs(parseFloat(p.positionAmt ?? "0")) > 0,
-    );
-    // Net equity of the whole USDⓂ wallet rolls into net worth once (margin
-    // balance ± uPnL). Per-position rows carry their own uPnL for the tracker.
-    if (positions.length === 0 && walletUsd + uPnlUsd !== 0) {
-      out.push({
-        market: "usdm",
-        symbol: "USDⓂ (wallet)",
-        side: "long",
-        size: 0,
-        entryPrice: 0,
-        markPrice: 0,
-        uPnlUsd,
-        uPnlGbp: gbp(uPnlUsd),
-        netEquityGbp: gbp(walletUsd + uPnlUsd),
-      });
-    } else {
-      const risk = await binanceSigned(
-        "fapi.binance.com",
-        "/fapi/v2/positionRisk",
-        apiKey,
-        apiSecret,
-      );
-      const riskBySym: Record<string, any> = {};
-      if (Array.isArray(risk)) for (const r of risk) riskBySym[r.symbol] = r;
-      let rolled = false;
-      for (const p of positions) {
-        const amt = parseFloat(p.positionAmt ?? "0");
-        const pnl = parseFloat(p.unrealizedProfit ?? "0");
-        const r = riskBySym[p.symbol] ?? {};
-        // Roll the wallet net equity in only ONCE (on the first position).
-        const netEq = !rolled ? gbp(walletUsd + uPnlUsd) : 0;
-        rolled = true;
-        out.push({
-          market: "usdm",
-          symbol: p.symbol,
-          side: amt >= 0 ? "long" : "short",
-          size: Math.abs(amt),
-          entryPrice: parseFloat(p.entryPrice ?? r.entryPrice ?? "0"),
-          markPrice: parseFloat(r.markPrice ?? "0"),
-          leverage: parseFloat(p.leverage ?? r.leverage ?? "0") || undefined,
-          liqPrice: parseFloat(r.liquidationPrice ?? "0") || undefined,
-          uPnlUsd: pnl,
-          uPnlGbp: gbp(pnl),
-          netEquityGbp: netEq,
-        });
-      }
-    }
-  }
-
-  // 4) COINⓂ FUTURES — /dapi/v1/account (+ positionRisk). Coin-margined; wallet
-  //    balances are per-coin. Roll the marginBalance (in BTC etc.) → USD → GBP.
-  const coinmDiag: { note?: string } = {};
-  const coinmAcct = await binanceSigned(
-    "dapi.binance.com",
-    "/dapi/v1/account",
-    apiKey,
-    apiSecret,
-    "",
-    coinmDiag,
-  );
-  if (coinmAcct === null)
-    report.errors.push(
-      `coinm-futures: ${coinmDiag.note ?? "account fetch failed"}`,
-    );
-  else {
-    const positions = (coinmAcct.positions ?? []).filter(
-      (p: any) => Math.abs(parseFloat(p.positionAmt ?? "0")) > 0,
-    );
-    if (positions.length > 0) {
-      const risk = await binanceSigned(
-        "dapi.binance.com",
-        "/dapi/v1/positionRisk",
-        apiKey,
-        apiSecret,
-      );
-      const riskBySym: Record<string, any> = {};
-      if (Array.isArray(risk)) for (const r of risk) riskBySym[r.symbol] = r;
-      // Value coin-margined uPnL: unrealizedProfit is in the contract's base coin.
-      for (const p of positions) {
-        const amt = parseFloat(p.positionAmt ?? "0");
-        const pnlCoin = parseFloat(p.unrealizedProfit ?? "0");
-        const r = riskBySym[p.symbol] ?? {};
-        const markPrice = parseFloat(r.markPrice ?? "0");
-        // pnl in coin × mark(USD/coin) ≈ USD
-        const pnlUsd = pnlCoin * markPrice;
-        out.push({
-          market: "coinm",
-          symbol: p.symbol,
-          side: amt >= 0 ? "long" : "short",
-          size: Math.abs(amt),
-          entryPrice: parseFloat(p.entryPrice ?? r.entryPrice ?? "0"),
-          markPrice,
-          leverage: parseFloat(p.leverage ?? r.leverage ?? "0") || undefined,
-          liqPrice: parseFloat(r.liquidationPrice ?? "0") || undefined,
-          uPnlUsd: pnlUsd,
-          uPnlGbp: gbp(pnlUsd),
-          // Coin-margined net equity left at the position's own uPnL value in GBP
-          // (wallet coin balance is the collateral; uPnL is the moving part).
-          netEquityGbp: gbp(pnlUsd),
-        });
-      }
-    }
-  }
-
-  return out;
-}
+// ─── Phase 17 · Binance MARGIN/FUTURES auto-fetch helpers REMOVED ─────────────
+// `binanceBalances` (spot /api/v3/account), `binanceSigned` (generic signed GET),
+// and `binanceMarginPositions` (the 4-surface puller) were deleted: Binance
+// geo-blocks Convex's egress IP (HTTP 451) on every signed endpoint, so they only
+// ever failed. Binance spot + margin are MANUAL now. No Binance signed call
+// remains anywhere in this module — only the public, keyless Coinbase / CoinGecko
+// / Frankfurter / goldprice paths are still live.
 
 // ─── PUBLIC ACTIONS ──────────────────────────────────────────────────────────
 
@@ -525,15 +211,13 @@ export const refreshCrypto = action({
       else errors.push("coinbase: balance fetch failed (key/permission?)");
     } else errors.push("coinbase: API key/secret missing in vault");
 
-    const bnKey = await getSecret(ctx, SECRET.binanceKey);
-    const bnSecret = await getSecret(ctx, SECRET.binanceSecret);
-    if (bnKey && bnSecret) {
-      const bn = await binanceBalances(bnKey, bnSecret);
-      if (bn)
-        for (const [k, val] of Object.entries(bn))
-          byExchange.binance[k] = (byExchange.binance[k] ?? 0) + val;
-      else errors.push("binance: balance fetch failed (key/permission?)");
-    } else errors.push("binance: API key/secret missing in vault");
+    // Phase 17: Binance SPOT auto-fetch DISABLED. Binance geo-blocks the Convex
+    // egress IP (HTTP 451) on /api/v3/account, so the live pull never succeeds —
+    // and re-running it would clobber the manual £364 "Binance" row with nothing.
+    // Per Daniel's choice the Binance spot line is now MANUAL (like Stocks), edited
+    // straight from the tile via setManualAssetValue. We deliberately do NOT call
+    // binanceBalances here; the manual row persists untouched. Coinbase stays live.
+    // (binanceBalances retained but unreferenced in case egress is ever unblocked.)
 
     // Union of symbols across both exchanges — one CoinGecko price fetch.
     const allSymbols = Array.from(
@@ -718,71 +402,17 @@ export const refreshAll = action({
   },
 });
 
-/**
- * refreshMargin — READ-ONLY Binance margin/futures tracker (Phase 16).
- * Pulls ALL leveraged surfaces — isolated margin + cross margin + USDⓂ futures
- * + COINⓂ futures — signs each with HMAC-SHA256 (ported from aria/lib/finance.js),
- * converts USD-denominated PnL/equity → GBP, and REPLACES the marginPositions
- * table wholesale (so closed positions never linger). Net equity rolls into net
- * worth via the synthetic "margin" category in _recordLive/_recordSnapshot/getWealth.
- *
- * NEVER fabricates: an empty/zero account → empty table → UI empty-state. Each
- * surface that the API rejects is reported by name (no faking).
- */
-export const refreshMargin = action({
-  args: {},
-  handler: async (
-    ctx,
-  ): Promise<{
-    count: number;
-    totalUPnlGbp: number;
-    netEquityGbp: number;
-    errors: string[];
-  }> => {
-    const errors: string[] = [];
-    const bnKey = await getSecret(ctx, SECRET.binanceKey);
-    const bnSecret = await getSecret(ctx, SECRET.binanceSecret);
-    if (!bnKey || !bnSecret) {
-      errors.push("binance: API key/secret missing in vault");
-      return { count: 0, totalUPnlGbp: 0, netEquityGbp: 0, errors };
-    }
-    const usdToGbp = await fxToGBP("USD");
-    if (usdToGbp === null) {
-      errors.push("FX USD→GBP unavailable — cannot value margin (skipped)");
-      return { count: 0, totalUPnlGbp: 0, netEquityGbp: 0, errors };
-    }
-    const report = { errors };
-    const positions = await binanceMarginPositions(
-      bnKey,
-      bnSecret,
-      usdToGbp,
-      report,
-    );
-    await ctx.runMutation(internal.wealth._replaceMarginPositions, {
-      exchange: "binance",
-      positions,
-    });
-    let totalUPnlGbp = 0;
-    let netEquityGbp = 0;
-    for (const p of positions) {
-      totalUPnlGbp += p.uPnlGbp;
-      netEquityGbp += p.netEquityGbp;
-    }
-    return { count: positions.length, totalUPnlGbp, netEquityGbp, errors };
-  },
-});
-
-/** Internal cron alias for refreshMargin (cronJobs require internal refs). */
-export const refreshMarginCron = internalAction({
-  args: {},
-  handler: async (ctx): Promise<void> => {
-    try {
-      await ctx.runAction(api.wealthActions.refreshMargin, {});
-    } catch (e) {
-      console.warn("wealth.refreshMarginCron failed", e);
-    }
-  },
-});
+// ─── Phase 17 · Binance margin AUTO-FETCH REMOVED ─────────────────────────────
+//
+// Phase 16's `refreshMargin` action + `refreshMarginCron` alias pulled the four
+// Binance leveraged surfaces (isolated/cross/USDⓂ/COINⓂ). EVERY surface returns
+// HTTP 451 (geo-restricted) from Convex's egress IP, so the action only ever
+// produced failures. Per Daniel's Phase-17 decision, margin positions are now
+// ENTERED MANUALLY (addMarginPosition / updateMarginPosition / removeMarginPosition
+// in convex/wealth.ts) and roll into net worth straight from the marginPositions
+// table. The auto-fetch action + its cron are deleted; NO code path hits a
+// geo-blocked Binance endpoint anymore. (The binanceSigned / binanceMarginPositions
+// helpers were also removed below.)
 
 /**
  * pollRentalRevenue — server-side poll of rental-manager-v2's Convex
@@ -871,13 +501,9 @@ export const snapshot = internalAction({
     } catch (e) {
       console.warn("wealth.snapshot: refresh failed, snapshotting cached values", e);
     }
-    // Phase 16: refresh margin so the DAILY snapshot's "margin" category matches
-    // the live total (best-effort — never blocks the snapshot).
-    try {
-      await ctx.runAction(api.wealthActions.refreshMargin, {});
-    } catch (e) {
-      console.warn("wealth.snapshot: margin refresh failed, using cached", e);
-    }
+    // Phase 17: no Binance margin auto-fetch (geo-blocked 451). Margin positions
+    // are MANUAL now; their net equity rolls into the snapshot's "margin" category
+    // straight from the marginPositions table inside _recordSnapshot. No fetch.
     // Persist GBP→USD onto the daily snapshot too (best-effort; additive).
     let usdPerGbp: number | null = null;
     try {
@@ -929,14 +555,9 @@ export const refreshLive = internalAction({
     } catch (e) {
       console.warn("wealth.refreshLive: refresh failed, using cached values", e);
     }
-    // Phase 16: refresh Binance margin/futures so the live total + the synthetic
-    // "margin" category reflect current net equity (resilient — keeps last table
-    // contents on failure since _replaceMarginPositions only runs on success).
-    try {
-      await ctx.runAction(api.wealthActions.refreshMargin, {});
-    } catch (e) {
-      console.warn("wealth.refreshLive: margin refresh failed, using cached", e);
-    }
+    // Phase 17: no Binance margin auto-fetch (geo-blocked 451). Margin net equity
+    // is rolled into the live total + synthetic "margin" category by _recordLive
+    // reading the (now MANUAL) marginPositions table directly. No fetch needed.
     let usdPerGbp: number | null = null;
     try {
       usdPerGbp = await ctx.runAction(api.wealthActions.persistFx, {});

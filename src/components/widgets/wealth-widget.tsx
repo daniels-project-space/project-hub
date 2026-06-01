@@ -193,21 +193,36 @@ export function WealthWidget() {
   const cryptoSplit = useMemo(() => {
     const rows = (byCategory.crypto?.assets ?? []) as {
       label: string;
+      source?: string;
       externalRef?: string | null;
       lastValueGBP?: number | null;
     }[];
     let coinbase = 0;
     let binance = 0;
     let other = 0;
+    // Phase 17: capture the MANUAL Binance spot row so the tile can offer an
+    // inline pencil edit (Binance auto-fetch is geo-blocked → manual like Stocks).
+    let binanceManual:
+      | { label: string; category: string; lastValueGBP: number | null }
+      | undefined;
     for (const a of rows) {
       const ref = (a.externalRef ?? "").toLowerCase();
       const lbl = (a.label ?? "").toLowerCase();
       const v = a.lastValueGBP ?? 0;
-      if (ref.includes("binance") || lbl.includes("binance")) binance += v;
-      else if (ref.includes("coinbase") || lbl.includes("coinbase")) coinbase += v;
-      else other += v;
+      if (ref.includes("binance") || lbl.includes("binance")) {
+        binance += v;
+        if (a.source === "manual" && !binanceManual) {
+          binanceManual = {
+            label: a.label,
+            category: "crypto",
+            lastValueGBP: a.lastValueGBP ?? null,
+          };
+        }
+      } else if (ref.includes("coinbase") || lbl.includes("coinbase")) {
+        coinbase += v;
+      } else other += v;
     }
-    return { coinbase, binance, other };
+    return { coinbase, binance, other, binanceManual };
   }, [byCategory]);
 
   const spark = useMemo(() => {
@@ -399,7 +414,7 @@ export function WealthWidget() {
                           <span>{pct(val, total)} of NW</span>
                           <StaleBadge pricedAt={oldest} />
                           {stocksAsset && (
-                            <EditStocksButton asset={stocksAsset} />
+                            <EditValueButton asset={stocksAsset} />
                           )}
                         </span>
                         {/* Phase 16: Coinbase vs Binance SPOT split — both
@@ -415,7 +430,17 @@ export function WealthWidget() {
                                 </span>
                               </span>
                               <span className="flex items-center justify-between">
-                                <span className="text-paper-dim">Binance</span>
+                                <span className="flex items-center gap-1 text-paper-dim">
+                                  Binance
+                                  {/* Phase 17: Binance spot is MANUAL now
+                                      (geo-blocked auto-fetch removed) — edit £
+                                      inline, same pattern as the Stocks line. */}
+                                  {cryptoSplit.binanceManual && (
+                                    <EditValueButton
+                                      asset={cryptoSplit.binanceManual}
+                                    />
+                                  )}
+                                </span>
                                 <span className="tabular-nums text-paper-dim">
                                   {gbp(cryptoSplit.binance, hidden)}
                                 </span>
@@ -888,7 +913,10 @@ function EditSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
 // Per Daniel: stocks stays MANUAL (no live quote) but the £ figure is editable
 // straight from the tile. A pencil reveals a tiny GBP input → `setManualAssetValue`.
 
-function EditStocksButton({
+// Phase 17: generalized from the Stocks-only editor to any MANUAL asset row,
+// scoped by the asset's own category — used by BOTH the Stocks £7k tile AND the
+// Binance spot sub-line (Binance auto-fetch is geo-blocked, so it's manual now).
+function EditValueButton({
   asset,
 }: {
   asset: { label: string; category: string; lastValueGBP: number | null };
@@ -913,7 +941,11 @@ function EditStocksButton({
     }
     setBusy(true);
     try {
-      await setValue({ label: asset.label, valueGBP: n, category: "stocks" });
+      await setValue({
+        label: asset.label,
+        valueGBP: n,
+        category: asset.category,
+      });
       setOpen(false);
     } finally {
       setBusy(false);
@@ -1007,6 +1039,21 @@ function num(n: number, dp = 4): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: Math.min(d, dp) });
 }
 
+const MARGIN_MARKETS = ["isolated", "cross", "usdm", "coinm"] as const;
+
+const BLANK_MARGIN = {
+  exchange: "Binance",
+  market: "usdm" as (typeof MARGIN_MARKETS)[number],
+  symbol: "",
+  side: "long" as "long" | "short",
+  size: "",
+  entryPrice: "",
+  markPrice: "",
+  leverage: "",
+  liqPrice: "",
+  netEquityGbp: "",
+};
+
 function MarginTracker({
   margin,
   hidden,
@@ -1016,10 +1063,157 @@ function MarginTracker({
   hidden: boolean;
   usdPerGbp: number | null;
 }) {
+  // Phase 17: Binance is geo-blocked (HTTP 451) → margin positions are MANUAL.
+  // Add / edit-by-delete-and-readd / delete via this tile. Net equity still rolls
+  // into net worth (synthetic "margin" category). REAL data only — no fixtures.
+  const addPosition = useMutation(api.wealth.addMarginPosition);
+  const removePosition = useMutation(api.wealth.removeMarginPosition);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState(BLANK_MARGIN);
+  const [busy, setBusy] = useState(false);
+
+  const parseNum = (s: string) => (s.trim() === "" ? undefined : Number(s));
+
+  const submitMargin = async () => {
+    if (!form.symbol.trim() || busy) return;
+    setBusy(true);
+    try {
+      await addPosition({
+        exchange: form.exchange.trim() || "Binance",
+        market: form.market,
+        symbol: form.symbol.trim(),
+        side: form.side,
+        size: parseNum(form.size),
+        entryPrice: parseNum(form.entryPrice),
+        markPrice: parseNum(form.markPrice),
+        leverage: parseNum(form.leverage),
+        liqPrice: parseNum(form.liqPrice),
+        netEquityGbp: parseNum(form.netEquityGbp),
+      });
+      setForm(BLANK_MARGIN);
+      setAdding(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (margin === undefined) return null; // loading — stay quiet
   const { positions, totalUPnlGbp, totalUPnlUsd, totalNetEquityGbp, updatedAt } =
     margin;
   const upTotal = totalUPnlGbp >= 0;
+
+  const inputCls =
+    "bg-ink-2/80 border border-rule-soft/60 rounded px-2 py-1 text-[12px] text-paper";
+
+  const addForm = adding ? (
+    <Card className="space-y-2 mb-3">
+      <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
+        <Plus className="w-3 h-3" /> Add margin position
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          placeholder="Exchange"
+          value={form.exchange}
+          onChange={(e) => setForm({ ...form, exchange: e.target.value })}
+          className={inputCls}
+        />
+        <select
+          value={form.market}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              market: e.target.value as (typeof MARGIN_MARKETS)[number],
+            })
+          }
+          className={inputCls}
+        >
+          {MARGIN_MARKETS.map((m) => (
+            <option key={m} value={m}>
+              {MARKET_LABEL[m] ?? m}
+            </option>
+          ))}
+        </select>
+        <input
+          placeholder="Symbol (e.g. SOLUSDT)"
+          value={form.symbol}
+          onChange={(e) =>
+            setForm({ ...form, symbol: e.target.value.toUpperCase() })
+          }
+          className={inputCls}
+        />
+        <select
+          value={form.side}
+          onChange={(e) =>
+            setForm({ ...form, side: e.target.value as "long" | "short" })
+          }
+          className={inputCls}
+        >
+          <option value="long">long</option>
+          <option value="short">short</option>
+        </select>
+        <input
+          placeholder="Size"
+          value={form.size}
+          onChange={(e) => setForm({ ...form, size: e.target.value })}
+          className={inputCls}
+        />
+        <input
+          placeholder="Leverage (×)"
+          value={form.leverage}
+          onChange={(e) => setForm({ ...form, leverage: e.target.value })}
+          className={inputCls}
+        />
+        <input
+          placeholder="Entry price"
+          value={form.entryPrice}
+          onChange={(e) => setForm({ ...form, entryPrice: e.target.value })}
+          className={inputCls}
+        />
+        <input
+          placeholder="Mark price"
+          value={form.markPrice}
+          onChange={(e) => setForm({ ...form, markPrice: e.target.value })}
+          className={inputCls}
+        />
+        <input
+          placeholder="Liq price"
+          value={form.liqPrice}
+          onChange={(e) => setForm({ ...form, liqPrice: e.target.value })}
+          className={inputCls}
+        />
+        <input
+          placeholder="Net equity £ (→ NW)"
+          value={form.netEquityGbp}
+          onChange={(e) => setForm({ ...form, netEquityGbp: e.target.value })}
+          className={inputCls}
+        />
+      </div>
+      <p className="font-mono text-[9px] text-paper-faint leading-relaxed">
+        uPnL is derived from size + entry → mark (long: mark−entry, short:
+        entry−mark). Net equity £ is the amount that rolls into net worth.
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={submitMargin}
+          disabled={busy || !form.symbol.trim()}
+          className="px-3 py-1.5 rounded bg-emerald-soft/20 text-emerald-soft font-mono text-[10px] uppercase tracking-[0.18em] disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Save position"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setForm(BLANK_MARGIN);
+            setAdding(false);
+          }}
+          className="px-3 py-1.5 rounded bg-ink-3/60 text-paper-dim font-mono text-[10px] uppercase tracking-[0.18em]"
+        >
+          Cancel
+        </button>
+      </div>
+    </Card>
+  ) : null;
 
   return (
     <Card>
@@ -1032,13 +1226,25 @@ function MarginTracker({
           )}
           Margin Positions
         </p>
-        {updatedAt != null && <StaleBadge pricedAt={updatedAt} />}
+        <span className="flex items-center gap-1.5">
+          {updatedAt != null && <StaleBadge pricedAt={updatedAt} />}
+          <button
+            type="button"
+            aria-label="Add margin position"
+            onClick={() => setAdding((s) => !s)}
+            className="p-1 rounded text-paper-faint hover:text-brass"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+        </span>
       </div>
+
+      {addForm}
 
       {positions.length === 0 ? (
         <EmptyState
           title="No open margin positions"
-          hint="Binance isolated / cross / USDⓂ / COINⓂ — nothing open right now"
+          hint="Manual entry — add Binance isolated / cross / USDⓂ / COINⓂ positions by hand"
         />
       ) : (
         <>
@@ -1115,20 +1321,31 @@ function MarginTracker({
                       ) : null}
                     </p>
                   </div>
-                  <div className="text-right shrink-0">
-                    <p
-                      className={`font-mono text-[12px] tabular-nums ${
-                        up ? "text-emerald-soft" : "text-rose-soft"
-                      }`}
-                    >
-                      {up ? "+" : ""}
-                      {gbp(p.uPnlGbp, hidden)}
-                    </p>
-                    {!hidden && (
-                      <p className="font-mono text-[9px] tabular-nums text-paper-faint">
-                        {up ? "+" : ""}${Math.round(p.uPnlUsd).toLocaleString("en-US")}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="text-right">
+                      <p
+                        className={`font-mono text-[12px] tabular-nums ${
+                          up ? "text-emerald-soft" : "text-rose-soft"
+                        }`}
+                      >
+                        {up ? "+" : ""}
+                        {gbp(p.uPnlGbp, hidden)}
                       </p>
-                    )}
+                      {!hidden && (
+                        <p className="font-mono text-[9px] tabular-nums text-paper-faint">
+                          {up ? "+" : ""}${Math.round(p.uPnlUsd).toLocaleString("en-US")}
+                        </p>
+                      )}
+                    </div>
+                    {/* Phase 17: manual delete (no auto-fetch to repopulate). */}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${p.symbol}`}
+                      onClick={() => void removePosition({ id: p._id as any })}
+                      className="p-1 rounded text-paper-faint hover:text-rose-soft"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               );

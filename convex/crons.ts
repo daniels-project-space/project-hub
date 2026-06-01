@@ -45,19 +45,16 @@ crons.interval(
   internal.huntActions.enqueueDueHunts,
 );
 
-// ── Phase 16 · Wealth completion (Binance margin + rental revenue) ───────────
-
-// Binance margin/futures refresh (Phase 16). Every 25 min re-pulls the READ-ONLY
-// isolated/cross/USDⓂ/COINⓂ surfaces, REPLACES the marginPositions table, and
-// (via the synthetic "margin" category) keeps the live net worth current. Net
-// equity also rolls in through refreshLive, but this dedicated cron keeps the
-// positions tracker fresh on its own cadence. Internal alias declared in
-// wealthActions so cronJobs can reference it.
-crons.interval(
-  "margin-refresh",
-  { minutes: 25 },
-  internal.wealthActions.refreshMarginCron,
-);
+// ── Phase 16 · Wealth completion (rental revenue) ────────────────────────────
+//
+// Phase 17: the Binance `margin-refresh` cron (every 25 min) was REMOVED. Every
+// Binance margin/futures surface (sapi/fapi/dapi) returns HTTP 451 (geo-blocked)
+// from Convex's egress IP, so the cron only ever produced failures. Margin
+// positions are now MANUAL (add/edit/delete via the tracker tile) and roll into
+// net worth straight from the `marginPositions` table — no fetch needed. The
+// Binance SPOT auto-fetch was likewise disabled in refreshCrypto. NO cron hits a
+// geo-blocked Binance endpoint anymore. Crypto/gold/FX live refresh + the rental
+// poll below are UNTOUCHED.
 
 // Rental-revenue poll (Phase 16). Hourly server-side read of rental-manager-v2's
 // Convex dashboard:getStatsDrawerData → confirmed NET month revenue into the
