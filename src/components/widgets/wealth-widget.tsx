@@ -28,6 +28,9 @@ import {
   X,
   Pencil,
   Check,
+  TrendingUp,
+  TrendingDown,
+  Home,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -50,22 +53,29 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number];
 
-const CATEGORY_TONE: Record<Category, Tone> = {
+// Display categories = the 6 asset categories + the synthetic "margin" category
+// (Binance margin/futures NET EQUITY, which rolls into net worth — Phase 16).
+const DISPLAY_CATEGORIES = [...CATEGORIES, "margin"] as const;
+type DisplayCategory = (typeof DISPLAY_CATEGORIES)[number];
+
+const CATEGORY_TONE: Record<DisplayCategory, Tone> = {
   crypto: "brass",
   stocks: "emerald",
   gold: "amber",
   cash: "default",
   property: "default",
   inventory: "default",
+  margin: "rose",
 };
 
-const CATEGORY_LABEL: Record<Category, string> = {
+const CATEGORY_LABEL: Record<DisplayCategory, string> = {
   crypto: "Crypto",
   stocks: "Stocks / ETF",
   gold: "Gold",
   cash: "Cash",
   property: "Property",
   inventory: "Inventory",
+  margin: "Margin",
 };
 
 const RANGES = ["1W", "1M", "3M", "1Y"] as const;
@@ -143,12 +153,15 @@ function fmtDate(ts: number): string {
 export function WealthWidget() {
   const wealth = useQuery(api.wealth.getWealth);
   const prices = useQuery(api.wealth.getLivePrices);
+  // Phase 16: Binance margin/futures tracker + rental revenue cache.
+  const margin = useQuery(api.wealth.getMarginPositions);
+  const rental = useQuery(api.wealth.getRentalRevenue);
 
   const [hidden, setHidden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   // When set, the history overlay opens focused on a single category's series.
-  const [drillCat, setDrillCat] = useState<Category | null>(null);
+  const [drillCat, setDrillCat] = useState<DisplayCategory | null>(null);
   // Range + value/percent mode are shared between the compact card and the
   // history overlay (v1 syncs the card pills with the overlay).
   const [range, setRange] = useState<Range>("1M");
@@ -169,10 +182,33 @@ export function WealthWidget() {
     | Record<string, number>
     | null;
 
-  const openDrill = (cat: Category) => {
+  const openDrill = (cat: DisplayCategory) => {
     setDrillCat(cat);
     setHistoryOpen(true);
   };
+
+  // Phase 16: Coinbase vs Binance SPOT split for the Crypto card sub-breakdown.
+  // Each auto crypto asset row carries externalRef "coinbase" | "binance"
+  // (Phase 16 split); manual rows labelled "Coinbase"/"Binance" also classify.
+  const cryptoSplit = useMemo(() => {
+    const rows = (byCategory.crypto?.assets ?? []) as {
+      label: string;
+      externalRef?: string | null;
+      lastValueGBP?: number | null;
+    }[];
+    let coinbase = 0;
+    let binance = 0;
+    let other = 0;
+    for (const a of rows) {
+      const ref = (a.externalRef ?? "").toLowerCase();
+      const lbl = (a.label ?? "").toLowerCase();
+      const v = a.lastValueGBP ?? 0;
+      if (ref.includes("binance") || lbl.includes("binance")) binance += v;
+      else if (ref.includes("coinbase") || lbl.includes("coinbase")) coinbase += v;
+      else other += v;
+    }
+    return { coinbase, binance, other };
+  }, [byCategory]);
 
   const spark = useMemo(() => {
     const rows = cardHistory ?? [];
@@ -313,12 +349,17 @@ export function WealthWidget() {
             </Card>
 
             {/* Category breakdown — each tile: live GBP+USD value, per-category
-                sparkline, ±% delta badge, click-to-drill into the chart. */}
+                sparkline, ±% delta badge, click-to-drill into the chart. The
+                synthetic "margin" tile is shown only when margin equity exists. */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-              {CATEGORIES.map((cat) => {
+              {DISPLAY_CATEGORIES.map((cat) => {
                 const bucket = byCategory[cat];
                 // Prefer the fresh live per-category total over summed assets.
                 const val = liveByCat?.[cat] ?? bucket?.total ?? 0;
+                // Hide the margin tile entirely when there's no margin equity.
+                if (cat === "margin" && Math.abs(val) < 0.005 && !bucket) {
+                  return null;
+                }
                 const oldest = bucket?.assets?.reduce<number | null>(
                   (m: number | null, a: { lastPricedAt?: number | null }) =>
                     a.lastPricedAt == null
@@ -361,12 +402,40 @@ export function WealthWidget() {
                             <EditStocksButton asset={stocksAsset} />
                           )}
                         </span>
+                        {/* Phase 16: Coinbase vs Binance SPOT split — both
+                            exchanges as their own visible lines under Crypto. */}
+                        {cat === "crypto" &&
+                          (cryptoSplit.coinbase > 0 ||
+                            cryptoSplit.binance > 0) && (
+                            <span className="mt-0.5 flex flex-col gap-0.5 border-t border-rule-soft/30 pt-0.5">
+                              <span className="flex items-center justify-between">
+                                <span className="text-paper-dim">Coinbase</span>
+                                <span className="tabular-nums text-paper-dim">
+                                  {gbp(cryptoSplit.coinbase, hidden)}
+                                </span>
+                              </span>
+                              <span className="flex items-center justify-between">
+                                <span className="text-paper-dim">Binance</span>
+                                <span className="tabular-nums text-paper-dim">
+                                  {gbp(cryptoSplit.binance, hidden)}
+                                </span>
+                              </span>
+                            </span>
+                          )}
                       </span>
                     }
                   />
                 );
               })}
             </div>
+
+            {/* Phase 16: MARGIN POSITIONS tracker (Binance isolated/cross/USDⓂ/
+                COINⓂ). Net equity rolls into NW; this lists each position + total
+                uPnL + net equity. Real data only — empty account → empty-state. */}
+            <MarginTracker margin={margin} hidden={hidden} usdPerGbp={usdPerGbp} />
+
+            {/* Phase 16: RENTAL REVENUE tile (rental-manager-v2, NET, this month). */}
+            <RentalRevenueTile rental={rental} hidden={hidden} usdPerGbp={usdPerGbp} />
 
             {/* Live prices — tidy vertical list (v1 "Live · Markets"). */}
             {prices && prices.length > 0 && (
@@ -441,8 +510,8 @@ function HistorySheet({
   mode: "gbp" | "pct";
   setMode: (m: "gbp" | "pct") => void;
   /** When set, the overlay charts a single category's trajectory. */
-  focusCat: Category | null;
-  setFocusCat: (c: Category | null) => void;
+  focusCat: DisplayCategory | null;
+  setFocusCat: (c: DisplayCategory | null) => void;
   usdPerGbp: number | null;
 }) {
   const history = useQuery(api.wealth.getHistory, open ? { range } : "skip");
@@ -599,8 +668,9 @@ function HistorySheet({
                   Breakdown
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-                  {CATEGORIES.map((cat) => {
+                  {DISPLAY_CATEGORIES.map((cat) => {
                     const val = byCategory[cat]?.total ?? 0;
+                    if (cat === "margin" && Math.abs(val) < 0.005) return null;
                     const cs = categorySeries(history, cat);
                     return (
                       <StatTile
@@ -891,5 +961,265 @@ function EditStocksButton({
         <Check className="w-3 h-3" />
       </button>
     </span>
+  );
+}
+
+// ─── Phase 16 · Margin positions tracker ─────────────────────────────────────
+// Binance isolated/cross/USDⓂ/COINⓂ positions. Net equity rolls into net worth;
+// this section lists each position (symbol · side colored · size · entry→mark ·
+// leverage · uPnL £/$ colored · liq price) + total uPnL + total net equity.
+// REAL DATA ONLY — empty/zero account renders an explicit empty-state.
+
+type MarginData = {
+  positions: {
+    _id: string;
+    market: string;
+    symbol: string;
+    side: string;
+    size: number;
+    entryPrice: number;
+    markPrice: number;
+    leverage: number | null;
+    uPnlUsd: number;
+    uPnlGbp: number;
+    marginLevel: number | null;
+    liqPrice: number | null;
+    netEquityGbp: number;
+  }[];
+  count: number;
+  totalUPnlGbp: number;
+  totalUPnlUsd: number;
+  totalNetEquityGbp: number;
+  updatedAt: number | null;
+} | undefined;
+
+const MARKET_LABEL: Record<string, string> = {
+  isolated: "ISO",
+  cross: "CROSS",
+  usdm: "USDⓂ",
+  coinm: "COINⓂ",
+};
+
+function num(n: number, dp = 4): string {
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const d = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
+  return n.toLocaleString("en-US", { maximumFractionDigits: Math.min(d, dp) });
+}
+
+function MarginTracker({
+  margin,
+  hidden,
+  usdPerGbp,
+}: {
+  margin: MarginData;
+  hidden: boolean;
+  usdPerGbp: number | null;
+}) {
+  if (margin === undefined) return null; // loading — stay quiet
+  const { positions, totalUPnlGbp, totalUPnlUsd, totalNetEquityGbp, updatedAt } =
+    margin;
+  const upTotal = totalUPnlGbp >= 0;
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
+          {upTotal ? (
+            <TrendingUp className="w-3.5 h-3.5 text-emerald-soft" />
+          ) : (
+            <TrendingDown className="w-3.5 h-3.5 text-rose-soft" />
+          )}
+          Margin Positions
+        </p>
+        {updatedAt != null && <StaleBadge pricedAt={updatedAt} />}
+      </div>
+
+      {positions.length === 0 ? (
+        <EmptyState
+          title="No open margin positions"
+          hint="Binance isolated / cross / USDⓂ / COINⓂ — nothing open right now"
+        />
+      ) : (
+        <>
+          {/* totals header */}
+          <div className="grid grid-cols-2 gap-2.5 mb-3">
+            <StatTile
+              label="Total uPnL"
+              tone={upTotal ? "emerald" : "rose"}
+              value={`${upTotal ? "+" : ""}${gbp(totalUPnlGbp, hidden)}`}
+              sub={
+                usdPerGbp != null || !hidden ? (
+                  <span className="tabular-nums">
+                    {hidden
+                      ? "≈ $••••"
+                      : `≈ ${totalUPnlUsd >= 0 ? "+" : ""}$${Math.round(totalUPnlUsd).toLocaleString("en-US")}`}
+                  </span>
+                ) : undefined
+              }
+            />
+            <StatTile
+              label="Net Equity → NW"
+              tone="brass"
+              value={gbp(totalNetEquityGbp, hidden)}
+              sub={
+                usdPerGbp != null ? (
+                  <span className="tabular-nums">
+                    {usd(totalNetEquityGbp, usdPerGbp, hidden)}
+                  </span>
+                ) : undefined
+              }
+            />
+          </div>
+
+          {/* per-position rows */}
+          <div className="space-y-1.5">
+            {positions.map((p) => {
+              const up = p.uPnlGbp >= 0;
+              const long = p.side === "long";
+              return (
+                <div
+                  key={p._id}
+                  className="flex items-center justify-between gap-2 px-2.5 py-2 rounded border border-rule-soft/50"
+                >
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-1.5 text-[12px] text-paper truncate">
+                      <span className="font-mono">{p.symbol}</span>
+                      <span
+                        className={`font-mono text-[9px] uppercase tracking-wide ${
+                          long ? "text-emerald-soft" : "text-rose-soft"
+                        }`}
+                      >
+                        {p.side}
+                      </span>
+                      <span className="font-mono text-[8px] uppercase tracking-wide text-paper-faint px-1 rounded bg-ink-3/60">
+                        {MARKET_LABEL[p.market] ?? p.market}
+                      </span>
+                      {p.leverage ? (
+                        <span className="font-mono text-[8px] text-paper-faint">
+                          {p.leverage}×
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[9px] text-paper-faint flex items-center gap-2 flex-wrap">
+                      {p.size ? <span>size {num(p.size)}</span> : null}
+                      {p.entryPrice ? (
+                        <span>
+                          {num(p.entryPrice)} → {num(p.markPrice)}
+                        </span>
+                      ) : null}
+                      {p.liqPrice ? (
+                        <span className="text-rose-soft/80">
+                          liq {num(p.liqPrice)}
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p
+                      className={`font-mono text-[12px] tabular-nums ${
+                        up ? "text-emerald-soft" : "text-rose-soft"
+                      }`}
+                    >
+                      {up ? "+" : ""}
+                      {gbp(p.uPnlGbp, hidden)}
+                    </p>
+                    {!hidden && (
+                      <p className="font-mono text-[9px] tabular-nums text-paper-faint">
+                        {up ? "+" : ""}${Math.round(p.uPnlUsd).toLocaleString("en-US")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ─── Phase 16 · Rental revenue tile ──────────────────────────────────────────
+// rental-manager-v2 confirmed NET current-month revenue (polled server-side).
+// Shows £X NET + month label + progress vs the £target when present.
+
+function RentalRevenueTile({
+  rental,
+  hidden,
+  usdPerGbp,
+}: {
+  rental:
+    | {
+        monthRevenueGbp: number;
+        monthLabel: string;
+        targetGbp: number | null;
+        fetchedAt: number;
+      }
+    | null
+    | undefined;
+  hidden: boolean;
+  usdPerGbp: number | null;
+}) {
+  if (rental === undefined) return null; // loading
+  if (rental === null) {
+    return (
+      <Card>
+        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5 mb-2">
+          <Home className="w-3.5 h-3.5" /> Rental Revenue
+        </p>
+        <EmptyState title="Awaiting first poll" hint="rental-manager-v2 · confirmed NET" />
+      </Card>
+    );
+  }
+  // Pretty month label: "2026-06-01" → "June 2026".
+  let monthName = rental.monthLabel;
+  const d = new Date(rental.monthLabel);
+  if (!Number.isNaN(d.getTime())) {
+    monthName = d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  }
+  const target = rental.targetGbp;
+  const pctTarget =
+    target && target > 0
+      ? Math.min(100, Math.round((rental.monthRevenueGbp / target) * 100))
+      : null;
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
+          <Home className="w-3.5 h-3.5" /> Rental Revenue
+        </p>
+        <StaleBadge pricedAt={rental.fetchedAt} />
+      </div>
+      <div className="flex items-end justify-between">
+        <div>
+          <p className="font-display italic font-light text-[30px] leading-none tabular-nums text-paper">
+            {gbp(rental.monthRevenueGbp, hidden)}
+          </p>
+          {usdPerGbp != null && (
+            <p className="mt-0.5 font-mono text-[11px] tabular-nums text-paper-faint">
+              {usd(rental.monthRevenueGbp, usdPerGbp, hidden)}
+            </p>
+          )}
+          <p className="mt-1 font-mono text-[10px] text-paper-faint">
+            this month (confirmed · NET) · {monthName}
+          </p>
+        </div>
+        {pctTarget != null && (
+          <Badge tone={pctTarget >= 100 ? "emerald" : "brass"}>
+            {pctTarget}% of {gbp(target!, hidden)}
+          </Badge>
+        )}
+      </div>
+      {pctTarget != null && (
+        <div className="mt-2 h-1.5 w-full rounded-full bg-ink-3/60 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-brass/70"
+            style={{ width: `${pctTarget}%` }}
+          />
+        </div>
+      )}
+    </Card>
   );
 }

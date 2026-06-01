@@ -38,6 +38,9 @@ const SECRET = {
   binanceSecret: { service: "binance", keyName: "BINANCE_API_SECRET" },
   // OPTIONAL — degrade gracefully (manual value) if absent. See output doc.
   finnhub: { service: "finnhub", keyName: "FINNHUB_API_KEY" }, // stock quotes
+  // Phase 16 — rental-manager-v2 Convex URL. NEVER hardcoded (dev deployment;
+  // URL can change). Service `convex`, keyName NEXT_PUBLIC_CONVEX_URL_RMV2.
+  rmv2ConvexUrl: { service: "convex", keyName: "NEXT_PUBLIC_CONVEX_URL_RMV2" },
 } as const;
 
 const COINGECKO_IDS: Record<string, string> = {
@@ -197,6 +200,303 @@ async function binanceBalances(
   }
 }
 
+// ─── Phase 16 · Binance MARGIN/FUTURES (READ-ONLY) ─────────────────────────────
+//
+// Generic HMAC-SHA256 signed GET against any Binance host (spot api / sapi margin
+// / fapi USDⓂ futures / dapi COINⓂ futures). Mirrors aria/lib/finance.js's
+// binanceRequest. READ-ONLY: only account/position-read endpoints are ever called
+// — never order/withdraw/transfer. Returns parsed JSON, or null on failure (the
+// caller reports which surface failed; never fabricates).
+async function binanceSigned(
+  host: string,
+  path: string,
+  apiKey: string,
+  apiSecret: string,
+  extraParams = "",
+  diag?: { note?: string },
+): Promise<any | null> {
+  try {
+    const ts = Date.now();
+    const qs = `${extraParams ? extraParams + "&" : ""}timestamp=${ts}&recvWindow=5000`;
+    const sig = crypto.createHmac("sha256", apiSecret).update(qs).digest("hex");
+    const res = await fetch(`https://${host}${path}?${qs}&signature=${sig}`, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const snippet = `HTTP ${res.status} ${body.slice(0, 140)}`;
+      console.warn(`wealth: binance ${host}${path} -> ${snippet}`);
+      if (diag) diag.note = snippet;
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    const snippet = `network ${String(e).slice(0, 120)}`;
+    console.warn(`wealth: binance ${host}${path} failed`, e);
+    if (diag) diag.note = snippet;
+    return null;
+  }
+}
+
+type MarginPos = {
+  market: string;
+  symbol: string;
+  base?: string;
+  quote?: string;
+  side: string;
+  size: number;
+  entryPrice: number;
+  markPrice: number;
+  leverage?: number;
+  uPnlUsd: number;
+  uPnlGbp: number;
+  marginLevel?: number;
+  liqPrice?: number;
+  netEquityGbp: number;
+};
+
+// Fetch ALL Binance leveraged surfaces. `usdToGbp` converts USD-denominated PnL
+// and net equity to GBP. `report` accumulates per-surface failure notes so the
+// caller can say exactly which surface (if any) the API rejected.
+async function binanceMarginPositions(
+  apiKey: string,
+  apiSecret: string,
+  usdToGbp: number,
+  report: { errors: string[] },
+): Promise<MarginPos[]> {
+  const out: MarginPos[] = [];
+  const gbp = (usd: number) => usd * usdToGbp;
+
+  // 1) ISOLATED MARGIN — /sapi/v1/margin/isolated/account. Each pair is a short:
+  //    borrow base, sell → profit when price falls. Entry from myTrades (sells).
+  const isoDiag: { note?: string } = {};
+  const iso = await binanceSigned(
+    "api.binance.com",
+    "/sapi/v1/margin/isolated/account",
+    apiKey,
+    apiSecret,
+    "",
+    isoDiag,
+  );
+  if (iso === null)
+    report.errors.push(`isolated-margin: ${isoDiag.note ?? "fetch failed"}`);
+  else {
+    for (const pair of iso.assets ?? []) {
+      const base = pair.baseAsset ?? {};
+      const quote = pair.quoteAsset ?? {};
+      const baseBorrowed = parseFloat(base.borrowed ?? "0");
+      const baseInterest = parseFloat(base.interest ?? "0");
+      const quoteNet = parseFloat(quote.netAsset ?? "0");
+      const owed = baseBorrowed + baseInterest;
+      if (Math.abs(quoteNet) <= 0.01 && owed <= 0.01) continue;
+      const markPrice = parseFloat(pair.indexPrice ?? "0");
+      // Average entry from sell trades matched to the borrowed qty.
+      let avgEntry = 0;
+      const trades = await binanceSigned(
+        "api.binance.com",
+        "/sapi/v1/margin/myTrades",
+        apiKey,
+        apiSecret,
+        `symbol=${pair.symbol}&isIsolated=TRUE&limit=50`,
+      );
+      if (Array.isArray(trades)) {
+        let need = baseBorrowed;
+        let val = 0;
+        let matched = 0;
+        const sells = trades.filter((t: any) => !t.isBuyer).reverse();
+        for (const t of sells) {
+          if (need <= 0) break;
+          const qty = Math.min(parseFloat(t.qty), need);
+          val += qty * parseFloat(t.price);
+          matched += qty;
+          need -= qty;
+        }
+        if (matched > 0) avgEntry = val / matched;
+      }
+      // SHORT PnL (USD-ish, quote currency): borrowed × (entry − mark) − interest×mark
+      const pnlQuote =
+        baseBorrowed * (avgEntry - markPrice) - baseInterest * markPrice;
+      // quote is typically USDT/USDC ≈ USD. Net equity = quote net asset (USD).
+      const netEquityUsd = quoteNet;
+      out.push({
+        market: "isolated",
+        symbol: pair.symbol,
+        base: base.asset,
+        quote: quote.asset,
+        side: "short",
+        size: baseBorrowed,
+        entryPrice: avgEntry,
+        markPrice,
+        marginLevel: parseFloat(pair.marginLevel ?? "0") || undefined,
+        liqPrice: parseFloat(pair.liquidatePrice ?? "0") || undefined,
+        uPnlUsd: pnlQuote,
+        uPnlGbp: gbp(pnlQuote),
+        netEquityGbp: gbp(netEquityUsd),
+      });
+    }
+  }
+
+  // 2) CROSS MARGIN — /sapi/v1/margin/account. Net equity = totalNetAssetOfBtc×BTC.
+  //    Surfaced as a single aggregate "cross equity" line (no per-symbol entry).
+  const crossDiag: { note?: string } = {};
+  const cross = await binanceSigned(
+    "api.binance.com",
+    "/sapi/v1/margin/account",
+    apiKey,
+    apiSecret,
+    "",
+    crossDiag,
+  );
+  if (cross === null)
+    report.errors.push(`cross-margin: ${crossDiag.note ?? "fetch failed"}`);
+  else {
+    const netBtc = parseFloat(cross.totalNetAssetOfBtc ?? "0");
+    if (Math.abs(netBtc) > 1e-6) {
+      // value BTC in USD via a public ticker (no key, READ-ONLY)
+      const tick = await safeJson(
+        "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+      );
+      const btcUsd = tick ? parseFloat(tick.price ?? "0") : 0;
+      const netUsd = netBtc * btcUsd;
+      out.push({
+        market: "cross",
+        symbol: "CROSS (net equity)",
+        side: netBtc >= 0 ? "long" : "short",
+        size: netBtc,
+        entryPrice: 0,
+        markPrice: btcUsd,
+        marginLevel: parseFloat(cross.marginLevel ?? "0") || undefined,
+        uPnlUsd: 0,
+        uPnlGbp: 0,
+        netEquityGbp: gbp(netUsd),
+      });
+    }
+  }
+
+  // 3) USDⓂ FUTURES — /fapi/v2/account (+ positionRisk for entry/mark/liq).
+  const usdmDiag: { note?: string } = {};
+  const usdmAcct = await binanceSigned(
+    "fapi.binance.com",
+    "/fapi/v2/account",
+    apiKey,
+    apiSecret,
+    "",
+    usdmDiag,
+  );
+  if (usdmAcct === null)
+    report.errors.push(`usdm-futures: ${usdmDiag.note ?? "account fetch failed"}`);
+  else {
+    const walletUsd = parseFloat(usdmAcct.totalWalletBalance ?? "0");
+    const uPnlUsd = parseFloat(usdmAcct.totalUnrealizedProfit ?? "0");
+    const positions = (usdmAcct.positions ?? []).filter(
+      (p: any) => Math.abs(parseFloat(p.positionAmt ?? "0")) > 0,
+    );
+    // Net equity of the whole USDⓂ wallet rolls into net worth once (margin
+    // balance ± uPnL). Per-position rows carry their own uPnL for the tracker.
+    if (positions.length === 0 && walletUsd + uPnlUsd !== 0) {
+      out.push({
+        market: "usdm",
+        symbol: "USDⓂ (wallet)",
+        side: "long",
+        size: 0,
+        entryPrice: 0,
+        markPrice: 0,
+        uPnlUsd,
+        uPnlGbp: gbp(uPnlUsd),
+        netEquityGbp: gbp(walletUsd + uPnlUsd),
+      });
+    } else {
+      const risk = await binanceSigned(
+        "fapi.binance.com",
+        "/fapi/v2/positionRisk",
+        apiKey,
+        apiSecret,
+      );
+      const riskBySym: Record<string, any> = {};
+      if (Array.isArray(risk)) for (const r of risk) riskBySym[r.symbol] = r;
+      let rolled = false;
+      for (const p of positions) {
+        const amt = parseFloat(p.positionAmt ?? "0");
+        const pnl = parseFloat(p.unrealizedProfit ?? "0");
+        const r = riskBySym[p.symbol] ?? {};
+        // Roll the wallet net equity in only ONCE (on the first position).
+        const netEq = !rolled ? gbp(walletUsd + uPnlUsd) : 0;
+        rolled = true;
+        out.push({
+          market: "usdm",
+          symbol: p.symbol,
+          side: amt >= 0 ? "long" : "short",
+          size: Math.abs(amt),
+          entryPrice: parseFloat(p.entryPrice ?? r.entryPrice ?? "0"),
+          markPrice: parseFloat(r.markPrice ?? "0"),
+          leverage: parseFloat(p.leverage ?? r.leverage ?? "0") || undefined,
+          liqPrice: parseFloat(r.liquidationPrice ?? "0") || undefined,
+          uPnlUsd: pnl,
+          uPnlGbp: gbp(pnl),
+          netEquityGbp: netEq,
+        });
+      }
+    }
+  }
+
+  // 4) COINⓂ FUTURES — /dapi/v1/account (+ positionRisk). Coin-margined; wallet
+  //    balances are per-coin. Roll the marginBalance (in BTC etc.) → USD → GBP.
+  const coinmDiag: { note?: string } = {};
+  const coinmAcct = await binanceSigned(
+    "dapi.binance.com",
+    "/dapi/v1/account",
+    apiKey,
+    apiSecret,
+    "",
+    coinmDiag,
+  );
+  if (coinmAcct === null)
+    report.errors.push(
+      `coinm-futures: ${coinmDiag.note ?? "account fetch failed"}`,
+    );
+  else {
+    const positions = (coinmAcct.positions ?? []).filter(
+      (p: any) => Math.abs(parseFloat(p.positionAmt ?? "0")) > 0,
+    );
+    if (positions.length > 0) {
+      const risk = await binanceSigned(
+        "dapi.binance.com",
+        "/dapi/v1/positionRisk",
+        apiKey,
+        apiSecret,
+      );
+      const riskBySym: Record<string, any> = {};
+      if (Array.isArray(risk)) for (const r of risk) riskBySym[r.symbol] = r;
+      // Value coin-margined uPnL: unrealizedProfit is in the contract's base coin.
+      for (const p of positions) {
+        const amt = parseFloat(p.positionAmt ?? "0");
+        const pnlCoin = parseFloat(p.unrealizedProfit ?? "0");
+        const r = riskBySym[p.symbol] ?? {};
+        const markPrice = parseFloat(r.markPrice ?? "0");
+        // pnl in coin × mark(USD/coin) ≈ USD
+        const pnlUsd = pnlCoin * markPrice;
+        out.push({
+          market: "coinm",
+          symbol: p.symbol,
+          side: amt >= 0 ? "long" : "short",
+          size: Math.abs(amt),
+          entryPrice: parseFloat(p.entryPrice ?? r.entryPrice ?? "0"),
+          markPrice,
+          leverage: parseFloat(p.leverage ?? r.leverage ?? "0") || undefined,
+          liqPrice: parseFloat(r.liquidationPrice ?? "0") || undefined,
+          uPnlUsd: pnlUsd,
+          uPnlGbp: gbp(pnlUsd),
+          // Coin-margined net equity left at the position's own uPnL value in GBP
+          // (wallet coin balance is the collateral; uPnL is the moving part).
+          netEquityGbp: gbp(pnlUsd),
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
 // ─── PUBLIC ACTIONS ──────────────────────────────────────────────────────────
 
 /**
@@ -207,13 +507,21 @@ export const refreshCrypto = action({
   args: {},
   handler: async (ctx): Promise<{ updated: number; errors: string[] }> => {
     const errors: string[] = [];
-    const balances: Record<string, number> = {};
+    // Phase 16: keep Coinbase and Binance SPOT in SEPARATE per-exchange maps so
+    // each surfaces as its OWN visible asset line (externalRef "coinbase" /
+    // "binance"), instead of the old silent "coinbase+binance" merge.
+    const byExchange: Record<string, Record<string, number>> = {
+      coinbase: {},
+      binance: {},
+    };
 
     const cbKey = await getSecret(ctx, SECRET.coinbaseKey);
     const cbSecret = await getSecret(ctx, SECRET.coinbaseSecret);
     if (cbKey && cbSecret) {
       const cb = await coinbaseBalances(cbKey, cbSecret);
-      if (cb) for (const [k, val] of Object.entries(cb)) balances[k] = (balances[k] ?? 0) + val;
+      if (cb)
+        for (const [k, val] of Object.entries(cb))
+          byExchange.coinbase[k] = (byExchange.coinbase[k] ?? 0) + val;
       else errors.push("coinbase: balance fetch failed (key/permission?)");
     } else errors.push("coinbase: API key/secret missing in vault");
 
@@ -221,25 +529,39 @@ export const refreshCrypto = action({
     const bnSecret = await getSecret(ctx, SECRET.binanceSecret);
     if (bnKey && bnSecret) {
       const bn = await binanceBalances(bnKey, bnSecret);
-      if (bn) for (const [k, val] of Object.entries(bn)) balances[k] = (balances[k] ?? 0) + val;
+      if (bn)
+        for (const [k, val] of Object.entries(bn))
+          byExchange.binance[k] = (byExchange.binance[k] ?? 0) + val;
       else errors.push("binance: balance fetch failed (key/permission?)");
     } else errors.push("binance: API key/secret missing in vault");
 
-    const symbols = Object.keys(balances);
-    if (symbols.length === 0) {
-      return { updated: 0, errors: errors.length ? errors : ["no balances returned"] };
+    // Union of symbols across both exchanges — one CoinGecko price fetch.
+    const allSymbols = Array.from(
+      new Set([
+        ...Object.keys(byExchange.coinbase),
+        ...Object.keys(byExchange.binance),
+      ]),
+    );
+    if (allSymbols.length === 0) {
+      return {
+        updated: 0,
+        errors: errors.length ? errors : ["no balances returned"],
+      };
     }
 
-    const prices = await coingeckoGBP(symbols);
+    const prices = await coingeckoGBP(allSymbols);
     const now = Date.now();
     let updated = 0;
-    for (const sym of symbols) {
-      const amt = balances[sym];
+
+    // Resolve a GBP unit price per symbol (CoinGecko, FX fallback for stables).
+    const gbpPerCache: Record<string, number | undefined> = {};
+    for (const sym of allSymbols) {
       let gbpPer = prices[sym.toUpperCase()];
       if (gbpPer === undefined) {
         const fx = await fxToGBP(sym === "USDC" || sym === "USDT" ? "USD" : sym);
         if (fx !== null) gbpPer = fx;
       }
+      gbpPerCache[sym] = gbpPer;
       if (gbpPer !== undefined) {
         await ctx.runMutation(internal.wealth._writePrice, {
           symbol: sym.toUpperCase(),
@@ -247,18 +569,29 @@ export const refreshCrypto = action({
           ts: now,
         });
       }
-      const valueGBP = gbpPer !== undefined ? amt * gbpPer : undefined;
-      await ctx.runMutation(internal.wealth._upsertAutoAsset, {
-        category: "crypto",
-        label: sym.toUpperCase(),
-        currency: sym.toUpperCase(),
-        quantity: amt,
-        externalRef: "coinbase+binance",
-        newValueGBP: valueGBP,
-        pricedAt: valueGBP !== undefined ? now : undefined,
-      });
-      if (valueGBP !== undefined) updated++;
-      else errors.push(`price missing for ${sym} (kept previous value)`);
+    }
+
+    // Upsert each holding as a SEPARATE per-exchange asset line so Coinbase AND
+    // Binance both appear distinctly (label suffixed with the exchange).
+    for (const exchange of ["coinbase", "binance"] as const) {
+      const bal = byExchange[exchange];
+      const tag = exchange === "coinbase" ? "Coinbase" : "Binance";
+      for (const sym of Object.keys(bal)) {
+        const amt = bal[sym];
+        const gbpPer = gbpPerCache[sym];
+        const valueGBP = gbpPer !== undefined ? amt * gbpPer : undefined;
+        await ctx.runMutation(internal.wealth._upsertAutoAsset, {
+          category: "crypto",
+          label: `${sym.toUpperCase()} (${tag})`,
+          currency: sym.toUpperCase(),
+          quantity: amt,
+          externalRef: exchange,
+          newValueGBP: valueGBP,
+          pricedAt: valueGBP !== undefined ? now : undefined,
+        });
+        if (valueGBP !== undefined) updated++;
+        else errors.push(`price missing for ${sym} (${tag}) (kept previous value)`);
+      }
     }
     return { updated, errors };
   },
@@ -386,6 +719,146 @@ export const refreshAll = action({
 });
 
 /**
+ * refreshMargin — READ-ONLY Binance margin/futures tracker (Phase 16).
+ * Pulls ALL leveraged surfaces — isolated margin + cross margin + USDⓂ futures
+ * + COINⓂ futures — signs each with HMAC-SHA256 (ported from aria/lib/finance.js),
+ * converts USD-denominated PnL/equity → GBP, and REPLACES the marginPositions
+ * table wholesale (so closed positions never linger). Net equity rolls into net
+ * worth via the synthetic "margin" category in _recordLive/_recordSnapshot/getWealth.
+ *
+ * NEVER fabricates: an empty/zero account → empty table → UI empty-state. Each
+ * surface that the API rejects is reported by name (no faking).
+ */
+export const refreshMargin = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    count: number;
+    totalUPnlGbp: number;
+    netEquityGbp: number;
+    errors: string[];
+  }> => {
+    const errors: string[] = [];
+    const bnKey = await getSecret(ctx, SECRET.binanceKey);
+    const bnSecret = await getSecret(ctx, SECRET.binanceSecret);
+    if (!bnKey || !bnSecret) {
+      errors.push("binance: API key/secret missing in vault");
+      return { count: 0, totalUPnlGbp: 0, netEquityGbp: 0, errors };
+    }
+    const usdToGbp = await fxToGBP("USD");
+    if (usdToGbp === null) {
+      errors.push("FX USD→GBP unavailable — cannot value margin (skipped)");
+      return { count: 0, totalUPnlGbp: 0, netEquityGbp: 0, errors };
+    }
+    const report = { errors };
+    const positions = await binanceMarginPositions(
+      bnKey,
+      bnSecret,
+      usdToGbp,
+      report,
+    );
+    await ctx.runMutation(internal.wealth._replaceMarginPositions, {
+      exchange: "binance",
+      positions,
+    });
+    let totalUPnlGbp = 0;
+    let netEquityGbp = 0;
+    for (const p of positions) {
+      totalUPnlGbp += p.uPnlGbp;
+      netEquityGbp += p.netEquityGbp;
+    }
+    return { count: positions.length, totalUPnlGbp, netEquityGbp, errors };
+  },
+});
+
+/** Internal cron alias for refreshMargin (cronJobs require internal refs). */
+export const refreshMarginCron = internalAction({
+  args: {},
+  handler: async (ctx): Promise<void> => {
+    try {
+      await ctx.runAction(api.wealthActions.refreshMargin, {});
+    } catch (e) {
+      console.warn("wealth.refreshMarginCron failed", e);
+    }
+  },
+});
+
+/**
+ * pollRentalRevenue — server-side poll of rental-manager-v2's Convex
+ * `dashboard:getStatsDrawerData {accountSlug:null}` → confirmed NET current-month
+ * revenue (Phase 16). The RMv2 Convex URL is read from the vault (service
+ * `convex`, key NEXT_PUBLIC_CONVEX_URL_RMV2) — NEVER hardcoded (dev deployment,
+ * URL can change). Does NOT modify rental-manager-v2 (read-only HTTP query).
+ * Resilient: a failed fetch keeps the previously cached figure (no clobber).
+ */
+export const pollRentalRevenue = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    monthRevenueGbp: number | null;
+    monthLabel: string | null;
+    targetGbp: number | null;
+    error?: string;
+  }> => {
+    const url = await getSecret(ctx, SECRET.rmv2ConvexUrl);
+    if (!url) {
+      return {
+        monthRevenueGbp: null,
+        monthLabel: null,
+        targetGbp: null,
+        error: "rmv2 convex url missing in vault (convex/NEXT_PUBLIC_CONVEX_URL_RMV2)",
+      };
+    }
+    const j = await safeJson(`${url.replace(/\/$/, "")}/api/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "dashboard:getStatsDrawerData",
+        args: { accountSlug: null },
+        format: "json",
+      }),
+    });
+    const v = j?.status === "success" ? j.value : null;
+    const monthRevenue = v?.confirmed?.month_revenue;
+    const monthLabel = v?.confirmed?.month_label;
+    const target = v?.monthly?.target_gbp;
+    if (typeof monthRevenue !== "number") {
+      return {
+        monthRevenueGbp: null,
+        monthLabel: null,
+        targetGbp: null,
+        error: "rmv2 query returned no confirmed.month_revenue (kept cache)",
+      };
+    }
+    await ctx.runMutation(internal.wealth._setRentalRevenue, {
+      source: "rmv2",
+      monthRevenueGbp: monthRevenue,
+      monthLabel: typeof monthLabel === "string" ? monthLabel : "",
+      targetGbp: typeof target === "number" ? target : undefined,
+    });
+    return {
+      monthRevenueGbp: monthRevenue,
+      monthLabel: typeof monthLabel === "string" ? monthLabel : null,
+      targetGbp: typeof target === "number" ? target : null,
+    };
+  },
+});
+
+/** Internal cron alias for pollRentalRevenue (cronJobs require internal refs). */
+export const pollRentalRevenueCron = internalAction({
+  args: {},
+  handler: async (ctx): Promise<void> => {
+    try {
+      await ctx.runAction(api.wealthActions.pollRentalRevenue, {});
+    } catch (e) {
+      console.warn("wealth.pollRentalRevenueCron failed", e);
+    }
+  },
+});
+
+/**
  * snapshot — DAILY cron target. Refreshes live prices best-effort, then records
  * one netWorthSnapshots row. Refresh failures don't block the snapshot (we
  * snapshot whatever last-known values exist → cron never crashes).
@@ -397,6 +870,13 @@ export const snapshot = internalAction({
       await ctx.runAction(api.wealthActions.refreshAll, {});
     } catch (e) {
       console.warn("wealth.snapshot: refresh failed, snapshotting cached values", e);
+    }
+    // Phase 16: refresh margin so the DAILY snapshot's "margin" category matches
+    // the live total (best-effort — never blocks the snapshot).
+    try {
+      await ctx.runAction(api.wealthActions.refreshMargin, {});
+    } catch (e) {
+      console.warn("wealth.snapshot: margin refresh failed, using cached", e);
     }
     // Persist GBP→USD onto the daily snapshot too (best-effort; additive).
     let usdPerGbp: number | null = null;
@@ -448,6 +928,14 @@ export const refreshLive = internalAction({
       await ctx.runAction(api.wealthActions.refreshAll, {});
     } catch (e) {
       console.warn("wealth.refreshLive: refresh failed, using cached values", e);
+    }
+    // Phase 16: refresh Binance margin/futures so the live total + the synthetic
+    // "margin" category reflect current net equity (resilient — keeps last table
+    // contents on failure since _replaceMarginPositions only runs on success).
+    try {
+      await ctx.runAction(api.wealthActions.refreshMargin, {});
+    } catch (e) {
+      console.warn("wealth.refreshLive: margin refresh failed, using cached", e);
     }
     let usdPerGbp: number | null = null;
     try {

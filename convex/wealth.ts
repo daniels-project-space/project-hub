@@ -138,7 +138,93 @@ export const _writePrice = internalMutation({
   },
 });
 
+// ─── Phase 16 · MARGIN POSITIONS (Binance isolated/cross/USDⓂ/COINⓂ) ──────────
+// Net equity of all margin/futures positions, rolled into the headline net worth
+// as a synthetic "margin" category (v1 behaviour). Helper used by the snapshot +
+// live-doc mutations and the getWealth query so live total AND history agree.
+async function marginNetEquityGbp(ctx: any): Promise<number> {
+  const rows = await ctx.db.query("marginPositions").collect();
+  let sum = 0;
+  for (const p of rows) sum += p.netEquityGbp ?? 0;
+  return sum;
+}
+
+// Wholesale replace all margin positions for an exchange (delete-then-insert) so
+// closed positions never linger. Called by the READ-ONLY refreshMargin action.
+export const _replaceMarginPositions = internalMutation({
+  args: {
+    exchange: v.string(),
+    positions: v.array(
+      v.object({
+        market: v.string(),
+        symbol: v.string(),
+        base: v.optional(v.string()),
+        quote: v.optional(v.string()),
+        side: v.string(),
+        size: v.number(),
+        entryPrice: v.number(),
+        markPrice: v.number(),
+        leverage: v.optional(v.number()),
+        uPnlUsd: v.number(),
+        uPnlGbp: v.number(),
+        marginLevel: v.optional(v.number()),
+        liqPrice: v.optional(v.number()),
+        netEquityGbp: v.number(),
+      }),
+    ),
+  },
+  handler: async (ctx, { exchange, positions }) => {
+    const existing = await ctx.db
+      .query("marginPositions")
+      .withIndex("by_exchange", (q) => q.eq("exchange", exchange))
+      .collect();
+    for (const r of existing) await ctx.db.delete(r._id);
+    const now = Date.now();
+    for (const p of positions) {
+      await ctx.db.insert("marginPositions", {
+        exchange,
+        source: "auto",
+        updatedAt: now,
+        ...p,
+      });
+    }
+    return { count: positions.length };
+  },
+});
+
+// Latest cached rental revenue figure → singleton per source.
+export const _setRentalRevenue = internalMutation({
+  args: {
+    source: v.string(),
+    monthRevenueGbp: v.number(),
+    monthLabel: v.string(),
+    targetGbp: v.optional(v.number()),
+  },
+  handler: async (ctx, { source, monthRevenueGbp, monthLabel, targetGbp }) => {
+    assertFinite("monthRevenueGbp", monthRevenueGbp);
+    const existing = await ctx.db
+      .query("rentalRevenue")
+      .withIndex("by_source", (q) => q.eq("source", source))
+      .first();
+    const doc = {
+      source,
+      monthRevenueGbp,
+      monthLabel,
+      fetchedAt: Date.now(),
+      ...(targetGbp !== undefined ? { targetGbp } : {}),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, doc);
+    } else {
+      await ctx.db.insert("rentalRevenue", doc);
+    }
+    return { monthRevenueGbp, monthLabel };
+  },
+});
+
 // Record one net-worth snapshot from whatever last-known values exist.
+// Phase 16: margin net equity rolls in as a synthetic "margin" category so the
+// daily history reflects it exactly like the live total.
 export const _recordSnapshot = internalMutation({
   args: { usdPerGbp: v.optional(v.number()) },
   handler: async (ctx, { usdPerGbp }) => {
@@ -149,6 +235,11 @@ export const _recordSnapshot = internalMutation({
       const val = a.lastValueGBP ?? 0;
       byCategory[a.category] = (byCategory[a.category] ?? 0) + val;
       total += val;
+    }
+    const marginGbp = await marginNetEquityGbp(ctx);
+    if (marginGbp !== 0) {
+      byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
+      total += marginGbp;
     }
     await ctx.db.insert("netWorthSnapshots", {
       ts: Date.now(),
@@ -198,6 +289,13 @@ export const _recordLive = internalMutation({
       const val = a.lastValueGBP ?? 0;
       byCategory[a.category] = (byCategory[a.category] ?? 0) + val;
       total += val;
+    }
+    // Phase 16: roll Binance margin net equity into the live total + a synthetic
+    // "margin" category (matches the daily snapshot + getWealth).
+    const marginGbp = await marginNetEquityGbp(ctx);
+    if (marginGbp !== 0) {
+      byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
+      total += marginGbp;
     }
     const ts = Date.now();
     const existing = await ctx.db
@@ -269,6 +367,39 @@ export const getWealth = query({
             : Math.min(oldestPricedAt, a.lastPricedAt);
       }
     }
+    // Phase 16: roll Binance margin NET EQUITY into the headline as a synthetic
+    // "margin" category (v1 behaviour) so the breakdown total == live/snapshot.
+    const marginRows = await ctx.db.query("marginPositions").collect();
+    if (marginRows.length > 0) {
+      let marginEquity = 0;
+      let marginOldest: number | null = null;
+      const tiles: any[] = [];
+      for (const p of marginRows) {
+        marginEquity += p.netEquityGbp ?? 0;
+        marginOldest =
+          marginOldest === null
+            ? p.updatedAt
+            : Math.min(marginOldest, p.updatedAt);
+        tiles.push({
+          _id: p._id,
+          label: p.symbol,
+          category: "margin",
+          source: p.source,
+          currency: "GBP",
+          externalRef: `${p.exchange}:${p.market}`,
+          lastValueGBP: p.netEquityGbp ?? 0,
+          lastPricedAt: p.updatedAt,
+        });
+      }
+      byCategory["margin"] = { total: marginEquity, assets: tiles };
+      total += marginEquity;
+      if (marginOldest != null) {
+        oldestPricedAt =
+          oldestPricedAt === null
+            ? marginOldest
+            : Math.min(oldestPricedAt, marginOldest);
+      }
+    }
     // Additive: persisted GBP→USD for dual-currency display.
     const fx = await ctx.db
       .query("fxRates")
@@ -311,6 +442,77 @@ export const getLivePrices = query({
     return rows
       .map((r) => ({ symbol: r.symbol, gbp: r.gbp, ts: r.ts }))
       .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  },
+});
+
+/**
+ * getMarginPositions — Binance margin/futures positions tracker (Phase 16).
+ * Returns the position list + aggregate total unrealized PnL (£/$) and total net
+ * equity (GBP, the figure rolled into net worth). Empty array → UI empty-state.
+ */
+export const getMarginPositions = query({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("marginPositions").collect();
+    let totalUPnlGbp = 0;
+    let totalUPnlUsd = 0;
+    let totalNetEquityGbp = 0;
+    let updatedAt: number | null = null;
+    const positions = rows
+      .map((p) => {
+        totalUPnlGbp += p.uPnlGbp ?? 0;
+        totalUPnlUsd += p.uPnlUsd ?? 0;
+        totalNetEquityGbp += p.netEquityGbp ?? 0;
+        updatedAt =
+          updatedAt === null ? p.updatedAt : Math.max(updatedAt, p.updatedAt);
+        return {
+          _id: p._id,
+          exchange: p.exchange,
+          market: p.market,
+          symbol: p.symbol,
+          side: p.side,
+          size: p.size,
+          entryPrice: p.entryPrice,
+          markPrice: p.markPrice,
+          leverage: p.leverage ?? null,
+          uPnlUsd: p.uPnlUsd,
+          uPnlGbp: p.uPnlGbp,
+          marginLevel: p.marginLevel ?? null,
+          liqPrice: p.liqPrice ?? null,
+          netEquityGbp: p.netEquityGbp,
+        };
+      })
+      .sort((a, b) => Math.abs(b.netEquityGbp) - Math.abs(a.netEquityGbp));
+    return {
+      positions,
+      count: positions.length,
+      totalUPnlGbp,
+      totalUPnlUsd,
+      totalNetEquityGbp,
+      updatedAt,
+    };
+  },
+});
+
+/**
+ * getRentalRevenue — cached rental-manager-v2 monthly NET confirmed revenue
+ * (Phase 16). Returns null until the first poll populates the cache doc.
+ */
+export const getRentalRevenue = query({
+  args: {},
+  handler: async (ctx) => {
+    const row = await ctx.db
+      .query("rentalRevenue")
+      .withIndex("by_source", (q) => q.eq("source", "rmv2"))
+      .first();
+    return row
+      ? {
+          monthRevenueGbp: row.monthRevenueGbp,
+          monthLabel: row.monthLabel,
+          targetGbp: row.targetGbp ?? null,
+          fetchedAt: row.fetchedAt,
+        }
+      : null;
   },
 });
 

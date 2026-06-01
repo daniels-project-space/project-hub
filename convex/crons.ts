@@ -45,4 +45,27 @@ crons.interval(
   internal.huntActions.enqueueDueHunts,
 );
 
+// ── Phase 16 · Wealth completion (Binance margin + rental revenue) ───────────
+
+// Binance margin/futures refresh (Phase 16). Every 25 min re-pulls the READ-ONLY
+// isolated/cross/USDⓂ/COINⓂ surfaces, REPLACES the marginPositions table, and
+// (via the synthetic "margin" category) keeps the live net worth current. Net
+// equity also rolls in through refreshLive, but this dedicated cron keeps the
+// positions tracker fresh on its own cadence. Internal alias declared in
+// wealthActions so cronJobs can reference it.
+crons.interval(
+  "margin-refresh",
+  { minutes: 25 },
+  internal.wealthActions.refreshMarginCron,
+);
+
+// Rental-revenue poll (Phase 16). Hourly server-side read of rental-manager-v2's
+// Convex dashboard:getStatsDrawerData → confirmed NET month revenue into the
+// rentalRevenue cache doc. RMv2 Convex URL read from the vault (NOT hardcoded).
+crons.interval(
+  "rental-revenue-poll",
+  { hours: 1 },
+  internal.wealthActions.pollRentalRevenueCron,
+);
+
 export default crons;

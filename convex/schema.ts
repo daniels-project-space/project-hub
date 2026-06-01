@@ -175,4 +175,45 @@ export default defineSchema({
     createdAt: v.number(),
     ownerId: v.optional(v.string()),
   }).index("by_active", ["active"]),
+
+  // --- Phase 16 (Wealth completion) additive tables ---
+
+  // Binance leveraged positions — isolated/cross margin + USDⓂ/COINⓂ futures.
+  // The `assets` table can't model leverage/entry/mark/side/uPnL/liq, and a
+  // leveraged position's *value* is its NET EQUITY (wallet ± unrealized PnL),
+  // not quantity×price — so it lives in its own table. Repopulated wholesale by
+  // the READ-ONLY `refreshMargin` action (delete-all-by-exchange then insert).
+  // Net equity rolls into the headline net worth (v1 behaviour) via a synthetic
+  // "margin" category in currentPrices/snapshots/getWealth.
+  marginPositions: defineTable({
+    exchange: v.string(), // "binance"
+    market: v.string(), // "isolated" | "cross" | "usdm" | "coinm"
+    symbol: v.string(), // "SOLUSDT"
+    base: v.optional(v.string()),
+    quote: v.optional(v.string()),
+    side: v.string(), // "long" | "short"
+    size: v.number(), // position size (base units / contracts)
+    entryPrice: v.number(),
+    markPrice: v.number(),
+    leverage: v.optional(v.number()),
+    uPnlUsd: v.number(), // unrealized PnL (USD)
+    uPnlGbp: v.number(), // unrealized PnL (GBP)
+    marginLevel: v.optional(v.number()),
+    liqPrice: v.optional(v.number()),
+    netEquityGbp: v.number(), // wallet balance ± uPnL (GBP) — net-worth roll-in
+    source: v.string(), // "auto"
+    updatedAt: v.number(),
+  }).index("by_exchange", ["exchange"]),
+
+  // Rental revenue cache (Phase 16). Server-side poll of rental-manager-v2's
+  // Convex `dashboard:getStatsDrawerData {accountSlug:null}` → confirmed NET
+  // current-month revenue. Singleton (one row per `source`). NEVER hardcodes the
+  // RMv2 Convex URL — read from the vault (`convex/NEXT_PUBLIC_CONVEX_URL_RMV2`).
+  rentalRevenue: defineTable({
+    source: v.string(), // "rmv2"
+    monthRevenueGbp: v.number(), // confirmed.month_revenue (NET, all accounts)
+    monthLabel: v.string(), // confirmed.month_label (e.g. "2026-06-01")
+    targetGbp: v.optional(v.number()), // monthly.target_gbp if present
+    fetchedAt: v.number(),
+  }).index("by_source", ["source"]),
 });
