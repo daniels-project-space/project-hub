@@ -307,5 +307,60 @@ export const removeAsset = mutation({
   },
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SNAPSHOT IMPORT (client-facing) — backfill net-worth history at explicit
+// past timestamps. `_recordSnapshot` only ever stamps "now"; these let a one-off
+// migration insert historical rows so getHistory has a real trajectory to draw.
+// Used by the v1→v2 finance data migration (Phase 11).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const importSnapshot = mutation({
+  args: {
+    ts: v.number(),
+    totalGBP: v.number(),
+    byCategory: v.optional(v.any()),
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { ts, totalGBP, byCategory, ownerId }) => {
+    assertFinite("ts", ts);
+    assertFinite("totalGBP", totalGBP);
+    return await ctx.db.insert("netWorthSnapshots", {
+      ts,
+      totalGBP,
+      byCategory: byCategory ?? {},
+      ownerId,
+    });
+  },
+});
+
+export const importSnapshots = mutation({
+  args: {
+    rows: v.array(
+      v.object({
+        ts: v.number(),
+        totalGBP: v.number(),
+        byCategory: v.optional(v.any()),
+      }),
+    ),
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { rows, ownerId }) => {
+    const ids = [];
+    for (const r of rows) {
+      assertFinite("ts", r.ts);
+      assertFinite("totalGBP", r.totalGBP);
+      ids.push(
+        await ctx.db.insert("netWorthSnapshots", {
+          ts: r.ts,
+          totalGBP: r.totalGBP,
+          byCategory: r.byCategory ?? {},
+          ownerId,
+        }),
+      );
+    }
+    return { inserted: ids.length };
+  },
+});
+
 // Re-exported constants for the action module (kept in sync via import there).
 export const _const = { GBP, DUST_EPSILON };
