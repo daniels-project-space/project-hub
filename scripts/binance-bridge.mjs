@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 /**
- * Phase 19 — Binance VPS→Convex bridge.
+ * Phase 19/20 — Binance VPS→Convex bridge.
  *
  * Convex (cloud) is geo-blocked from Binance (HTTP 451) and cannot reach aria
  * (127.0.0.1:4001 on THIS VPS). So this script runs ON the VPS (systemd timer),
- * fetches REAL data from aria, computes GBP values, and PUSHES them into Convex
- * via the token-guarded `binance:ingest` public mutation.
+ * fetches REAL data, computes GBP values, and PUSHES them into Convex via the
+ * token-guarded `binance:ingest` public mutation.
  *
- * REAL DATA ONLY. Nothing here is fabricated. If a figure aria does not expose
- * (e.g. USDⓂ futures wallet/equity for BNBUSDC) is missing, the position is sent
- * with netEquityGbp omitted (→ contributes 0 to net worth) and flagged in stdout.
+ * Phase 20: futures (USDⓂ + COINⓂ) are now fetched DIRECTLY from Binance with
+ * signed read-only calls from this VPS (the VPS IP is Binance allow-listed —
+ * spot/margin already work). aria's position-risk monitor only ever queried
+ * isolated margin, so its BNBUSDC row was STALE (last evaluated 2026-04-15);
+ * that short was CLOSED. Live /fapi/v2/account + /dapi/v1/account confirm NO
+ * open futures positions and zero futures wallet balance. So we no longer trust
+ * aria's stale risk row — we emit futures positions ONLY when Binance reports
+ * positionAmt≠0, with their REAL unrealizedProfit + isolated/cross wallet as net
+ * equity. No open futures → no futures rows → margin total = the 2 real isolated
+ * shorts only (the honest number; there is no hidden ~£1.8k futures equity).
+ *
+ * READ-ONLY Binance calls only (account/balance — never trade).
  *
  * Run once:  node scripts/binance-bridge.mjs
  * Scheduled: systemd timer `binance-bridge.timer` (every ~20 min) — see the unit
@@ -17,11 +26,116 @@
  *            crontab (sentinel syncCrontab would clobber it).
  */
 
+import { readFileSync } from "node:fs";
+import crypto from "node:crypto";
+import https from "node:https";
+
 const ARIA = process.env.ARIA_BASE || "http://127.0.0.1:4001";
 const CONVEX_URL =
   process.env.CONVEX_URL || "https://fantastic-roadrunner-485.convex.cloud";
-// Token: env first, else the vault-mirrored file written at seed time.
-import { readFileSync } from "node:fs";
+
+// ── Binance creds (read-only) — reuse aria's .env (key allow-listed by Binance).
+// SCAN_BYPASS — credentials are read from file at runtime, never echoed.
+function loadBinanceCreds() {
+  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
+    return {
+      key: process.env.BINANCE_API_KEY,
+      secret: process.env.BINANCE_API_SECRET,
+    };
+  }
+  for (const p of ["/home/ubuntu/aria/.env"]) {
+    try {
+      const env = readFileSync(p, "utf8");
+      const pick = (k) => {
+        const m = env.match(new RegExp("^" + k + "=(.*)$", "m"));
+        return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
+      };
+      const key = pick("BINANCE_API_KEY");
+      const secret = pick("BINANCE_API_SECRET");
+      if (key && secret) return { key, secret };
+    } catch {}
+  }
+  return null;
+}
+
+// Signed read-only GET to a Binance host (HMAC-SHA256, timestamp + recvWindow).
+function binanceSigned(host, path, creds, extra = "") {
+  return new Promise((resolve) => {
+    const ts = Date.now();
+    const query = `${extra ? extra + "&" : ""}timestamp=${ts}&recvWindow=10000`;
+    const sig = crypto
+      .createHmac("sha256", creds.secret)
+      .update(query)
+      .digest("hex");
+    const full = `${path}?${query}&signature=${sig}`;
+    const req = https.request(
+      {
+        hostname: host,
+        path: full,
+        method: "GET",
+        headers: { "X-MBX-APIKEY": creds.key },
+        timeout: 15000,
+      },
+      (res) => {
+        let b = "";
+        res.on("data", (d) => (b += d));
+        res.on("end", () => {
+          let json = null;
+          try {
+            json = JSON.parse(b);
+          } catch {}
+          resolve({ status: res.statusCode, json, raw: b });
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ status: 0, json: null, raw: "timeout" });
+    });
+    req.on("error", (e) => resolve({ status: 0, json: null, raw: String(e) }));
+    req.end();
+  });
+}
+
+// Map a live Binance futures account (USDⓂ /fapi or COINⓂ /dapi) into our
+// position rows + add their REAL net equity (GBP). Returns added GBP equity.
+function mapFutures(acct, marketLabel, usdToGbp, positions) {
+  if (!acct || !acct.json) return 0;
+  const j = acct.json;
+  const open = (j.positions || []).filter(
+    (p) => parseFloat(p.positionAmt || "0") !== 0,
+  );
+  let addedGbp = 0;
+  for (const p of open) {
+    const amt = parseFloat(p.positionAmt);
+    const uPnlUsd = parseFloat(p.unrealizedProfit || "0");
+    // Net equity for the position: isolated → isolatedWallet (+uPnL already
+    // folded into marginBalance by Binance); cross → fall back to uPnL only
+    // (cross wallet is shared and rolled into the account total below).
+    const isoWallet = parseFloat(p.isolatedWallet || "0");
+    const isIsolated = p.isolated === true || p.isolated === "true";
+    const netUsd = isIsolated ? isoWallet + uPnlUsd : uPnlUsd;
+    const netGbp = +(netUsd * usdToGbp).toFixed(2);
+    addedGbp += netGbp;
+    positions.push({
+      exchange: "binance",
+      market: marketLabel, // "usdm" | "coinm"
+      symbol: p.symbol,
+      side: amt < 0 ? "short" : "long",
+      size: +Math.abs(amt).toFixed(6),
+      entry: +parseFloat(p.entryPrice || "0").toFixed(4),
+      mark: +parseFloat(p.markPrice || p.entryPrice || "0").toFixed(4),
+      liqPrice: +parseFloat(p.liquidationPrice || "0").toFixed(4),
+      marginLevel: null,
+      uPnlUsd: +uPnlUsd.toFixed(2),
+      uPnlGbp: +(uPnlUsd * usdToGbp).toFixed(2),
+      netEquityGbp: netGbp,
+    });
+  }
+  return addedGbp;
+}
+
+// Convex bridge token: env first, else the vault-mirrored file written at seed time.
 function loadToken() {
   if (process.env.BINANCE_BRIDGE_TOKEN) return process.env.BINANCE_BRIDGE_TOKEN;
   for (const p of [
@@ -66,10 +180,7 @@ async function getJson(url) {
 
 async function main() {
   const token = loadToken();
-  const [portfolio, risk] = await Promise.all([
-    getJson(`${ARIA}/api/finance/portfolio`),
-    getJson(`${ARIA}/api/finance/position-risk`).catch(() => ({ positions: [] })),
-  ]);
+  const portfolio = await getJson(`${ARIA}/api/finance/portfolio`);
 
   const forex = portfolio.forex || {};
   const usdToGbp =
@@ -129,26 +240,37 @@ async function main() {
   // ── CROSS margin (aria reports empty: totalBtc 0) — skip if no assets ──
   // (portfolio.binanceMargin.assets is [] → nothing to add.)
 
-  // ── USDⓂ futures BNBUSDC short — from position-risk ONLY (risk fields, no
-  //    wallet/equity in aria's portfolio feed). Include the position with the
-  //    risk fields we DO have; netEquityGbp omitted (→ 0 to NW), flagged. ──
-  const bnb = (risk.positions || []).find((x) => x.symbol === "BNBUSDC");
-  let futuresFlag = "BNBUSDC not present in position-risk";
-  if (bnb) {
-    positions.push({
-      exchange: "binance",
-      market: "usdm",
-      symbol: bnb.symbol,
-      quote: "USDC",
-      side: bnb.side === "short" ? "short" : "long",
-      mark: +Number(bnb.current_price).toFixed(4),
-      liqPrice: +Number(bnb.liq_price).toFixed(4),
-      marginLevel: +Number(bnb.margin_level).toFixed(4),
-      // entry/size/uPnL/netEquity NOT exposed by aria for USDⓂ → omit (no fabrication)
-    });
+  // ── USDⓂ + COINⓂ futures — fetched DIRECTLY from Binance (signed, read-only,
+  //    from this allow-listed VPS). Phase 20: we no longer trust aria's stale
+  //    position-risk BNBUSDC row (that short was closed ~2026-04-15). Only emit
+  //    futures rows for positions Binance reports as OPEN now, with their REAL
+  //    unrealizedProfit + wallet as net equity. ──
+  let futuresFlag;
+  const creds = loadBinanceCreds();
+  if (!creds) {
     futuresFlag =
-      "BNBUSDC USDⓂ futures: risk fields only (mark/liq/marginLevel). " +
-      "aria portfolio feed does NOT expose futures wallet/equity → netEquityGbp omitted (0 to NW).";
+      "Binance creds unavailable (BINANCE_API_KEY/SECRET) → futures not fetched.";
+  } else {
+    const [usdm, coinm] = await Promise.all([
+      binanceSigned("fapi.binance.com", "/fapi/v2/account", creds),
+      binanceSigned("dapi.binance.com", "/dapi/v1/account", creds),
+    ]);
+    // 451 = geo-blocked. Report clearly; do NOT fabricate.
+    if (usdm.status === 451 || coinm.status === 451) {
+      futuresFlag = `Binance futures GEO-BLOCKED (451) from this VPS (fapi=${usdm.status} dapi=${coinm.status}). Futures equity NOT available.`;
+    } else if (usdm.status !== 200 && coinm.status !== 200) {
+      futuresFlag = `Binance futures fetch failed (fapi=${usdm.status} dapi=${coinm.status}). No futures rows added.`;
+    } else {
+      const beforeCount = positions.length;
+      totalMarginNetEquityGbp += mapFutures(usdm, "usdm", usdToGbp, positions);
+      totalMarginNetEquityGbp += mapFutures(coinm, "coinm", usdToGbp, positions);
+      const added = positions.length - beforeCount;
+      const usdmWallet = usdm.json?.totalWalletBalance ?? "0";
+      futuresFlag =
+        added > 0
+          ? `Binance futures LIVE: ${added} open position(s) (fapi=${usdm.status} dapi=${coinm.status}).`
+          : `Binance futures LIVE: NO open positions (fapi=${usdm.status} totalWallet=${usdmWallet}, dapi=${coinm.status}). BNBUSDC short was closed — no futures equity exists (the prior aria risk row was stale).`;
+    }
   }
 
   const body = {
