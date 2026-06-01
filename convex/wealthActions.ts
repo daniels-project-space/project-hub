@@ -84,10 +84,22 @@ async function safeJson(url: string, init?: RequestInit): Promise<any | null> {
 // FX: GBP per 1 unit of `from`. exchangerate.host (free, no key).
 async function fxToGBP(from: string): Promise<number | null> {
   if (from === GBP) return 1;
+  // Frankfurter/ECB (free, no key) — same source the net-worth reconstruction
+  // used. Standardized away from exchangerate.host. Returns GBP per 1 `from` unit.
   const j = await safeJson(
-    `https://api.exchangerate.host/latest?base=${encodeURIComponent(from)}&symbols=GBP`,
+    `https://api.frankfurter.app/latest?from=${encodeURIComponent(from)}&to=GBP`,
   );
   const rate = j?.rates?.GBP;
+  return typeof rate === "number" ? rate : null;
+}
+
+/**
+ * GBP→USD rate (USD per 1 GBP) from Frankfurter/ECB. Used for dual-currency
+ * display; persisted into `fxRates` and written onto live/daily snapshots.
+ */
+async function gbpToUsd(): Promise<number | null> {
+  const j = await safeJson("https://api.frankfurter.app/latest?from=GBP&to=USD");
+  const rate = j?.rates?.USD;
   return typeof rate === "number" ? rate : null;
 }
 
@@ -386,6 +398,65 @@ export const snapshot = internalAction({
     } catch (e) {
       console.warn("wealth.snapshot: refresh failed, snapshotting cached values", e);
     }
-    return await ctx.runMutation(internal.wealth._recordSnapshot, {});
+    // Persist GBP→USD onto the daily snapshot too (best-effort; additive).
+    let usdPerGbp: number | null = null;
+    try {
+      usdPerGbp = await ctx.runAction(api.wealthActions.persistFx, {});
+    } catch (e) {
+      console.warn("wealth.snapshot: FX persist failed", e);
+    }
+    return await ctx.runMutation(internal.wealth._recordSnapshot, {
+      usdPerGbp: usdPerGbp ?? undefined,
+    });
+  },
+})
+
+/**
+ * Persist the latest GBP→USD rate (Frankfurter/ECB) into the `fxRates` table.
+ * Returns the rate (USD per 1 GBP) or null if the source was unavailable
+ * (resilient: never clobbers a previously-stored rate with nothing).
+ */
+export const persistFx = action({
+  args: {},
+  handler: async (ctx): Promise<number | null> => {
+    const rate = await gbpToUsd();
+    if (rate === null) return null;
+    await ctx.runMutation(internal.wealth._upsertFxRate, {
+      base: "GBP",
+      quote: "USD",
+      rate,
+      fetchedAt: Date.now(),
+    });
+    return rate;
+  },
+})
+
+/**
+ * FREQUENT prices-only refresh (no daily snapshot row). Re-prices crypto via
+ * CoinGecko, gold via spot (PAXG-equivalent XAU), refreshes FX, then writes a
+ * single `currentPrices` (kind:"live") doc holding the fresh total + per-category
+ * breakdown + GBP→USD. Stocks stay at their manual editable value (no quote).
+ * Powers near-live dashboard tiles between the once-daily full snapshots.
+ *
+ * Resilient: reuses refreshCrypto + refreshPrices (both keep last-good values on
+ * failure), so a flaky upstream never produces a stale-but-presented-as-fresh tile.
+ */
+export const refreshLive = internalAction({
+  args: {},
+  handler: async (ctx): Promise<{ totalGBP: number; usdPerGbp: number | null }> => {
+    try {
+      await ctx.runAction(api.wealthActions.refreshAll, {});
+    } catch (e) {
+      console.warn("wealth.refreshLive: refresh failed, using cached values", e);
+    }
+    let usdPerGbp: number | null = null;
+    try {
+      usdPerGbp = await ctx.runAction(api.wealthActions.persistFx, {});
+    } catch (e) {
+      console.warn("wealth.refreshLive: FX persist failed", e);
+    }
+    return await ctx.runMutation(internal.wealth._recordLive, {
+      usdPerGbp: usdPerGbp ?? undefined,
+    });
   },
 });

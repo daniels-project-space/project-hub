@@ -8,8 +8,12 @@
  * @module
  */
 
+import type * as alerts from "../alerts.js";
 import type * as crons from "../crons.js";
 import type * as events from "../events.js";
+import type * as expenses from "../expenses.js";
+import type * as huntActions from "../huntActions.js";
+import type * as hunts from "../hunts.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
 import type * as secrets from "../secrets.js";
@@ -25,8 +29,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  alerts: typeof alerts;
   crons: typeof crons;
   events: typeof events;
+  expenses: typeof expenses;
+  huntActions: typeof huntActions;
+  hunts: typeof hunts;
   notes: typeof notes;
   projects: typeof projects;
   secrets: typeof secrets;

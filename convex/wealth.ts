@@ -140,8 +140,8 @@ export const _writePrice = internalMutation({
 
 // Record one net-worth snapshot from whatever last-known values exist.
 export const _recordSnapshot = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { usdPerGbp: v.optional(v.number()) },
+  handler: async (ctx, { usdPerGbp }) => {
     const assets = await ctx.db.query("assets").collect();
     const byCategory: Record<string, number> = {};
     let total = 0;
@@ -154,6 +154,7 @@ export const _recordSnapshot = internalMutation({
       ts: Date.now(),
       totalGBP: total,
       byCategory,
+      ...(usdPerGbp !== undefined ? { usdPerGbp } : {}),
     });
     return { totalGBP: total };
   },
@@ -163,9 +164,78 @@ export const _recordSnapshot = internalMutation({
 // QUERIES (client-facing — no secrets touched)
 // ─────────────────────────────────────────────────────────────────────────────
 
+export const _upsertFxRate = internalMutation({
+  args: {
+    base: v.string(),
+    quote: v.string(),
+    rate: v.number(),
+    fetchedAt: v.number(),
+  },
+  handler: async (ctx, { base, quote, rate, fetchedAt }) => {
+    assertFinite("fxRate", rate);
+    const existing = await ctx.db
+      .query("fxRates")
+      .withIndex("by_pair", (q) => q.eq("base", base).eq("quote", quote))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { rate, fetchedAt });
+    } else {
+      await ctx.db.insert("fxRates", { base, quote, rate, fetchedAt });
+    }
+  },
+})
+
+// Upsert the singleton live (intraday) net-worth doc. Written by the frequent
+// prices-only refresh cron (NOT a history row). Mirrors the daily snapshot's
+// byCategory shape so the frontend can reuse it for fresh tiles.
+export const _recordLive = internalMutation({
+  args: { usdPerGbp: v.optional(v.number()) },
+  handler: async (ctx, { usdPerGbp }) => {
+    const assets = await ctx.db.query("assets").collect();
+    const byCategory: Record<string, number> = {};
+    let total = 0;
+    for (const a of assets) {
+      const val = a.lastValueGBP ?? 0;
+      byCategory[a.category] = (byCategory[a.category] ?? 0) + val;
+      total += val;
+    }
+    const ts = Date.now();
+    const existing = await ctx.db
+      .query("currentPrices")
+      .withIndex("by_kind", (q) => q.eq("kind", "live"))
+      .first();
+    const doc = {
+      kind: "live",
+      totalGBP: total,
+      byCategory,
+      ts,
+      ...(usdPerGbp !== undefined ? { usdPerGbp } : {}),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, doc);
+    } else {
+      await ctx.db.insert("currentPrices", doc);
+    }
+    return { totalGBP: total, usdPerGbp: usdPerGbp ?? null };
+  },
+})
+
+// Latest persisted GBP→USD rate (USD per 1 GBP), or null if never fetched.
+export const getFxRate = query({
+  args: {},
+  handler: async (ctx) => {
+    const row = await ctx.db
+      .query("fxRates")
+      .withIndex("by_pair", (q) => q.eq("base", "GBP").eq("quote", "USD"))
+      .first();
+    return row ? { usdPerGbp: row.rate, fetchedAt: row.fetchedAt } : null;
+  },
+})
+
 /**
  * getWealth — assets grouped by category + per-category + total GBP, each asset
- * carrying lastPricedAt so the UI can show staleness.
+ * carrying lastPricedAt so the UI can show staleness. Phase A additive fields:
+ * `usdPerGbp` (persisted FX), `live` (intraday total), `currentTotalGBP`.
  */
 export const getWealth = query({
   args: {},
@@ -199,7 +269,37 @@ export const getWealth = query({
             : Math.min(oldestPricedAt, a.lastPricedAt);
       }
     }
-    return { totalGBP: total, byCategory, oldestPricedAt, assetCount: assets.length };
+    // Additive: persisted GBP→USD for dual-currency display.
+    const fx = await ctx.db
+      .query("fxRates")
+      .withIndex("by_pair", (q) => q.eq("base", "GBP").eq("quote", "USD"))
+      .first();
+    const usdPerGbp = fx?.rate ?? null;
+    // Additive: fresh intraday total from the frequent prices-only refresh.
+    const live = await ctx.db
+      .query("currentPrices")
+      .withIndex("by_kind", (q) => q.eq("kind", "live"))
+      .first();
+    return {
+      totalGBP: total,
+      byCategory,
+      oldestPricedAt,
+      assetCount: assets.length,
+      // --- Phase A additive fields (existing fields above are unchanged) ---
+      usdPerGbp,
+      fxFetchedAt: fx?.fetchedAt ?? null,
+      live: live
+        ? {
+            totalGBP: live.totalGBP,
+            byCategory: live.byCategory,
+            usdPerGbp: live.usdPerGbp ?? usdPerGbp,
+            ts: live.ts,
+          }
+        : null,
+      // Convenience: the freshest current total (live if present, else summed).
+      currentTotalGBP: live?.totalGBP ?? total,
+      currentTotalTs: live?.ts ?? oldestPricedAt,
+    };
   },
 });
 
@@ -304,6 +404,41 @@ export const removeAsset = mutation({
   handler: async (ctx, { id }) => {
     await ctx.db.delete(id);
     return id;
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MANUAL ASSET INLINE-VALUE EDIT (client-facing) — Phase B.
+// Lets the Wealth widget inline-edit a manual asset's GBP value by LABEL
+// (e.g. the manual "Stocks (IBKR)" £7,000 row stays manual — no live quote —
+// but is now editable from the UI). Matches by label; optionally scoped to a
+// category (defaults to first label match). Stamps lastPricedAt = now so the
+// staleness badge resets, since the user just confirmed the figure.
+// ─────────────────────────────────────────────────────────────────────────────
+export const setManualAssetValue = mutation({
+  args: {
+    label: v.string(),
+    valueGBP: v.number(),
+    category: v.optional(v.string()),
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { label, valueGBP, category }) => {
+    assertFinite("valueGBP", valueGBP);
+    const rows = await ctx.db.query("assets").collect();
+    const match = rows.find(
+      (r) =>
+        r.label === label &&
+        r.source === "manual" &&
+        (category === undefined || r.category === category),
+    );
+    if (!match) {
+      throw new Error(`No manual asset found with label "${label}"`);
+    }
+    await ctx.db.patch(match._id, {
+      lastValueGBP: valueGBP,
+      lastPricedAt: Date.now(),
+    });
+    return match._id;
   },
 });
 

@@ -26,6 +26,8 @@ import {
   Plus,
   Trash2,
   X,
+  Pencil,
+  Check,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -79,6 +81,61 @@ function fmtK(n: number): string {
   return `£${Math.round(n)}`;
 }
 
+// USD companion line — mirrors v1's fmtUSD ($ prefix, rounded ≥100, else 2dp).
+// usdPerGbp = USD per 1 GBP (Phase A's getWealth.usdPerGbp), so USD = gbp * rate.
+function usd(
+  gbpVal: number | null | undefined,
+  usdPerGbp: number | null | undefined,
+  hidden = false,
+): string {
+  if (hidden) return "≈ $••••";
+  if (usdPerGbp == null || gbpVal == null) return "";
+  const v = gbpVal * usdPerGbp;
+  const n =
+    Math.abs(v) >= 100
+      ? "$" + Math.round(v).toLocaleString("en-US")
+      : "$" + v.toFixed(2);
+  return `≈ ${n}`;
+}
+
+// Per-category trajectory from snapshot history (byCategory = Record<cat,total>).
+// Returns the series + GBP/% delta over the selected range, mirroring the
+// headline spark/delta pattern so every tile reads identically.
+function categorySeries(
+  history: { byCategory?: Record<string, number> | null }[] | undefined,
+  cat: string,
+): { data: number[]; delta: number; deltaPct: number } {
+  const rows = history ?? [];
+  const data = rows.map((r) => (r.byCategory?.[cat] ?? 0) as number);
+  if (data.length < 2) return { data, delta: 0, deltaPct: 0 };
+  const first = data[0];
+  const last = data[data.length - 1];
+  return {
+    data,
+    delta: last - first,
+    deltaPct: first ? ((last - first) / first) * 100 : 0,
+  };
+}
+
+// Compact ±% delta badge for a tile (emerald up / rose down) — same visual
+// language as the headline badge (wealth-widget headline ~190).
+function DeltaBadge({
+  delta,
+  deltaPct,
+}: {
+  delta: number;
+  deltaPct: number;
+}) {
+  if (!delta) return null;
+  const up = delta >= 0;
+  return (
+    <Badge tone={up ? "emerald" : "rose"}>
+      {up ? "▲" : "▼"} {up ? "+" : ""}
+      {deltaPct.toFixed(1)}%
+    </Badge>
+  );
+}
+
 function fmtDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
@@ -90,6 +147,8 @@ export function WealthWidget() {
   const [hidden, setHidden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // When set, the history overlay opens focused on a single category's series.
+  const [drillCat, setDrillCat] = useState<Category | null>(null);
   // Range + value/percent mode are shared between the compact card and the
   // history overlay (v1 syncs the card pills with the overlay).
   const [range, setRange] = useState<Range>("1M");
@@ -98,8 +157,22 @@ export function WealthWidget() {
   const cardHistory = useQuery(api.wealth.getHistory, { range });
 
   const loading = wealth === undefined;
-  const total = wealth?.totalGBP ?? 0;
+  // Drive the headline from the FRESH intraday total (Phase A `currentTotalGBP`
+  // / `live`) so it never shows a once/day figure; fall back to summed assets.
+  const total = wealth?.currentTotalGBP ?? wealth?.totalGBP ?? 0;
+  const totalTs = wealth?.currentTotalTs ?? wealth?.oldestPricedAt;
+  // Dual-currency: USD per 1 GBP (live doc's rate preferred, else persisted FX).
+  const usdPerGbp = wealth?.live?.usdPerGbp ?? wealth?.usdPerGbp ?? null;
   const byCategory = wealth?.byCategory ?? {};
+  // Fresh per-category totals from the live doc (Record<cat,total>) when present.
+  const liveByCat = (wealth?.live?.byCategory ?? null) as
+    | Record<string, number>
+    | null;
+
+  const openDrill = (cat: Category) => {
+    setDrillCat(cat);
+    setHistoryOpen(true);
+  };
 
   const spark = useMemo(() => {
     const rows = cardHistory ?? [];
@@ -107,7 +180,7 @@ export function WealthWidget() {
     const first = rows[0].totalGBP;
     const last = rows[rows.length - 1].totalGBP;
     return {
-      data: rows.map((r) => r.totalGBP),
+      data: rows.map((r: { totalGBP: number }) => r.totalGBP),
       delta: last - first,
       deltaPct: first ? ((last - first) / first) * 100 : 0,
     };
@@ -187,6 +260,12 @@ export function WealthWidget() {
                   <p className="mt-1 font-display italic font-light text-[40px] leading-none tabular-nums text-paper">
                     {gbp(total, hidden)}
                   </p>
+                  {/* USD companion line (v1 dual-currency treatment) */}
+                  {usdPerGbp != null && (
+                    <p className="mt-0.5 font-mono text-[12px] tabular-nums text-paper-faint">
+                      {usd(total, usdPerGbp, hidden)}
+                    </p>
+                  )}
                   <p className="mt-2 flex items-center gap-2">
                     <Badge tone={up ? "emerald" : "rose"}>
                       {up ? "▲" : "▼"} {up ? "+" : ""}
@@ -199,7 +278,7 @@ export function WealthWidget() {
                     </span>
                   </p>
                 </div>
-                <StaleBadge pricedAt={wealth?.oldestPricedAt} />
+                <StaleBadge pricedAt={totalTs} />
               </div>
 
               {/* in-card range pills + £/% toggle */}
@@ -233,13 +312,15 @@ export function WealthWidget() {
               </div>
             </Card>
 
-            {/* Category breakdown */}
+            {/* Category breakdown — each tile: live GBP+USD value, per-category
+                sparkline, ±% delta badge, click-to-drill into the chart. */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
               {CATEGORIES.map((cat) => {
                 const bucket = byCategory[cat];
-                const val = bucket?.total ?? 0;
+                // Prefer the fresh live per-category total over summed assets.
+                const val = liveByCat?.[cat] ?? bucket?.total ?? 0;
                 const oldest = bucket?.assets?.reduce<number | null>(
-                  (m, a) =>
+                  (m: number | null, a: { lastPricedAt?: number | null }) =>
                     a.lastPricedAt == null
                       ? m
                       : m == null
@@ -247,16 +328,39 @@ export function WealthWidget() {
                         : Math.min(m, a.lastPricedAt),
                   null,
                 );
+                const series = categorySeries(cardHistory, cat);
+                // Editable stocks: find the manual stocks asset row (v1 "IBKR").
+                const stocksAsset =
+                  cat === "stocks"
+                    ? bucket?.assets?.find(
+                        (a: { source?: string }) => a.source === "manual",
+                      )
+                    : undefined;
                 return (
                   <StatTile
                     key={cat}
                     label={CATEGORY_LABEL[cat]}
                     tone={CATEGORY_TONE[cat]}
                     value={gbp(val, hidden)}
+                    chart={series.data}
+                    onClick={() => openDrill(cat)}
+                    badge={
+                      <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
+                    }
                     sub={
-                      <span className="flex items-center gap-1.5">
-                        <span>{pct(val, total)} of NW</span>
-                        <StaleBadge pricedAt={oldest} />
+                      <span className="flex flex-col gap-0.5">
+                        {usdPerGbp != null && (
+                          <span className="tabular-nums text-paper-dim">
+                            {usd(val, usdPerGbp, hidden)}
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1.5">
+                          <span>{pct(val, total)} of NW</span>
+                          <StaleBadge pricedAt={oldest} />
+                          {stocksAsset && (
+                            <EditStocksButton asset={stocksAsset} />
+                          )}
+                        </span>
                       </span>
                     }
                   />
@@ -271,7 +375,8 @@ export function WealthWidget() {
                   Live Prices
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
-                  {prices.slice(0, 10).map((p) => (
+                  {prices.slice(0, 10).map(
+                    (p: { symbol: string; gbp: number; ts: number }) => (
                     <div
                       key={p.symbol}
                       className="flex items-center justify-between border-b border-rule-soft/30 pb-1.5"
@@ -296,12 +401,18 @@ export function WealthWidget() {
 
       <HistorySheet
         open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
+        onClose={() => {
+          setHistoryOpen(false);
+          setDrillCat(null);
+        }}
         hidden={hidden}
         range={range}
         setRange={setRange}
         mode={mode}
         setMode={setMode}
+        focusCat={drillCat}
+        setFocusCat={setDrillCat}
+        usdPerGbp={usdPerGbp}
       />
       <EditSheet open={editing} onClose={() => setEditing(false)} />
     </WidgetSlot>
@@ -318,6 +429,9 @@ function HistorySheet({
   setRange,
   mode,
   setMode,
+  focusCat,
+  setFocusCat,
+  usdPerGbp,
 }: {
   open: boolean;
   onClose: () => void;
@@ -326,19 +440,30 @@ function HistorySheet({
   setRange: (r: Range) => void;
   mode: "gbp" | "pct";
   setMode: (m: "gbp" | "pct") => void;
+  /** When set, the overlay charts a single category's trajectory. */
+  focusCat: Category | null;
+  setFocusCat: (c: Category | null) => void;
+  usdPerGbp: number | null;
 }) {
   const history = useQuery(api.wealth.getHistory, open ? { range } : "skip");
   const wealth = useQuery(api.wealth.getWealth, open ? {} : "skip");
 
   const series = useMemo(() => {
-    const rows = history ?? [];
+    const rows = (history ?? []) as {
+      ts: number;
+      totalGBP: number;
+      byCategory?: Record<string, number> | null;
+    }[];
     if (rows.length === 0)
       return { data: [] as number[], labels: [] as string[], first: 0, last: 0, min: 0, max: 0, delta: 0, deltaPct: 0 };
-    const first = rows[0].totalGBP;
-    const last = rows[rows.length - 1].totalGBP;
-    const totals = rows.map((r) => r.totalGBP);
+    // Source values: a single category's series when drilled-in, else the total.
+    const valOf = (r: (typeof rows)[number]) =>
+      focusCat ? (r.byCategory?.[focusCat] ?? 0) : r.totalGBP;
+    const totals = rows.map(valOf);
+    const first = totals[0];
+    const last = totals[totals.length - 1];
     const data =
-      mode === "gbp" ? totals : rows.map((r) => (first ? ((r.totalGBP - first) / first) * 100 : 0));
+      mode === "gbp" ? totals : totals.map((t) => (first ? ((t - first) / first) * 100 : 0));
     return {
       data,
       labels: rows.map((r) => fmtDate(r.ts)),
@@ -349,7 +474,7 @@ function HistorySheet({
       delta: last - first,
       deltaPct: first ? ((last - first) / first) * 100 : 0,
     };
-  }, [history, mode]);
+  }, [history, mode, focusCat]);
 
   const up = series.delta >= 0;
   const byCategory = wealth?.byCategory ?? {};
@@ -359,7 +484,11 @@ function HistorySheet({
     <Sheet
       open={open}
       onClose={onClose}
-      title="Net Worth · Portfolio Trajectory"
+      title={
+        focusCat
+          ? `${CATEGORY_LABEL[focusCat]} · Trajectory`
+          : "Net Worth · Portfolio Trajectory"
+      }
       side="center"
       className="max-w-3xl w-[min(94vw,760px)]"
     >
@@ -367,14 +496,32 @@ function HistorySheet({
         {/* header: big value + delta */}
         <div className="flex items-end justify-between">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
-              Net Worth · History
+            <p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+              {focusCat ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setFocusCat(null)}
+                    className="rounded px-1.5 py-0.5 bg-ink-3/60 text-paper-dim hover:text-paper normal-case tracking-normal"
+                  >
+                    ← All
+                  </button>
+                  <span>{CATEGORY_LABEL[focusCat]}</span>
+                </>
+              ) : (
+                "Net Worth · History"
+              )}
             </p>
             <p className="mt-1 font-display italic font-light text-[44px] leading-none tabular-nums text-paper">
               {mode === "gbp"
                 ? gbp(series.last || total, hidden)
                 : `${series.data.at(-1)?.toFixed(1) ?? "0"}%`}
             </p>
+            {mode === "gbp" && usdPerGbp != null && (
+              <p className="mt-0.5 font-mono text-[12px] tabular-nums text-paper-faint">
+                {usd(series.last || total, usdPerGbp, hidden)}
+              </p>
+            )}
             <p className="mt-1 font-mono text-[10px] text-paper-faint">
               {series.data.length} data points · {range}
             </p>
@@ -454,13 +601,26 @@ function HistorySheet({
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
                   {CATEGORIES.map((cat) => {
                     const val = byCategory[cat]?.total ?? 0;
+                    const cs = categorySeries(history, cat);
                     return (
                       <StatTile
                         key={cat}
                         label={CATEGORY_LABEL[cat]}
                         tone={CATEGORY_TONE[cat]}
                         value={gbp(val, hidden)}
-                        sub={<span>{pct(val, total)} of NW</span>}
+                        chart={cs.data}
+                        onClick={() => setFocusCat(cat)}
+                        badge={<DeltaBadge delta={cs.delta} deltaPct={cs.deltaPct} />}
+                        sub={
+                          <span className="flex flex-col gap-0.5">
+                            {usdPerGbp != null && (
+                              <span className="tabular-nums text-paper-dim">
+                                {usd(val, usdPerGbp, hidden)}
+                              </span>
+                            )}
+                            <span>{pct(val, total)} of NW</span>
+                          </span>
+                        }
                       />
                     );
                   })}
@@ -651,5 +811,85 @@ function EditSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
         </button>
       </div>
     </Sheet>
+  );
+}
+
+// ─── Inline-editable manual stocks value ─────────────────────────────────────
+// Per Daniel: stocks stays MANUAL (no live quote) but the £ figure is editable
+// straight from the tile. A pencil reveals a tiny GBP input → `setManualAssetValue`.
+
+function EditStocksButton({
+  asset,
+}: {
+  asset: { label: string; category: string; lastValueGBP: number | null };
+}) {
+  const setValue = useMutation(api.wealth.setManualAssetValue);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const begin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(asset.lastValueGBP != null ? String(Math.round(asset.lastValueGBP)) : "");
+    setOpen(true);
+  };
+
+  const save = async (e?: React.MouseEvent | React.FormEvent) => {
+    e?.stopPropagation();
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setOpen(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await setValue({ label: asset.label, valueGBP: n, category: "stocks" });
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        aria-label={`Edit ${asset.label} value`}
+        onClick={begin}
+        className="p-0.5 rounded text-paper-faint hover:text-brass"
+      >
+        <Pencil className="w-3 h-3" />
+      </button>
+    );
+  }
+
+  return (
+    <span
+      className="inline-flex items-center gap-1"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="text-paper-faint">£</span>
+      <input
+        autoFocus
+        type="number"
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+          if (e.key === "Escape") setOpen(false);
+        }}
+        className="w-16 bg-ink-2/80 border border-rule-soft/60 rounded px-1 py-0.5 text-[11px] tabular-nums text-paper"
+      />
+      <button
+        type="button"
+        aria-label="Save value"
+        disabled={busy}
+        onClick={save}
+        className="p-0.5 rounded text-emerald-soft hover:text-paper disabled:opacity-50"
+      >
+        <Check className="w-3 h-3" />
+      </button>
+    </span>
   );
 }

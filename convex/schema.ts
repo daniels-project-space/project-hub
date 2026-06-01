@@ -98,6 +98,7 @@ export default defineSchema({
     ts: v.number(),
     totalGBP: v.number(),
     byCategory: v.any(),
+    usdPerGbp: v.optional(v.number()), // GBP→USD at snapshot time (additive, Phase A)
     ownerId: v.optional(v.string()),
   }).index("by_ts", ["ts"]),
 
@@ -107,4 +108,71 @@ export default defineSchema({
     gbp: v.number(),
     ts: v.number(),
   }).index("by_symbol", ["symbol"]),
+
+  // --- Phase A (parity v2) additive tables — data backbone ---
+
+  // Persisted FX rate (latest GBP→USD). Singleton-ish: one row per (base,quote).
+  // Sourced from Frankfurter/ECB (https://api.frankfurter.app/latest?from=GBP&to=USD).
+  // `rate` = how many `quote` units per 1 `base` (e.g. base GBP, quote USD → USD per GBP).
+  fxRates: defineTable({
+    base: v.string(), // "GBP"
+    quote: v.string(), // "USD"
+    rate: v.number(), // quote units per 1 base unit
+    fetchedAt: v.number(),
+  }).index("by_pair", ["base", "quote"]),
+
+  // Live (intraday) net-worth snapshot — updated by the frequent prices-only cron
+  // (~30 min) so dashboard tiles reflect near-live values without a full daily
+  // snapshot. Singleton: keyed by `kind` ("live"). `byCategory` mirrors the daily
+  // snapshot shape: Record<category, totalGBP>. `usdPerGbp` is the GBP→USD rate
+  // at refresh time so the frontend can render dual currency from one read.
+  currentPrices: defineTable({
+    kind: v.string(), // "live"
+    totalGBP: v.number(),
+    byCategory: v.any(), // Record<category, totalGBP>
+    usdPerGbp: v.optional(v.number()),
+    ts: v.number(), // when this live total was computed
+  }).index("by_kind", ["kind"]),
+
+  // Home expenses / subscriptions (W: Expenses, Phase C). Manual entry only —
+  // mirrors v1 hub-kv.json:home_expenses_v1 ({id,name,amount,createdAt}).
+  // `amountGBP` holds v1's `amount` (GBP). category/recurring/dueDay are additive
+  // (v1 had none) — optional so the migration maps cleanly.
+  expenses: defineTable({
+    name: v.string(),
+    amountGBP: v.number(),
+    category: v.optional(v.string()),
+    recurring: v.optional(v.boolean()),
+    dueDay: v.optional(v.number()), // day-of-month 1–31 for recurring
+    createdAt: v.number(),
+    ownerId: v.optional(v.string()),
+  }).index("by_createdAt", ["createdAt"]),
+
+  // Price alerts for the decoupled Hunts·Alerts widget (Phase D).
+  alerts: defineTable({
+    symbol: v.string(), // "BTC" | "AAPL" | "XAU" | "GBPUSD" ...
+    kind: v.union(v.literal("above"), v.literal("below")),
+    threshold: v.number(),
+    currency: v.optional(v.string()), // defaults GBP when absent
+    active: v.boolean(),
+    lastTriggeredAt: v.optional(v.number()),
+    createdAt: v.number(),
+    ownerId: v.optional(v.string()),
+  }).index("by_active", ["active"]),
+
+  // Recurring LLM deal-hunts for the decoupled Hunts·Alerts widget (Phase D wires
+  // the checker; table defined now). Field names match the Phase plan contract;
+  // optional fields preserve aria/lib/hunts.js semantics (schedule/maxRuns/runs).
+  hunts: defineTable({
+    query: v.string(), // the hunt task, e.g. "Sony A7IV under £1500"
+    criteria: v.optional(v.string()), // optional structured criteria / stop_when
+    schedule: v.optional(v.string()), // cron expression (aria parity)
+    maxRuns: v.optional(v.number()),
+    runs: v.optional(v.number()),
+    lastCheckedAt: v.optional(v.number()),
+    lastResult: v.optional(v.string()),
+    active: v.boolean(),
+    createdAt: v.number(),
+    ownerId: v.optional(v.string()),
+  }).index("by_active", ["active"]),
 });

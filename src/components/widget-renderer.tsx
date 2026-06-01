@@ -6,6 +6,11 @@ import { CalendarWidget } from "./widgets/calendar-widget";
 import { TodoWidget } from "./widgets/todo-widget";
 import { WealthWidget } from "./widgets/wealth-widget";
 import { ProjectsWidget } from "./widgets/projects-widget";
+import { ExpensesWidget } from "./widgets/expenses-widget";
+import { HuntsWidget } from "./widgets/hunts-widget";
+import { IdeaWidget } from "./widgets/idea-widget";
+import { ChannelIdeaWidget } from "./widgets/channel-idea-widget";
+import { RemoteWorkHubWidget } from "./widgets/remote-work-hub-widget";
 import { WidgetSlot } from "./widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -16,6 +21,11 @@ const REGISTRY: Record<string, ComponentType> = {
   todo: TodoWidget,
   wealth: WealthWidget,
   projects: ProjectsWidget,
+  expenses: ExpensesWidget,
+  hunts: HuntsWidget,
+  idea: IdeaWidget,
+  channelIdea: ChannelIdeaWidget,
+  remoteWorkHub: RemoteWorkHubWidget,
 };
 
 export function WidgetRenderer({ type }: { type: string }) {

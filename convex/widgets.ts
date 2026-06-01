@@ -84,3 +84,40 @@ export const seed = mutation({
     return { seeded };
   },
 });
+
+// Phase 13 parity widgets. `seed` no-ops once the table is non-empty, so this
+// idempotent mutation inserts ONLY the new types that are missing, appended
+// after whatever already exists. Safe to re-run (skips types already present).
+const PARITY_WIDGETS: string[] = [
+  "expenses",
+  "hunts",
+  "idea",
+  "channelIdea",
+  "remoteWorkHub",
+];
+
+export const seedMissing = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db.query("widgets").collect();
+    const present = new Set(existing.map((w) => w.type));
+    let nextPos = existing.reduce((m, w) => Math.max(m, w.position), -1) + 1;
+    const inserted: string[] = [];
+    const skipped: string[] = [];
+    for (const type of PARITY_WIDGETS) {
+      if (present.has(type)) {
+        skipped.push(type);
+        continue;
+      }
+      await ctx.db.insert("widgets", {
+        type,
+        position: nextPos,
+        enabled: true,
+        config: {},
+      });
+      nextPos += 1;
+      inserted.push(type);
+    }
+    return { inserted, skipped, total: existing.length + inserted.length };
+  },
+});

@@ -90,3 +90,54 @@ export const reorder = mutation({
     }
   },
 });
+
+// ---------------------------------------------------------------------------
+// One-time migration from v1 hub-kv.json:home_todos_v1
+// ---------------------------------------------------------------------------
+// v1 shape: { id, text, done, category, createdAt, ideaId?, dedupKey?, isNewApp? }
+// v2 shape: { text, done, priority, tags, position, createdAt }
+// Mapping: text→text, done→done (preserved), category→tags:[category].
+// Inserts directly (not via `add`) so `done:true` items survive the import.
+// Idempotent: skips any row whose (text + createdAt) already exists, so re-running
+// in Phase E is a no-op. Run via the Convex dashboard or:
+//   npx convex run todos:seedFromV1 '{"items":[{"text":"...","done":false,"category":"general","createdAt":1775847678906}, ...]}'
+// (Pass the real home_todos_v1 array from /home/ubuntu/project-hub/data/hub-kv.json.)
+export const seedFromV1 = mutation({
+  args: {
+    items: v.array(
+      v.object({
+        text: v.string(),
+        done: v.optional(v.boolean()),
+        category: v.optional(v.string()),
+        createdAt: v.optional(v.number()),
+      }),
+    ),
+  },
+  handler: async (ctx, { items }) => {
+    const existing = await ctx.db.query("todos").collect();
+    const seen = new Set(existing.map((t) => `${t.text}::${t.createdAt}`));
+    let maxPos = existing.reduce((m, t) => Math.max(m, t.position), -1);
+    let inserted = 0;
+    let skipped = 0;
+    for (const it of items) {
+      const createdAt = it.createdAt ?? Date.now();
+      const key = `${it.text}::${createdAt}`;
+      if (seen.has(key)) {
+        skipped++;
+        continue;
+      }
+      maxPos += 1;
+      await ctx.db.insert("todos", {
+        text: it.text,
+        done: it.done ?? false,
+        priority: 0,
+        tags: it.category ? [it.category] : [],
+        position: maxPos,
+        createdAt,
+      });
+      seen.add(key);
+      inserted++;
+    }
+    return { inserted, skipped, total: items.length };
+  },
+});
