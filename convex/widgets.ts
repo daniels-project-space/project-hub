@@ -85,10 +85,17 @@ export const seed = mutation({
   },
 });
 
-// Phase 13 parity widgets. `seed` no-ops once the table is non-empty, so this
-// idempotent mutation inserts ONLY the new types that are missing, appended
-// after whatever already exists. Safe to re-run (skips types already present).
-const PARITY_WIDGETS: string[] = [
+// Canonical full widget set, kept in sync with the client REGISTRY
+// (`src/components/widget-renderer.tsx` WIDGET_TYPES). Convex functions cannot
+// import client/React modules, so this list is the server-side mirror. If you
+// add a widget to the REGISTRY, add its type string here too — the reconcile
+// path then backfills it into every saved layout automatically.
+export const ALL_WIDGET_TYPES: string[] = [
+  "notes",
+  "calendar",
+  "todo",
+  "wealth",
+  "projects",
   "expenses",
   "hunts",
   "idea",
@@ -96,6 +103,52 @@ const PARITY_WIDGETS: string[] = [
   "remoteWorkHub",
 ];
 
+// ---------------------------------------------------------------------------
+// RECONCILE — the structural fix for "newly-registered widget silently missing".
+//
+// The dashboard renders ONLY rows in the `widgets` table (the saved layout).
+// A widget registered in the client REGISTRY but absent from the saved layout
+// would never render. `reconcile` appends any registry type missing from the
+// saved layout as a VISIBLE row (enabled:true), at the end. Fully idempotent:
+// re-running inserts nothing once every type is present.
+//
+// Called automatically by the dashboard on load (client passes the live
+// REGISTRY types) AND runnable from the CLI as a backfill:
+//   npx convex run widgets:reconcile
+// ---------------------------------------------------------------------------
+export const reconcile = mutation({
+  // Optional `types` so the client can pass its live REGISTRY. When omitted
+  // (e.g. a CLI backfill), falls back to the server-side ALL_WIDGET_TYPES.
+  args: { types: v.optional(v.array(v.string())) },
+  handler: async (ctx, { types }) => {
+    const wanted = types && types.length > 0 ? types : ALL_WIDGET_TYPES;
+    const existing = await ctx.db.query("widgets").collect();
+    const present = new Set(existing.map((w) => w.type));
+    let nextPos = existing.reduce((m, w) => Math.max(m, w.position), -1) + 1;
+    const appended: string[] = [];
+    for (const type of wanted) {
+      if (present.has(type)) continue;
+      await ctx.db.insert("widgets", {
+        type,
+        position: nextPos,
+        enabled: true, // newly-surfaced widgets are VISIBLE, never hidden
+        config: {},
+      });
+      present.add(type);
+      nextPos += 1;
+      appended.push(type);
+    }
+    return {
+      appended,
+      alreadyPresent: wanted.filter((t) => !appended.includes(t)),
+      total: existing.length + appended.length,
+    };
+  },
+});
+
+// Back-compat alias. Phase 13 used `seedMissing`; reconcile supersedes it with
+// a registry-driven, idempotent backfill. Kept so existing tooling/runbooks
+// keep working.
 export const seedMissing = mutation({
   args: {},
   handler: async (ctx) => {
@@ -104,7 +157,7 @@ export const seedMissing = mutation({
     let nextPos = existing.reduce((m, w) => Math.max(m, w.position), -1) + 1;
     const inserted: string[] = [];
     const skipped: string[] = [];
-    for (const type of PARITY_WIDGETS) {
+    for (const type of ALL_WIDGET_TYPES) {
       if (present.has(type)) {
         skipped.push(type);
         continue;
@@ -115,6 +168,7 @@ export const seedMissing = mutation({
         enabled: true,
         config: {},
       });
+      present.add(type);
       nextPos += 1;
       inserted.push(type);
     }

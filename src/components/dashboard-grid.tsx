@@ -20,7 +20,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Eye, EyeOff } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { WidgetRenderer } from "./widget-renderer";
+import { WidgetRenderer, WIDGET_TYPES } from "./widget-renderer";
 import { DragHandle } from "@/components/ui/drag-handle";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -44,12 +44,30 @@ export function DashboardGrid() {
   const widgets = useQuery(api.widgets.list) as WidgetRow[] | undefined;
   const reorder = useMutation(api.widgets.reorder);
   const setEnabled = useMutation(api.widgets.setEnabled);
+  const reconcile = useMutation(api.widgets.reconcile);
 
   // Local order mirror so drag feels instant; resynced when server data changes.
   const [order, setOrder] = useState<Id<"widgets">[]>([]);
   useEffect(() => {
     if (widgets) setOrder(widgets.map((w) => w._id));
   }, [widgets]);
+
+  // ── RECONCILE saved layout against the widget REGISTRY ──────────────────
+  // The saved layout (Convex `widgets` table) only stores order + visibility.
+  // If a widget is registered (WIDGET_TYPES) but has NO row in the saved
+  // layout — e.g. it was added after this layout was last persisted — it would
+  // otherwise never render. Here we detect those and persist them as VISIBLE
+  // rows so a newly-registered widget can never silently disappear. Idempotent:
+  // once every registry type has a row, `reconcile` inserts nothing and this
+  // effect makes no further writes (the `missing.length` guard + the query
+  // re-running with the new rows converges in one pass).
+  useEffect(() => {
+    if (!widgets) return;
+    const present = new Set(widgets.map((w) => w.type));
+    const missing = WIDGET_TYPES.filter((t) => !present.has(t));
+    if (missing.length === 0) return;
+    void reconcile({ types: WIDGET_TYPES });
+  }, [widgets, reconcile]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -85,6 +103,14 @@ export function DashboardGrid() {
   const enabled = ordered.filter((w) => w.enabled);
   const hidden = ordered.filter((w) => !w.enabled);
 
+  // Registry types not yet in the saved layout. The reconcile effect above is
+  // persisting them; meanwhile we render them as VISIBLE synthetic tiles so a
+  // newly-registered widget appears instantly and never depends on the write
+  // landing first. Once `reconcile` persists, `widgets` updates and these
+  // become normal sortable/hideable rows on the next render.
+  const presentTypes = new Set(widgets.map((w) => w.type));
+  const pending = WIDGET_TYPES.filter((t) => !presentTypes.has(t));
+
   const handleDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
@@ -112,6 +138,16 @@ export function DashboardGrid() {
                 type={w.type}
                 onHide={() => void setEnabled({ id: w._id, enabled: false })}
               />
+            ))}
+            {/* Pending registry widgets being backfilled into the layout. Plain
+                tiles (no drag/hide) until reconcile persists them as real rows. */}
+            {pending.map((type) => (
+              <div
+                key={`pending-${type}`}
+                className={`relative col-span-1 ${SPAN[type] ?? "md:col-span-2"}`}
+              >
+                <WidgetRenderer type={type} />
+              </div>
             ))}
           </div>
         </SortableContext>
