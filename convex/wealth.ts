@@ -14,7 +14,7 @@
  * inside server-side actions (in wealthActions.ts). They never reach the client.
  */
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -920,6 +920,232 @@ export const importSnapshots = mutation({
       );
     }
     return { inserted: ids.length };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 19 — Binance BRIDGE ingest (REAL spot + margin, pushed from the VPS)
+//
+// Convex egress is geo-blocked from Binance (HTTP 451) AND cannot reach aria
+// (127.0.0.1:4001 on the VPS). So a VPS-side systemd timer fetches from aria,
+// computes GBP values, and PUSHES them here via this PUBLIC mutation, guarded by
+// a shared bearer `token` checked against the vault secret
+// `convex/BINANCE_BRIDGE_TOKEN`. It (a) upserts the manual "Binance" crypto spot
+// asset value and (b) REPLACES every marginPositions row with source="binance"
+// with the real positions, then refreshes the live `currentPrices` doc so the
+// headline NW reflects spot + margin net equity immediately (margin net equity
+// rolls into NW via the synthetic "margin" category — see _recordLive/getWealth).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One-shot helper to store/rotate the bridge token in the vault. Internal. */
+export const _seedBridgeToken = internalMutation({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const existing = await ctx.db
+      .query("secrets")
+      .withIndex("by_service_and_key", (q) =>
+        q.eq("service", "convex").eq("keyName", "BINANCE_BRIDGE_TOKEN"),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { value: token });
+      return { created: false, id: existing._id };
+    }
+    const id = await ctx.db.insert("secrets", {
+      service: "convex",
+      keyName: "BINANCE_BRIDGE_TOKEN",
+      value: token,
+      description:
+        "Shared bearer for the VPS→Convex Binance bridge (binance:ingest). Phase 19.",
+      scopes: ["wealth"],
+      aliases: [],
+      sourceFiles: ["convex/wealth.ts", "scripts/binance-bridge.mjs"],
+    });
+    return { created: true, id };
+  },
+});
+
+export const ingest = mutation({
+  args: {
+    token: v.string(),
+    // Real Binance SPOT total in GBP (sum of coin qty × USD price × USD→GBP).
+    spotGbp: v.number(),
+    // Optional per-coin spot breakdown (audit/debug only — not persisted as rows).
+    spot: v.optional(
+      v.array(
+        v.object({
+          currency: v.string(),
+          qty: v.number(),
+          gbp: v.number(),
+        }),
+      ),
+    ),
+    // Real margin/futures positions (isolated/cross/usdm/coinm).
+    positions: v.array(
+      v.object({
+        exchange: v.optional(v.string()), // informational; row exchange is forced "binance"
+        market: v.string(), // isolated | cross | usdm | coinm
+        symbol: v.string(),
+        base: v.optional(v.string()),
+        quote: v.optional(v.string()),
+        side: v.string(),
+        baseBorrowed: v.optional(v.number()),
+        quoteNet: v.optional(v.number()),
+        size: v.optional(v.number()),
+        entry: v.optional(v.number()),
+        mark: v.optional(v.number()),
+        liqPrice: v.optional(v.number()),
+        marginLevel: v.optional(v.number()),
+        uPnlUsd: v.optional(v.number()),
+        uPnlGbp: v.optional(v.number()),
+        netEquityGbp: v.optional(v.number()), // null/absent ⇒ equity unknown (e.g. USDⓂ futures)
+      }),
+    ),
+    totalMarginNetEquityGbp: v.optional(v.number()),
+    usdPerGbp: v.optional(v.number()), // USD per 1 GBP (for dual-currency live doc)
+    updatedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, a) => {
+    // ── Token guard (constant-effort compare against the vault secret) ──
+    const secret = await ctx.db
+      .query("secrets")
+      .withIndex("by_service_and_key", (q) =>
+        q.eq("service", "convex").eq("keyName", "BINANCE_BRIDGE_TOKEN"),
+      )
+      .first();
+    if (!secret?.value || a.token !== secret.value) {
+      throw new ConvexError("unauthorized: bad bridge token");
+    }
+
+    assertFinite("spotGbp", a.spotGbp);
+    const now = a.updatedAt && Number.isFinite(a.updatedAt) ? a.updatedAt : Date.now();
+
+    // ── 1. Upsert the manual Binance SPOT crypto asset value ──
+    const cryptoRows = await ctx.db
+      .query("assets")
+      .withIndex("by_category", (q) => q.eq("category", "crypto"))
+      .collect();
+    let binanceAsset = cryptoRows.find(
+      (r) =>
+        r.source === "manual" &&
+        (r.label === "Binance" ||
+          (r.label ?? "").toLowerCase().includes("binance")),
+    );
+    const spot = Math.max(0, Math.round(a.spotGbp));
+    if (binanceAsset) {
+      await ctx.db.patch(binanceAsset._id, {
+        lastValueGBP: spot,
+        lastPricedAt: now,
+        externalRef: "binance",
+      });
+    } else {
+      await ctx.db.insert("assets", {
+        category: "crypto",
+        label: "Binance",
+        source: "manual",
+        currency: GBP,
+        externalRef: "binance",
+        lastValueGBP: spot,
+        lastPricedAt: now,
+      });
+    }
+
+    // ── 2. REPLACE all source="binance" margin positions with the real ones ──
+    const existingMargin = await ctx.db.query("marginPositions").collect();
+    for (const r of existingMargin) {
+      if (r.source === "binance") await ctx.db.delete(r._id);
+    }
+    let insertedNetEquity = 0;
+    for (const p of a.positions) {
+      const uPnlUsd = Number.isFinite(p.uPnlUsd as number) ? (p.uPnlUsd as number) : 0;
+      const uPnlGbp = Number.isFinite(p.uPnlGbp as number) ? (p.uPnlGbp as number) : 0;
+      const netEquityGbp = Number.isFinite(p.netEquityGbp as number)
+        ? (p.netEquityGbp as number)
+        : 0; // unknown equity (e.g. USDⓂ futures) contributes 0 to NW — never fabricated
+      insertedNetEquity += netEquityGbp;
+      await ctx.db.insert("marginPositions", {
+        exchange: "binance",
+        market: p.market,
+        symbol: p.symbol.trim(),
+        base: p.base,
+        quote: p.quote,
+        side: p.side === "short" ? "short" : "long",
+        size: Number.isFinite(p.size as number)
+          ? (p.size as number)
+          : Number.isFinite(p.baseBorrowed as number)
+            ? (p.baseBorrowed as number)
+            : 0,
+        entryPrice: Number.isFinite(p.entry as number) ? (p.entry as number) : 0,
+        markPrice: Number.isFinite(p.mark as number) ? (p.mark as number) : 0,
+        uPnlUsd,
+        uPnlGbp,
+        marginLevel: Number.isFinite(p.marginLevel as number)
+          ? (p.marginLevel as number)
+          : undefined,
+        liqPrice: Number.isFinite(p.liqPrice as number)
+          ? (p.liqPrice as number)
+          : undefined,
+        netEquityGbp,
+        source: "binance",
+        updatedAt: now,
+      });
+    }
+
+    // ── 3. Persist FX (USD per GBP) if provided, for dual-currency display ──
+    if (a.usdPerGbp && Number.isFinite(a.usdPerGbp) && a.usdPerGbp > 0) {
+      const fx = await ctx.db
+        .query("fxRates")
+        .withIndex("by_pair", (q) => q.eq("base", "GBP").eq("quote", "USD"))
+        .first();
+      if (fx) await ctx.db.patch(fx._id, { rate: a.usdPerGbp, fetchedAt: now });
+      else
+        await ctx.db.insert("fxRates", {
+          base: "GBP",
+          quote: "USD",
+          rate: a.usdPerGbp,
+          fetchedAt: now,
+        });
+    }
+
+    // ── 4. Refresh the live `currentPrices` doc so headline NW updates now ──
+    // (mirrors _recordLive: sum assets + roll margin net equity into "margin").
+    const allAssets = await ctx.db.query("assets").collect();
+    const liveByCat: Record<string, number> = {};
+    let liveTotal = 0;
+    for (const x of allAssets) {
+      const val = x.lastValueGBP ?? 0;
+      liveByCat[x.category] = (liveByCat[x.category] ?? 0) + val;
+      liveTotal += val;
+    }
+    const marginRows = await ctx.db.query("marginPositions").collect();
+    let marginGbp = 0;
+    for (const m of marginRows) marginGbp += m.netEquityGbp ?? 0;
+    if (marginGbp !== 0) {
+      liveByCat["margin"] = (liveByCat["margin"] ?? 0) + marginGbp;
+      liveTotal += marginGbp;
+    }
+    const liveDoc = {
+      kind: "live",
+      totalGBP: liveTotal,
+      byCategory: liveByCat,
+      ts: now,
+      ...(a.usdPerGbp && a.usdPerGbp > 0 ? { usdPerGbp: a.usdPerGbp } : {}),
+    };
+    const liveExisting = await ctx.db
+      .query("currentPrices")
+      .withIndex("by_kind", (q) => q.eq("kind", "live"))
+      .first();
+    if (liveExisting) await ctx.db.patch(liveExisting._id, liveDoc);
+    else await ctx.db.insert("currentPrices", liveDoc);
+
+    return {
+      ok: true,
+      spotGbp: spot,
+      positionsWritten: a.positions.length,
+      marginNetEquityGbp: insertedNetEquity,
+      totalGBP: liveTotal,
+      updatedAt: now,
+    };
   },
 });
 

@@ -53,13 +53,26 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number];
 
-// Display categories = the 6 asset categories + the synthetic "margin" category
-// (Binance margin/futures NET EQUITY, which rolls into net worth — Phase 16).
-const DISPLAY_CATEGORIES = [...CATEGORIES, "margin"] as const;
+// Display categories = the 6 asset categories + the synthetic "binance" tile
+// (Phase 19: Binance gets its OWN top-level tile, v1-style — broken out of the
+// Crypto category total so it reads as a discrete exchange) + the synthetic
+// "margin" category (Binance margin/futures NET EQUITY, which rolls into net
+// worth — Phase 16). "binance" is inserted right after "crypto".
+const DISPLAY_CATEGORIES = [
+  "crypto",
+  "binance",
+  "stocks",
+  "gold",
+  "cash",
+  "property",
+  "inventory",
+  "margin",
+] as const;
 type DisplayCategory = (typeof DISPLAY_CATEGORIES)[number];
 
 const CATEGORY_TONE: Record<DisplayCategory, Tone> = {
   crypto: "brass",
+  binance: "amber",
   stocks: "emerald",
   gold: "amber",
   cash: "default",
@@ -70,6 +83,7 @@ const CATEGORY_TONE: Record<DisplayCategory, Tone> = {
 
 const CATEGORY_LABEL: Record<DisplayCategory, string> = {
   crypto: "Crypto",
+  binance: "Binance",
   stocks: "Stocks / ETF",
   gold: "Gold",
   cash: "Cash",
@@ -369,8 +383,66 @@ export function WealthWidget() {
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
               {DISPLAY_CATEGORIES.map((cat) => {
                 const bucket = byCategory[cat];
+                // Phase 19: Binance is its OWN tile, broken out of the Crypto
+                // category total. The Binance SPOT value lives inside the crypto
+                // category (asset row labelled "Binance"); cryptoSplit isolates it.
+                const binanceSpot = cryptoSplit.binance;
+                const marginTotalGbp =
+                  liveByCat?.["margin"] ?? byCategory["margin"]?.total ?? 0;
+                if (cat === "binance") {
+                  // Synthetic tile — value = Binance SPOT GBP. Always shown when a
+                  // Binance row exists (even £0) so the tile never disappears.
+                  if (!cryptoSplit.binanceManual && binanceSpot <= 0) return null;
+                  const series = categorySeries(cardHistory, "binance");
+                  return (
+                    <StatTile
+                      key={cat}
+                      label={CATEGORY_LABEL[cat]}
+                      tone={CATEGORY_TONE[cat]}
+                      value={gbp(binanceSpot, hidden)}
+                      chart={series.data}
+                      badge={
+                        <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
+                      }
+                      sub={
+                        <span className="flex flex-col gap-0.5">
+                          {usdPerGbp != null && (
+                            <span className="tabular-nums text-paper-dim">
+                              {usd(binanceSpot, usdPerGbp, hidden)}
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1.5">
+                            <span>spot</span>
+                            {cryptoSplit.binanceManual && (
+                              <EditValueButton asset={cryptoSplit.binanceManual} />
+                            )}
+                          </span>
+                          {/* Phase 19: small margin indicator — net equity of the
+                              Binance margin/futures positions that roll into NW. */}
+                          {Math.abs(marginTotalGbp) >= 0.005 && (
+                            <span className="mt-0.5 flex items-center justify-between border-t border-rule-soft/30 pt-0.5 text-paper-dim">
+                              <span className="flex items-center gap-1">
+                                <span className="font-mono text-[8px] uppercase tracking-wide text-rose-soft px-1 rounded bg-rose-soft/10">
+                                  margin
+                                </span>
+                              </span>
+                              <span className="tabular-nums text-paper-dim">
+                                {gbp(marginTotalGbp, hidden)}
+                              </span>
+                            </span>
+                          )}
+                        </span>
+                      }
+                    />
+                  );
+                }
                 // Prefer the fresh live per-category total over summed assets.
-                const val = liveByCat?.[cat] ?? bucket?.total ?? 0;
+                let val = liveByCat?.[cat] ?? bucket?.total ?? 0;
+                // Phase 19: subtract Binance SPOT from the displayed Crypto tile so
+                // the visible grid sums correctly (Binance is its own tile now);
+                // the headline NW summed value still includes it via the crypto
+                // category, so NW is unaffected — only the tile display splits.
+                if (cat === "crypto") val = val - binanceSpot;
                 // Hide the margin tile entirely when there's no margin equity.
                 if (cat === "margin" && Math.abs(val) < 0.005 && !bucket) {
                   return null;
@@ -417,43 +489,19 @@ export function WealthWidget() {
                             <EditValueButton asset={stocksAsset} />
                           )}
                         </span>
-                        {/* Phase 16/18: Coinbase + Binance SPOT split — both
-                            exchanges ALWAYS get their own visible line under
-                            Crypto whenever either has a value OR a manual row
-                            exists. Phase 18: render the Binance line even at £0
-                            so a persisted manual Binance row never disappears,
-                            and keep the "Binance" label as its OWN leaf span
-                            (pencil is a sibling, not a child) so it renders as a
-                            discrete, detectable sub-line exactly like Coinbase. */}
-                        {cat === "crypto" &&
-                          (cryptoSplit.coinbase > 0 ||
-                            cryptoSplit.binance > 0 ||
-                            cryptoSplit.binanceManual) && (
-                            <span className="mt-0.5 flex flex-col gap-0.5 border-t border-rule-soft/30 pt-0.5">
-                              <span className="flex items-center justify-between">
-                                <span className="text-paper-dim">Coinbase</span>
-                                <span className="tabular-nums text-paper-dim">
-                                  {gbp(cryptoSplit.coinbase, hidden)}
-                                </span>
-                              </span>
-                              <span className="flex items-center justify-between">
-                                <span className="flex items-center gap-1 text-paper-dim">
-                                  <span className="text-paper-dim">Binance</span>
-                                  {/* Phase 17: Binance spot is MANUAL now
-                                      (geo-blocked auto-fetch removed) — edit £
-                                      inline, same pattern as the Stocks line. */}
-                                  {cryptoSplit.binanceManual && (
-                                    <EditValueButton
-                                      asset={cryptoSplit.binanceManual}
-                                    />
-                                  )}
-                                </span>
-                                <span className="tabular-nums text-paper-dim">
-                                  {gbp(cryptoSplit.binance, hidden)}
-                                </span>
+                        {/* Phase 19: Binance is now its OWN top-level tile, so
+                            the Crypto tile shows only the Coinbase sub-line (the
+                            Crypto tile value already excludes Binance spot). */}
+                        {cat === "crypto" && cryptoSplit.coinbase > 0 && (
+                          <span className="mt-0.5 flex flex-col gap-0.5 border-t border-rule-soft/30 pt-0.5">
+                            <span className="flex items-center justify-between">
+                              <span className="text-paper-dim">Coinbase</span>
+                              <span className="tabular-nums text-paper-dim">
+                                {gbp(cryptoSplit.coinbase, hidden)}
                               </span>
                             </span>
-                          )}
+                          </span>
+                        )}
                       </span>
                     }
                   />

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Binance->Convex bridge every ~20 min (Phase 19)
+
+[Timer]
+# First run ~1 min after boot, then every 20 minutes.
+OnBootSec=1min
+OnUnitActiveSec=20min
+AccuracySec=30s
+Persistent=true
+Unit=binance-bridge.service
+
+[Install]
+WantedBy=timers.target

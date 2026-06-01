@@ -46,3 +46,4 @@ next-env.d.ts
 
 # Serena LSP cache
 .serena/
+scripts/.binance-bridge-token

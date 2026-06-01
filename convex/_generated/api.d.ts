@@ -9,6 +9,7 @@
  */
 
 import type * as alerts from "../alerts.js";
+import type * as binance from "../binance.js";
 import type * as crons from "../crons.js";
 import type * as events from "../events.js";
 import type * as expenses from "../expenses.js";
@@ -30,6 +31,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   alerts: typeof alerts;
+  binance: typeof binance;
   crons: typeof crons;
   events: typeof events;
   expenses: typeof expenses;

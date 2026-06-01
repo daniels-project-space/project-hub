@@ -1,0 +1,12 @@
+[Unit]
+Description=Phase 19 Binance VPS->Convex bridge (aria -> project-hub-app Convex)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/project-hub-app
+ExecStart=/usr/bin/env node /home/ubuntu/project-hub-app/scripts/binance-bridge.mjs
+# Token is read from scripts/.binance-bridge-token (gitignored) or BINANCE_BRIDGE_TOKEN env.
+TimeoutStartSec=60
