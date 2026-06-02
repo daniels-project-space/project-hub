@@ -526,6 +526,70 @@ export const _recordSnapshot = internalMutation({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ONE-TIME BACKFILL — real historical Binance into snapshot byCategory.binance.
+// ADDITIVE + IDEMPOTENT: for each entry we find the netWorthSnapshots row on the
+// SAME UTC day (or nearest within 18h) and patch ONLY byCategory.binance,
+// preserving every other byCategory key. totalGBP and all other fields are NEVER
+// touched. By default we skip a row that already has byCategory.binance (so a
+// re-run is a no-op); pass force:true to overwrite. Source = real per-day Binance
+// SPOT accountSnapshot reconstructed in GBP (see scripts/backfill-binance-history.mjs).
+// ─────────────────────────────────────────────────────────────────────────────
+export const backfillBinanceHistory = mutation({
+  args: {
+    entries: v.array(
+      v.object({ ts: v.number(), binanceGbp: v.number() }),
+    ),
+    force: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { entries, force }) => {
+    const DAY = 86_400_000;
+    const WINDOW = 18 * 60 * 60 * 1000; // 18h nearest-match tolerance
+    const snaps = await ctx.db.query("netWorthSnapshots").collect();
+    let patched = 0;
+    let skipped = 0;
+    let unmatched = 0;
+    for (const e of entries) {
+      if (!Number.isFinite(e.ts) || !Number.isFinite(e.binanceGbp)) {
+        skipped++;
+        continue;
+      }
+      const eDay = Math.floor(e.ts / DAY);
+      // Prefer a same-UTC-day snapshot; else nearest within WINDOW.
+      let best: (typeof snaps)[number] | null = null;
+      let bestDelta = Infinity;
+      for (const s of snaps) {
+        const sameDay = Math.floor(s.ts / DAY) === eDay;
+        const delta = Math.abs(s.ts - e.ts);
+        if (sameDay) {
+          if (delta < bestDelta) {
+            best = s;
+            bestDelta = delta;
+          }
+        } else if (best === null && delta <= WINDOW && delta < bestDelta) {
+          // only fall back to within-window if no same-day candidate found yet
+          bestDelta = delta;
+          best = s;
+        }
+      }
+      if (!best) {
+        unmatched++;
+        continue;
+      }
+      const existing = (best.byCategory ?? {}) as Record<string, number>;
+      if ("binance" in existing && !force) {
+        skipped++;
+        continue;
+      }
+      await ctx.db.patch(best._id, {
+        byCategory: { ...existing, binance: e.binanceGbp },
+      });
+      patched++;
+    }
+    return { patched, skipped, unmatched, totalEntries: entries.length };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // QUERIES (client-facing — no secrets touched)
 // ─────────────────────────────────────────────────────────────────────────────
 
