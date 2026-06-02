@@ -368,6 +368,7 @@ function GlobePane({
         lng: it.lng,
         label: it.title,
         kind: itemKindToGlobe(it.kind),
+        imageUrl: it.image ?? undefined,
       });
     }
     for (const leg of legs ?? []) {

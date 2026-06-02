@@ -18,7 +18,7 @@ export const SETTINGS_DEFAULTS = {
   tempUnit: "C" as "C" | "F",
   blurAmountsDefault: false as boolean,
   nwCurrency: "GBP" as "GBP" | "USD",
-  accent: "brass" as string, // preset key: brass | pink | cyan | violet | emerald
+  accent: "brass" as string, // preset key — see ACCENT_PRESETS below
 };
 
 export type SettingsValues = Record<string, unknown>;
@@ -27,11 +27,21 @@ export type SettingsValues = Record<string, unknown>;
 // this hex and write it onto --color-brass so every brass-tinted element recolors
 // live. brass hex ≈ the existing oklch(0.78 0.08 65) warm tone (#d4a574 lineage).
 export const ACCENT_PRESETS: Record<string, string> = {
-  brass: "#d4a574",
+  brass: "#d4a574", // default (warm gold)
+  amber: "#f59e0b",
+  orange: "#f97316",
+  red: "#ef4444",
+  rose: "#f43f5e",
   pink: "#ec4899",
-  cyan: "#06b6d4",
+  fuchsia: "#d946ef",
   violet: "#8b5cf6",
+  indigo: "#6366f1",
+  blue: "#3b82f6",
+  sky: "#0ea5e9",
+  cyan: "#06b6d4",
+  teal: "#14b8a6",
   emerald: "#34d399",
+  lime: "#84cc16",
 };
 
 const LS_KEY = "hub-settings";

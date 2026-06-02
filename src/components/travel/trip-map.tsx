@@ -56,8 +56,29 @@ const KIND_COLORS: Record<MarkerKind, string> = {
   default: "#b08d57", // brass (hub accent)
 };
 
-// No-token demo style (MapLibre hosted). CARTO-style basemap, no API key.
-const DEMO_STYLE = "https://demotiles.maplibre.org/style.json";
+// No-token raster basemap: CARTO "dark_all" (OpenStreetMap data) — full streets,
+// place + street labels, and country borders across zoom levels, in a dark
+// palette that matches the hub. No API key. The previous demotiles vector style
+// only showed bare country outlines (no streets/labels), hence the swap.
+// MapLibre takes a style OBJECT here (not a URL) so we can point straight at the
+// raster tile servers. a/b/c/d are CARTO's tile subdomains for load-spreading.
+const RASTER_STYLE = {
+  version: 8 as const,
+  sources: {
+    carto: {
+      type: "raster" as const,
+      tiles: [
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors © CARTO",
+    },
+  },
+  layers: [{ id: "carto", type: "raster" as const, source: "carto" }],
+};
 
 export function TripMap({ markers, routes, className }: TripMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -83,7 +104,7 @@ export function TripMap({ markers, routes, className }: TripMapProps) {
 
         map = new maplibregl.Map({
           container: containerRef.current,
-          style: DEMO_STYLE,
+          style: RASTER_STYLE,
           center: [markers[0].lng, markers[0].lat],
           zoom: 9,
           attributionControl: false,

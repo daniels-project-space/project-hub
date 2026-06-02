@@ -73,7 +73,7 @@ export function SettingsPanel({
           label="Accent color"
           hint="Recolors the interface instantly."
         >
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-[176px] flex-wrap items-center justify-end gap-2">
             {Object.entries(ACCENT_PRESETS).map(([key, hex]) => {
               const active = accent === key;
               return (
