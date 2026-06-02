@@ -21,6 +21,7 @@ import type * as secrets from "../secrets.js";
 import type * as settings from "../settings.js";
 import type * as todos from "../todos.js";
 import type * as travelActions from "../travelActions.js";
+import type * as tripExtras from "../tripExtras.js";
 import type * as trips from "../trips.js";
 import type * as wealth from "../wealth.js";
 import type * as wealthActions from "../wealthActions.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   settings: typeof settings;
   todos: typeof todos;
   travelActions: typeof travelActions;
+  tripExtras: typeof tripExtras;
   trips: typeof trips;
   wealth: typeof wealth;
   wealthActions: typeof wealthActions;

@@ -253,6 +253,10 @@ export default defineSchema({
     destCountryCode: v.optional(v.string()), // ISO-3166 alpha-2 for info-rail lookups
     status: v.optional(v.string()), // "planning" | "booked" | "done" ...
     active: v.optional(v.boolean()),
+    // --- v3 multi-mode (Stage 0, additive/backward-compatible) ---
+    mode: v.optional(v.string()), // "planner" | "deal" | "trip" — drives widget mode (Stage 1)
+    categories: v.optional(v.array(v.string())), // enabled activity kinds (constrains planTrip)
+    notes: v.optional(v.string()), // free-text trip notes
     createdAt: v.number(),
   })
     .index("by_active", ["active"])
@@ -290,7 +294,72 @@ export default defineSchema({
     image: v.optional(v.string()),
     rating: v.optional(v.number()),
     tags: v.optional(v.array(v.string())),
+    // --- v3 (Stage 0, additive). An empty slot = item with kind:"slot" (no
+    // schema change for kind). durationMin powers the resizable timeline. ---
+    durationMin: v.optional(v.number()), // duration in minutes (drag-resize)
   })
     .index("by_trip", ["tripId"])
     .index("by_day", ["dayId"]),
+
+  // --- Travel widget v3 multi-mode (Stage 0 — per-trip extras) ---
+  // All four tables are additive, indexed by_trip, and cascade-deleted with the
+  // parent trip (see trips.remove). No migration.
+
+  // Per-trip checklist (Mode A/C). `position` orders items; `done` toggles.
+  tripTodos: defineTable({
+    tripId: v.id("trips"),
+    text: v.string(),
+    done: v.boolean(),
+    position: v.number(),
+    createdAt: v.number(),
+  }).index("by_trip", ["tripId"]),
+
+  // Multi-destination legs (ordered stops within one trip). `order` is the sort
+  // key. Coordinates/country/dates optional so a leg can exist with just a city.
+  tripLegs: defineTable({
+    tripId: v.id("trips"),
+    order: v.number(),
+    city: v.string(),
+    lat: v.optional(v.number()),
+    lng: v.optional(v.number()),
+    countryCode: v.optional(v.string()),
+    arriveDate: v.optional(v.string()), // ISO YYYY-MM-DD
+    departDate: v.optional(v.string()),
+  }).index("by_trip", ["tripId"]),
+
+  // Connecting flights (one row = one journey, possibly multi-segment). `order`
+  // sorts journeys; `segments` is the leg-by-leg breakdown.
+  tripFlights: defineTable({
+    tripId: v.id("trips"),
+    order: v.number(),
+    segments: v.array(
+      v.object({
+        from: v.string(),
+        to: v.string(),
+        depart: v.optional(v.string()),
+        arrive: v.optional(v.string()),
+        carrier: v.optional(v.string()),
+        flightNo: v.optional(v.string()),
+      }),
+    ),
+  }).index("by_trip", ["tripId"]),
+
+  // Saved stay options (Mode-B deal results). Cards carry image + book link and
+  // badge flags. `saved` distinguishes shortlisted vs transient search results.
+  tripStays: defineTable({
+    tripId: v.id("trips"),
+    name: v.string(),
+    provider: v.optional(v.string()),
+    priceGbp: v.optional(v.number()),
+    image: v.optional(v.string()),
+    link: v.optional(v.string()),
+    freeCancellation: v.optional(v.boolean()),
+    payLater: v.optional(v.boolean()),
+    lat: v.optional(v.number()),
+    lng: v.optional(v.number()),
+    checkIn: v.optional(v.string()), // ISO YYYY-MM-DD
+    checkOut: v.optional(v.string()),
+    saved: v.optional(v.boolean()),
+    createdAt: v.number(),
+  }).index("by_trip", ["tripId"]),
 });

@@ -35,6 +35,35 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const PLANNER_MAX_TOKENS = 6000;
 const GBP = "GBP";
 
+/**
+ * Interest-category slugs the planner may tag items with (Stage 1). Kept as a
+ * self-contained constant here (convex modules don't share the `@/` alias and
+ * shouldn't reach into src/) — it mirrors src/lib/travel/categories.ts and the
+ * `category` enum in the emit_itinerary tool schema below. The model returns one
+ * of these per item; we persist it into the item's `tags` so the timeline can
+ * filter by category with no schema change.
+ */
+const CATEGORY_SLUGS: readonly string[] = [
+  "restaurants",
+  "cafes",
+  "attractions",
+  "nature",
+  "bars",
+  "markets",
+  "viewpoints",
+];
+
+/** Human-ish labels for prompt injection (slug → label). */
+const CATEGORY_LABELS: Record<string, string> = {
+  restaurants: "restaurants",
+  cafes: "cafés",
+  attractions: "attractions & sights",
+  nature: "nature & hiking",
+  bars: "bars & nightlife",
+  markets: "markets",
+  viewpoints: "viewpoints & scenic spots",
+};
+
 /** (service, keyName) pairs in the Convex `secrets` table. */
 const SECRET = {
   anthropic: { service: "anthropic", keyName: "ANTHROPIC_API_KEY" },
@@ -170,6 +199,30 @@ const EMIT_ITINERARY_TOOL = {
                   lat: { type: "number" },
                   lng: { type: "number" },
                   address: { type: "string" },
+                  image: {
+                    type: "string",
+                    description:
+                      "Direct https URL to a representative photo, if confidently known.",
+                  },
+                  link: {
+                    type: "string",
+                    description:
+                      "Official website or authoritative info URL (https), if known.",
+                  },
+                  category: {
+                    type: "string",
+                    description:
+                      "Interest-category slug this item belongs to (one of the provided slugs), if applicable.",
+                    enum: [
+                      "restaurants",
+                      "cafes",
+                      "attractions",
+                      "nature",
+                      "bars",
+                      "markets",
+                      "viewpoints",
+                    ],
+                  },
                 },
                 required: ["kind", "title", "priceGbp"],
               },
@@ -193,6 +246,8 @@ Hard rules:
 - Give realistic local times (startTime/endTime, 24h HH:MM) and a logical geographic flow within each day.
 - Include lat/lng and address for well-known places, restaurants and stays where you are confident.
 - Use the kind field correctly: place (sights), food (meals), stay (lodging), flight, transport (local transit/transfers), activity (tours/experiences).
+- When the user restricts interest categories, include ONLY activities from those categories and set each item's "category" field to the matching category slug. With no restriction, set "category" when an item clearly fits one of the known slugs (restaurants, cafes, attractions, nature, bars, markets, viewpoints).
+- Populate "image" (a direct https photo URL) and "link" (official/authoritative https URL) whenever you are confident of them.
 - Keep descriptions concise and useful.`;
 
 // ─── planTrip ──────────────────────────────────────────────────────────────────
@@ -207,6 +262,9 @@ type ItineraryItem = {
   lat?: number;
   lng?: number;
   address?: string;
+  image?: string;
+  link?: string;
+  category?: string;
 };
 type ItineraryDay = {
   date?: string;
@@ -226,6 +284,23 @@ type Itinerary = {
 /** Drop NaN/Infinity (the trips mutations reject non-finite numbers). */
 function finiteOrUndef(n: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * Inclusive day count for a start/end ISO date range (Stage 1). Mirrors the
+ * project's inclusive-date convention. Returns undefined for missing/invalid
+ * dates or an inverted range, capped at 60 to match parseIntent's guard.
+ */
+function dayCountFromRange(
+  start: string | undefined,
+  end: string | undefined,
+): number | undefined {
+  if (!start || !end) return undefined;
+  const s = new Date(`${start}T00:00:00Z`).getTime();
+  const e = new Date(`${end}T00:00:00Z`).getTime();
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return undefined;
+  const days = Math.round((e - s) / 86400000) + 1;
+  return days > 0 && days <= 60 ? days : undefined;
 }
 
 /** One Anthropic Messages call with forced tool-use; returns the parsed input. */
@@ -293,18 +368,31 @@ function toReplaceDays(it: Itinerary) {
       date: typeof day.date === "string" ? day.date : undefined,
       dayIndex: finiteOrUndef(day.dayIndex) ?? i,
       summary: typeof day.summary === "string" ? day.summary : undefined,
-      items: (Array.isArray(day.items) ? day.items : []).map((item) => ({
-        kind: typeof item.kind === "string" ? item.kind : "activity",
-        title: typeof item.title === "string" ? item.title : "Untitled",
-        description:
-          typeof item.description === "string" ? item.description : undefined,
-        startTime: typeof item.startTime === "string" ? item.startTime : undefined,
-        endTime: typeof item.endTime === "string" ? item.endTime : undefined,
-        priceGbp: finiteOrUndef(item.priceGbp),
-        lat: finiteOrUndef(item.lat),
-        lng: finiteOrUndef(item.lng),
-        address: typeof item.address === "string" ? item.address : undefined,
-      })),
+      items: (Array.isArray(day.items) ? day.items : []).map((item) => {
+        // Persist the model's category slug into `tags` (prepended), so the
+        // timeline can filter by category with no schema change. Only accept a
+        // known slug; unknown/absent → no category tag (item always shows).
+        const category =
+          typeof item.category === "string" && CATEGORY_SLUGS.includes(item.category)
+            ? item.category
+            : undefined;
+        const tags = category ? [category] : undefined;
+        return {
+          kind: typeof item.kind === "string" ? item.kind : "activity",
+          title: typeof item.title === "string" ? item.title : "Untitled",
+          description:
+            typeof item.description === "string" ? item.description : undefined,
+          startTime: typeof item.startTime === "string" ? item.startTime : undefined,
+          endTime: typeof item.endTime === "string" ? item.endTime : undefined,
+          priceGbp: finiteOrUndef(item.priceGbp),
+          lat: finiteOrUndef(item.lat),
+          lng: finiteOrUndef(item.lng),
+          address: typeof item.address === "string" ? item.address : undefined,
+          image: typeof item.image === "string" ? item.image : undefined,
+          link: typeof item.link === "string" ? item.link : undefined,
+          tags,
+        };
+      }),
     }));
 }
 
@@ -314,6 +402,11 @@ export const planTrip = action({
     budgetGbp: v.optional(v.number()),
     originCity: v.optional(v.string()),
     tripId: v.optional(v.id("trips")),
+    // Stage 1 — interest categories constrain generation (empty/absent → all).
+    categories: v.optional(v.array(v.string())),
+    // Stage 1 — explicit timeframe drives itinerary length + actual dates.
+    startDate: v.optional(v.string()), // ISO YYYY-MM-DD
+    endDate: v.optional(v.string()), // ISO YYYY-MM-DD
   },
   handler: async (ctx, args): Promise<{ tripId: Id<"trips"> }> => {
     const apiKey = await getSecret(ctx, SECRET.anthropic);
@@ -327,11 +420,33 @@ export const planTrip = action({
     const intent = parseIntent(args.prompt);
     const budgetGbp = args.budgetGbp ?? intent.budgetGbp;
 
+    // Timeframe (Stage 1): an explicit start/end range overrides the regex
+    // day-count and pins the actual calendar dates the planner must use.
+    const rangeDays = dayCountFromRange(args.startDate, args.endDate);
+    const dayCount = rangeDays ?? intent.days;
+
+    // Interest categories (Stage 1): only keep known slugs; empty → no
+    // constraint (backward compatible).
+    const enabledCategories = (args.categories ?? []).filter((c) =>
+      CATEGORY_SLUGS.includes(c),
+    );
+    const categoryLine =
+      enabledCategories.length > 0
+        ? `Only include activities from these interest categories: ${enabledCategories
+            .map((c) => CATEGORY_LABELS[c] ?? c)
+            .join(", ")}. Tag EACH item with its category by setting the item's "category" field to one of: ${enabledCategories.join(", ")}.`
+        : "";
+
     const userPrompt = [
       args.prompt,
       args.originCity ? `Origin city: ${args.originCity}.` : "",
       budgetGbp ? `Total budget (HARD cap): £${budgetGbp} GBP.` : "",
-      intent.days ? `Plan ${intent.days} day(s).` : "",
+      args.startDate && args.endDate
+        ? `Travel dates: ${args.startDate} to ${args.endDate} (inclusive). Produce exactly ${dayCount} day(s) and set each day's date accordingly.`
+        : dayCount
+          ? `Plan ${dayCount} day(s).`
+          : "",
+      categoryLine,
       "Return the itinerary via the emit_itinerary tool. All prices in GBP.",
     ]
       .filter(Boolean)
@@ -356,8 +471,11 @@ export const planTrip = action({
     const days = toReplaceDays(itinerary);
     const destCity =
       itinerary.destCity || intent.destination || "Trip";
-    const startDate = days.find((d) => d.date)?.date;
-    const endDate = [...days].reverse().find((d) => d.date)?.date;
+    // Prefer the model's per-day dates; fall back to the caller's timeframe so
+    // an explicit range still pins the trip's start/end (Stage 1).
+    const startDate = days.find((d) => d.date)?.date ?? args.startDate;
+    const endDate =
+      [...days].reverse().find((d) => d.date)?.date ?? args.endDate;
     const titleDates =
       startDate && endDate && startDate !== endDate
         ? ` (${startDate}–${endDate})`

@@ -16,7 +16,7 @@
  * a query/action returns null.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plane,
   Sparkles,
@@ -25,6 +25,18 @@ import {
   CalendarPlus,
   ChevronDown,
   Check,
+  Map as MapIcon,
+  Tag,
+  Globe2,
+  CalendarRange,
+  Utensils,
+  Coffee,
+  Landmark,
+  Trees,
+  Wine,
+  ShoppingBasket,
+  Mountain,
+  type LucideIcon,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -42,6 +54,25 @@ import {
 import { InfoRail } from "@/components/travel/info-rail";
 import { FlightChip } from "@/components/travel/flight-chip";
 import { PackingChecklist } from "@/components/travel/packing-checklist";
+import {
+  INTEREST_CATEGORIES,
+  type CategoryIconName,
+} from "@/lib/travel/categories";
+
+// ── mode + category icon resolution ────────────────────────────────────────
+type TravelMode = "planner" | "deal" | "trip";
+
+// Map the category module's icon-name strings → actual lucide components, so the
+// categories.ts module stays SSR-safe / icon-library-agnostic.
+const CATEGORY_ICONS: Record<CategoryIconName, LucideIcon> = {
+  Utensils,
+  Coffee,
+  Landmark,
+  Trees,
+  Wine,
+  ShoppingBasket,
+  Mountain,
+};
 
 // ── trip type (mirror convex/schema trips) ─────────────────────────────────
 interface Trip {
@@ -57,6 +88,10 @@ interface Trip {
   destLng?: number;
   destCountryCode?: string;
   active?: boolean;
+  // v3 multi-mode (Stage 0) — drive the widget's mode + category chips.
+  mode?: string;
+  categories?: string[];
+  notes?: string;
   createdAt: number;
 }
 
@@ -90,8 +125,16 @@ function getSpeechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
 // ── Prompt + planning row ──────────────────────────────────────────────────
 function PromptRow({
   onPlanned,
+  categories,
+  startDate,
+  endDate,
 }: {
   onPlanned: (tripId: Id<"trips">) => void;
+  /** Enabled interest-category slugs (constrains generation). */
+  categories?: string[];
+  /** Timeframe (drives itinerary length + dates). */
+  startDate?: string;
+  endDate?: string;
 }) {
   const planTrip = useAction(api.travelActions.planTrip);
   const [prompt, setPrompt] = useState("");
@@ -141,6 +184,10 @@ function PromptRow({
         budgetGbp:
           budgetNum != null && Number.isFinite(budgetNum) ? budgetNum : undefined,
         originCity: origin.trim() || undefined,
+        // Stage 1: shape generation by the current category + timeframe picks.
+        categories: categories && categories.length > 0 ? categories : undefined,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
       });
       setPrompt("");
       setBudget("");
@@ -339,6 +386,186 @@ function BudgetBar({
   );
 }
 
+// ── Mode switch (segmented: Planner | Find | Trip) ─────────────────────────
+function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: TravelMode;
+  onChange: (m: TravelMode) => void;
+}) {
+  const tabs: { value: TravelMode; label: string; Icon: LucideIcon }[] = [
+    { value: "planner", label: "Planner", Icon: MapIcon },
+    { value: "deal", label: "Find", Icon: Tag },
+    { value: "trip", label: "Trip", Icon: Globe2 },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="travel mode"
+      className="inline-flex items-center gap-0.5 rounded-lg border border-rule-soft/50 bg-ink-2/40 p-0.5"
+    >
+      {tabs.map(({ value, label, Icon }) => {
+        const on = value === mode;
+        return (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            onClick={() => onChange(value)}
+            className={cn(
+              "flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-mono uppercase tracking-[0.12em] transition-colors",
+              on
+                ? "bg-brass/15 text-brass border border-brass/40"
+                : "text-paper-faint hover:text-paper border border-transparent",
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Category toggle chips ──────────────────────────────────────────────────
+// `selected` is the enabled-slug set; empty array means "all" (no filter).
+function CategoryChips({
+  selected,
+  onToggle,
+  onRegenerate,
+  canRegenerate,
+}: {
+  selected: string[];
+  onToggle: (slug: string) => void;
+  onRegenerate: () => void;
+  canRegenerate: boolean;
+}) {
+  const all = selected.length === 0;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {INTEREST_CATEGORIES.map((c) => {
+        const Icon = CATEGORY_ICONS[c.iconName];
+        // "all" = every chip reads as on; otherwise highlight the chosen ones.
+        const on = all || selected.includes(c.slug);
+        return (
+          <button
+            key={c.slug}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onToggle(c.slug)}
+            className={cn(
+              "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.1em] transition-colors",
+              on
+                ? "border-brass/50 bg-brass/10 text-brass"
+                : "border-rule-soft/50 bg-ink-2/30 text-paper-faint hover:text-paper",
+            )}
+          >
+            <Icon className="h-3 w-3" />
+            {c.label}
+          </button>
+        );
+      })}
+      {canRegenerate && !all && (
+        <button
+          type="button"
+          onClick={onRegenerate}
+          className="flex items-center gap-1 rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.1em] text-paper-faint hover:text-brass hover:border-brass/50 transition-colors"
+        >
+          <Sparkles className="h-3 w-3" /> Regenerate
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Timeframe (native date range) ──────────────────────────────────────────
+function DateRange({
+  start,
+  end,
+  onChange,
+}: {
+  start?: string;
+  end?: string;
+  onChange: (patch: { startDate?: string; endDate?: string }) => void;
+}) {
+  const cls =
+    "rounded-lg border border-rule-soft/50 bg-ink-2/40 px-2 py-1 text-[11px] text-paper [color-scheme:dark] outline-none focus:border-brass/50";
+  return (
+    <div className="flex items-center gap-1.5">
+      <CalendarRange className="h-3.5 w-3.5 shrink-0 text-brass/80" />
+      <input
+        type="date"
+        aria-label="trip start date"
+        value={start ?? ""}
+        max={end || undefined}
+        onChange={(e) => onChange({ startDate: e.target.value || undefined })}
+        className={cls}
+      />
+      <span className="text-[11px] text-paper-faint">→</span>
+      <input
+        type="date"
+        aria-label="trip end date"
+        value={end ?? ""}
+        min={start || undefined}
+        onChange={(e) => onChange({ endDate: e.target.value || undefined })}
+        className={cls}
+      />
+    </div>
+  );
+}
+
+// ── Find / Trip placeholders (real builds land in Stage 3 / Stage 4) ───────
+function FindPlaceholder() {
+  return (
+    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
+      <Tag className="mx-auto h-6 w-6 text-brass/70" />
+      <div className="space-y-1">
+        <p className="text-sm font-display text-paper">Find a deal</p>
+        <p className="text-[12px] text-paper-faint mx-auto max-w-sm">
+          Hotel search with free cancellation &amp; pay-later. Arrives next.
+        </p>
+      </div>
+      <input
+        type="text"
+        disabled
+        placeholder="e.g. 4 nights in Lisbon, free cancellation, under £600"
+        aria-label="deal search (coming soon)"
+        className="w-full max-w-md mx-auto block rounded-lg border border-rule-soft/40 bg-ink-2/40 px-3 py-2 text-sm text-paper-faint placeholder:text-paper-faint/70 outline-none opacity-50 cursor-not-allowed"
+      />
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-paper-faint/70">
+        Stage 3 · coming soon
+      </p>
+    </div>
+  );
+}
+
+function TripPlaceholder() {
+  return (
+    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
+      <Globe2 className="mx-auto h-6 w-6 text-brass/70" />
+      <div className="space-y-1">
+        <p className="text-sm font-display text-paper">Expanded Trip Planner</p>
+        <p className="text-[12px] text-paper-faint mx-auto max-w-sm">
+          Globe + sidebar — arrives next.
+        </p>
+      </div>
+      <button
+        type="button"
+        disabled
+        className="mx-auto flex items-center gap-1.5 rounded-lg border border-rule-soft/40 bg-ink-2/40 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-paper-faint opacity-50 cursor-not-allowed"
+      >
+        <Globe2 className="h-3.5 w-3.5" /> Open
+      </button>
+      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-paper-faint/70">
+        Stage 4 · coming soon
+      </p>
+    </div>
+  );
+}
+
 // ── Main widget ────────────────────────────────────────────────────────────
 export function TravelWidget() {
   const trips = useQuery(api.trips.list) as Trip[] | undefined;
@@ -375,6 +602,82 @@ export function TravelWidget() {
     } catch {
       /* non-fatal — selection still works via override */
     }
+  };
+
+  // Selected trip from the (already-loaded, reactive) list — carries mode +
+  // categories without waiting on getFull, so the header renders immediately.
+  const selectedTrip = useMemo(
+    () => trips?.find((t) => t._id === selectedId) ?? null,
+    [trips, selectedId],
+  );
+
+  // ── Mode (Planner | Find | Trip) ─────────────────────────────────────────
+  // Initialized from the active trip's persisted mode; falls back to "planner".
+  // Local state mirrors the Convex value and re-syncs when the selection or its
+  // persisted mode changes (e.g. after another client writes it).
+  const [mode, setMode] = useState<TravelMode>(
+    (selectedTrip?.mode as TravelMode) ?? "planner",
+  );
+  useEffect(() => {
+    const m = (selectedTrip?.mode as TravelMode) ?? "planner";
+    setMode(m);
+  }, [selectedId, selectedTrip?.mode]);
+
+  const changeMode = (m: TravelMode) => {
+    setMode(m); // optimistic
+    if (selectedId) {
+      void updateTrip({ tripId: selectedId, patch: { mode: m } });
+    }
+  };
+
+  // Enabled interest categories (persisted on the trip; [] = all).
+  const enabledCategories = selectedTrip?.categories ?? [];
+  const toggleCategory = (slug: string) => {
+    if (!selectedId) return;
+    const cur = selectedTrip?.categories ?? [];
+    // Empty (= "all") → clicking a chip starts an explicit allowlist with the
+    // OTHERS on minus the clicked one would be confusing; instead, first click
+    // narrows to just that category. Subsequent clicks add/remove from the set.
+    let next: string[];
+    if (cur.length === 0) {
+      next = [slug];
+    } else if (cur.includes(slug)) {
+      next = cur.filter((s) => s !== slug);
+    } else {
+      next = [...cur, slug];
+    }
+    void updateTrip({ tripId: selectedId, patch: { categories: next } });
+  };
+
+  // Re-run the planner for the current trip with the active category set.
+  const planTripAction = useAction(api.travelActions.planTrip);
+  const [regenerating, setRegenerating] = useState(false);
+  const regenerateWithCategories = async () => {
+    if (!selectedId || !selectedTrip || regenerating) return;
+    setRegenerating(true);
+    try {
+      await planTripAction({
+        prompt:
+          selectedTrip.destCity
+            ? `Re-plan a trip to ${selectedTrip.destCity}.`
+            : selectedTrip.title,
+        tripId: selectedId,
+        budgetGbp: selectedTrip.budgetGbp,
+        originCity: selectedTrip.originCity,
+        categories: enabledCategories.length > 0 ? enabledCategories : undefined,
+        startDate: selectedTrip.startDate || undefined,
+        endDate: selectedTrip.endDate || undefined,
+      });
+    } catch {
+      /* non-fatal — surfaced via the prompt row on manual replan */
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const setDateRange = (patch: { startDate?: string; endDate?: string }) => {
+    if (!selectedId) return;
+    void updateTrip({ tripId: selectedId, patch });
   };
 
   // ── Empty state: just the prompt row + a hint ────────────────────────────
@@ -451,13 +754,16 @@ export function TravelWidget() {
   return (
     <WidgetSlot size="full" label="Travel">
       <div className="p-4 space-y-3">
-        {/* Header: selector + save */}
+        {/* Header: selector + mode switch + save */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <TripSelector
-            trips={trips}
-            selectedId={selectedId}
-            onSelect={(id) => setOverride(id)}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <TripSelector
+              trips={trips}
+              selectedId={selectedId}
+              onSelect={(id) => setOverride(id)}
+            />
+            <ModeSwitch mode={mode} onChange={changeMode} />
+          </div>
           <div className="flex items-center gap-2">
             {saveMsg && (
               <span className="text-[11px] text-emerald-soft">{saveMsg}</span>
@@ -473,64 +779,106 @@ export function TravelWidget() {
           </div>
         </div>
 
-        {/* Prompt row (always available to plan/replan) */}
-        <PromptRow onPlanned={onPlanned} />
+        {/* ── FIND mode (Stage 3 placeholder) ── */}
+        {mode === "deal" && <FindPlaceholder />}
 
-        {/* Budget bar */}
-        {trip && (trip.budgetGbp != null || spent > 0) && (
-          <BudgetBar
-            trip={trip}
-            spent={spent}
-            onSetBudget={(v) =>
-              void updateTrip({
-                tripId: trip._id,
-                patch: { budgetGbp: Number.isFinite(v) ? v : 0 },
-              })
-            }
-          />
-        )}
+        {/* ── TRIP mode (Stage 4 placeholder) ── */}
+        {mode === "trip" && <TripPlaceholder />}
 
-        {/* Info rail */}
-        {trip && (
-          <InfoRail
-            input={{
-              destCity: trip.destCity,
-              destLat: trip.destLat,
-              destLng: trip.destLng,
-              destCountryCode: trip.destCountryCode,
-            }}
-          />
-        )}
-
-        {/* Map + timeline: stack on mobile, side-by-side on md+ */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <div className="h-56 md:h-72">
-              <TripMap markers={markers} routes={routes} />
-            </div>
-            <MapLegend />
-          </div>
-          <div className="max-h-72 overflow-auto pr-1">
-            <ItineraryTimeline
-              days={days}
-              items={items}
-              onReorder={(dayId, ordered) =>
-                void reorderItems({ dayId, orderedItemIds: ordered })
-              }
-              onSetStatus={(itemId, status) =>
-                void setItemStatus({ itemId, status })
-              }
-              onRemoveItem={(itemId) => void removeItem({ itemId })}
-              onAddItem={handleAddItem}
+        {/* ── PLANNER mode (full current view) ── */}
+        {mode === "planner" && (
+          <>
+            {/* Prompt row (always available to plan/replan) */}
+            <PromptRow
+              onPlanned={onPlanned}
+              categories={enabledCategories}
+              startDate={selectedTrip?.startDate}
+              endDate={selectedTrip?.endDate}
             />
-          </div>
-        </div>
 
-        {/* Flight chip + packing */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-rule-soft/40 pt-3">
-          <FlightChip />
-          {selectedId && <PackingChecklist tripId={selectedId} />}
-        </div>
+            {/* Timeframe + interest-category chips */}
+            {selectedId && (
+              <div className="flex flex-col gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/20 px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <DateRange
+                  start={selectedTrip?.startDate}
+                  end={selectedTrip?.endDate}
+                  onChange={setDateRange}
+                />
+                <CategoryChips
+                  selected={enabledCategories}
+                  onToggle={toggleCategory}
+                  onRegenerate={() => void regenerateWithCategories()}
+                  canRegenerate={!!trip && days.length > 0}
+                />
+              </div>
+            )}
+            {regenerating && (
+              <div className="flex items-center gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/30 px-2.5 py-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-brass" />
+                <span className="text-[12px] text-paper-faint">
+                  Regenerating with your categories…
+                </span>
+              </div>
+            )}
+
+            {/* Budget bar */}
+            {trip && (trip.budgetGbp != null || spent > 0) && (
+              <BudgetBar
+                trip={trip}
+                spent={spent}
+                onSetBudget={(v) =>
+                  void updateTrip({
+                    tripId: trip._id,
+                    patch: { budgetGbp: Number.isFinite(v) ? v : 0 },
+                  })
+                }
+              />
+            )}
+
+            {/* Info rail */}
+            {trip && (
+              <InfoRail
+                input={{
+                  destCity: trip.destCity,
+                  destLat: trip.destLat,
+                  destLng: trip.destLng,
+                  destCountryCode: trip.destCountryCode,
+                }}
+              />
+            )}
+
+            {/* Map + timeline: stack on mobile, side-by-side on md+ */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <div className="h-56 md:h-72">
+                  <TripMap markers={markers} routes={routes} />
+                </div>
+                <MapLegend />
+              </div>
+              <div className="max-h-72 overflow-auto pr-1">
+                <ItineraryTimeline
+                  days={days}
+                  items={items}
+                  enabledCategories={enabledCategories}
+                  onReorder={(dayId, ordered) =>
+                    void reorderItems({ dayId, orderedItemIds: ordered })
+                  }
+                  onSetStatus={(itemId, status) =>
+                    void setItemStatus({ itemId, status })
+                  }
+                  onRemoveItem={(itemId) => void removeItem({ itemId })}
+                  onAddItem={handleAddItem}
+                />
+              </div>
+            </div>
+
+            {/* Flight chip + packing */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-rule-soft/40 pt-3">
+              <FlightChip />
+              {selectedId && <PackingChecklist tripId={selectedId} />}
+            </div>
+          </>
+        )}
       </div>
     </WidgetSlot>
   );

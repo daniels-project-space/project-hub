@@ -29,6 +29,10 @@ const tripPatchValidator = v.object({
   destCountryCode: v.optional(v.string()),
   status: v.optional(v.string()),
   active: v.optional(v.boolean()),
+  // v3 multi-mode (Stage 0) — so Stage 1 can persist these via trips.update.
+  mode: v.optional(v.string()), // "planner" | "deal" | "trip"
+  categories: v.optional(v.array(v.string())),
+  notes: v.optional(v.string()),
 });
 
 /** Patchable item fields (everything except tripId/dayId, which are structural). */
@@ -48,6 +52,7 @@ const itemPatchValidator = v.object({
   image: v.optional(v.string()),
   rating: v.optional(v.number()),
   tags: v.optional(v.array(v.string())),
+  durationMin: v.optional(v.number()), // v3 (Stage 0) — resizable-timeline duration
 });
 
 /** Item shape accepted by the bulk replaceItinerary mutation (no ids — those
@@ -207,11 +212,26 @@ export const update = mutation({
   },
 });
 
-/** Delete a trip and cascade-delete its days + items. */
+/** Delete a trip and cascade-delete ALL its per-trip rows: days + items (shared
+ *  helper) plus the v3 extras (todos / legs / flights / stays). Each extra table
+ *  is read via its `by_trip` index. Kept separate from deleteTripChildren so
+ *  replaceItinerary (which only rewrites days/items) never wipes the extras. */
 export const remove = mutation({
   args: { tripId: v.id("trips") },
   handler: async (ctx, { tripId }): Promise<void> => {
     await deleteTripChildren(ctx, tripId);
+    for (const table of [
+      "tripTodos",
+      "tripLegs",
+      "tripFlights",
+      "tripStays",
+    ] as const) {
+      const rows = await ctx.db
+        .query(table)
+        .withIndex("by_trip", (q) => q.eq("tripId", tripId))
+        .collect();
+      for (const row of rows) await ctx.db.delete(row._id);
+    }
     await ctx.db.delete(tripId);
   },
 });
@@ -298,6 +318,7 @@ export const updateItem = mutation({
     assertFinite("lng", patch.lng);
     assertFinite("rating", patch.rating);
     assertFinite("sortOrder", patch.sortOrder);
+    assertFinite("durationMin", patch.durationMin);
     await ctx.db.patch(itemId, definedOnly(patch));
     return itemId;
   },

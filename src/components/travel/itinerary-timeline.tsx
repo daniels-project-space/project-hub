@@ -42,9 +42,11 @@ import {
   Check,
   SkipForward,
   Circle,
+  ExternalLink,
   type LucideIcon,
 } from "lucide-react";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { itemMatchesCategories } from "@/lib/travel/categories";
 
 // Trip item kinds (from the planner schema) → icon + map marker kind.
 const KIND_ICON: Record<string, LucideIcon> = {
@@ -74,6 +76,9 @@ export interface TripItem {
   status?: string;
   lat?: number;
   lng?: number;
+  link?: string;
+  image?: string;
+  tags?: string[];
 }
 export interface TripDay {
   _id: Id<"tripDays">;
@@ -89,6 +94,8 @@ interface TimelineProps {
   onSetStatus: (itemId: Id<"tripItems">, status: ItemStatus) => void;
   onRemoveItem: (itemId: Id<"tripItems">) => void;
   onAddItem: (dayId: Id<"tripDays">) => void;
+  /** Enabled interest-category slugs. Empty/undefined → show all (no filter). */
+  enabledCategories?: string[];
 }
 
 const gbp = (n: number) =>
@@ -174,13 +181,38 @@ function SortableItem({
         <GripVertical className="h-3.5 w-3.5" />
       </button>
       <Icon className="h-3.5 w-3.5 shrink-0 text-brass/80" />
+      {item.image && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={item.image}
+          alt=""
+          loading="lazy"
+          className="h-8 w-8 shrink-0 rounded object-cover border border-rule-soft/40 bg-ink-2/40"
+          onError={(e) => {
+            // Hide broken/unknown image URLs gracefully.
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
+        />
+      )}
       <div className="flex-1 min-w-0">
         <p
-          className={`text-[12px] leading-tight text-paper truncate ${
+          className={`flex items-center gap-1 text-[12px] leading-tight text-paper truncate ${
             status === "skip" ? "line-through text-paper-faint" : ""
           }`}
         >
-          {item.title}
+          <span className="truncate">{item.title}</span>
+          {item.link && (
+            <a
+              href={item.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`open ${item.title} link`}
+              className="shrink-0 text-paper-faint hover:text-brass transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </p>
         {(time || item.priceGbp != null) && (
           <p className="text-[10px] text-paper-faint tabular-nums truncate">
@@ -301,9 +333,18 @@ export function ItineraryTimeline({
   onSetStatus,
   onRemoveItem,
   onAddItem,
+  enabledCategories,
 }: TimelineProps) {
+  // Category filter (Stage 1): when a non-empty enabled set is provided, show
+  // only items whose category tag is enabled; items with no category tag always
+  // show. Empty/undefined → no filtering. Re-renders instantly on toggle.
+  const visible =
+    enabledCategories && enabledCategories.length > 0
+      ? items.filter((it) => itemMatchesCategories(it.tags, enabledCategories))
+      : items;
+
   const byDay = new Map<string, TripItem[]>();
-  for (const it of items) {
+  for (const it of visible) {
     const arr = byDay.get(it.dayId) ?? [];
     arr.push(it);
     byDay.set(it.dayId, arr);
