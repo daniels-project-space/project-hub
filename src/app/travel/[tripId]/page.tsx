@@ -11,17 +11,21 @@
  * 3-pane layout (stacks on mobile, side-by-side on lg+):
  *   LEFT   — "What & Where" overview: trip header + sorted flat list of all
  *            stops (day/time/kind/place/link) + legs.
- *   CENTER — TripMap (2D markers + per-day routes) as the Stage-5 globe slot,
- *            with a caption flagging the animated globe is coming.
- *   RIGHT  — reused ItineraryTimeline (full editing) + To-do + Notes.
+ *   CENTER — animated 3D globe (Stage 5): itinerary + leg points, route + flight
+ *            arcs, autorotate, fly-to on stop/leg select.
+ *   RIGHT  — reused ItineraryTimeline (full editing) + legs/flights editors +
+ *            To-do + Notes.
  *
- * SSR-safe: "use client" boundary; TripMap dynamic-imports maplibre in an effect;
- * no window access at module top. The dynamic route compiles as a client page.
+ * SSR-safe: "use client" boundary; the globe is loaded ONLY via
+ * next/dynamic(..., { ssr:false }) (react-globe.gl/three touch window at import),
+ * so Next's server render / static generation never references it. No file
+ * imports trip-globe statically. The dynamic route compiles as a client page.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useQuery, useMutation } from "convex/react";
 import {
   ArrowLeft,
@@ -42,15 +46,45 @@ import {
 import { api } from "../../../../convex/_generated/api";
 import type { Id, Doc } from "../../../../convex/_generated/dataModel";
 import { Card } from "@/components/ui/card";
-import { TripMap, type TripMarker } from "@/components/travel/trip-map";
 import {
   ItineraryTimeline,
-  kindToMarker,
   type TripItem,
   type TripDay,
 } from "@/components/travel/itinerary-timeline";
 import { TripTodos } from "@/components/travel/trip-todos";
 import { TripNotes } from "@/components/travel/trip-notes";
+import { TripLegs, TripFlights } from "@/components/travel/trip-journeys";
+import type {
+  GlobePoint,
+  GlobeArc,
+  GlobePointKind,
+} from "@/components/travel/trip-globe";
+import { findAirport } from "@/lib/travel/airports";
+
+// SSR SAFETY: trip-globe (react-globe.gl → three) touches window at import time.
+// The ONLY entry point is this dynamic import with ssr:false, so the module is
+// never evaluated during Next's server render / static generation. No other file
+// imports trip-globe statically.
+const TripGlobe = dynamic(
+  () => import("@/components/travel/trip-globe"),
+  {
+    ssr: false,
+    loading: () => <GlobeSkeleton />,
+  },
+);
+
+function GlobeSkeleton() {
+  return (
+    <div className="flex h-full w-full items-center justify-center">
+      <div className="flex flex-col items-center gap-2 text-paper-faint">
+        <Globe2 className="h-6 w-6 animate-pulse text-brass/60" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em]">
+          Spinning up the globe…
+        </span>
+      </div>
+    </div>
+  );
+}
 
 type FullTrip = {
   trip: Doc<"trips">;
@@ -66,6 +100,23 @@ const KIND_ICON: Record<string, LucideIcon> = {
   transport: Bus,
   activity: Sparkles,
 };
+
+// Map a tripItem.kind → globe point kind (drives marker color on the globe).
+const GLOBE_KINDS = new Set<GlobePointKind>([
+  "place",
+  "food",
+  "stay",
+  "flight",
+  "transport",
+  "activity",
+  "leg",
+  "default",
+]);
+function itemKindToGlobe(kind: string): GlobePointKind {
+  return GLOBE_KINDS.has(kind as GlobePointKind)
+    ? (kind as GlobePointKind)
+    : "default";
+}
 
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", {
@@ -117,9 +168,12 @@ function TopBar({ title }: { title: string }) {
 function OverviewSidebar({
   full,
   legs,
+  onFocus,
 }: {
   full: FullTrip;
   legs: Doc<"tripLegs">[] | undefined;
+  /** Click a stop/leg with coords → fly the globe there. */
+  onFocus: (loc: { lat: number; lng: number }) => void;
 }) {
   const { trip, days, items } = full;
   const dayById = useMemo(() => {
@@ -186,23 +240,33 @@ function OverviewSidebar({
             Journey
           </p>
           <ol className="space-y-1">
-            {legs.map((leg, i) => (
-              <li
-                key={leg._id}
-                className="flex items-center gap-2 text-[12px] text-paper"
-              >
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-brass/50 font-mono text-[8px] text-brass">
-                  {i + 1}
-                </span>
-                <Navigation className="h-3 w-3 shrink-0 text-brass/60" />
-                <span className="flex-1 min-w-0 truncate">{leg.city}</span>
-                {(leg.arriveDate || leg.departDate) && (
-                  <span className="shrink-0 text-[10px] text-paper-faint tabular-nums">
-                    {fmtDate(leg.arriveDate) ?? ""}
-                  </span>
-                )}
-              </li>
-            ))}
+            {legs.map((leg, i) => {
+              const hasCoords = leg.lat != null && leg.lng != null;
+              return (
+                <li key={leg._id}>
+                  <button
+                    type="button"
+                    disabled={!hasCoords}
+                    onClick={() =>
+                      hasCoords &&
+                      onFocus({ lat: leg.lat as number, lng: leg.lng as number })
+                    }
+                    className="flex w-full items-center gap-2 rounded text-left text-[12px] text-paper enabled:hover:text-brass disabled:cursor-default"
+                  >
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-brass/50 font-mono text-[8px] text-brass">
+                      {i + 1}
+                    </span>
+                    <Navigation className="h-3 w-3 shrink-0 text-brass/60" />
+                    <span className="flex-1 min-w-0 truncate">{leg.city}</span>
+                    {(leg.arriveDate || leg.departDate) && (
+                      <span className="shrink-0 text-[10px] text-paper-faint tabular-nums">
+                        {fmtDate(leg.arriveDate) ?? ""}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ol>
         </div>
       )}
@@ -223,10 +287,22 @@ function OverviewSidebar({
                 ? `${it.startTime}${it.endTime ? `–${it.endTime}` : ""}`
                 : null;
               const place = it.address;
+              const hasCoords = it.lat != null && it.lng != null;
               return (
                 <li
                   key={it._id}
-                  className="flex items-start gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/30 px-2 py-1.5"
+                  onClick={() =>
+                    hasCoords &&
+                    onFocus({
+                      lat: it.lat as number,
+                      lng: it.lng as number,
+                    })
+                  }
+                  className={`flex items-start gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/30 px-2 py-1.5 ${
+                    hasCoords
+                      ? "cursor-pointer hover:border-brass/40 hover:bg-ink-2/50"
+                      : ""
+                  }`}
                 >
                   <span className="mt-0.5 shrink-0 rounded border border-rule-soft/50 bg-ink-2/50 px-1 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">
                     {fmtDayBadge(day)}
@@ -265,37 +341,144 @@ function OverviewSidebar({
   );
 }
 
-// ── CENTER pane: map (Stage-5 globe slot) ───────────────────────────────────
-function MapPane({ full }: { full: FullTrip }) {
-  const { days, items } = full;
-  const markers: TripMarker[] = items
-    .filter((it) => it.lat != null && it.lng != null)
-    .map((it) => ({
-      lat: it.lat as number,
-      lng: it.lng as number,
-      label: it.title,
-      kind: kindToMarker(it.kind),
-    }));
-  const routes = days
-    .map((d) =>
-      items
-        .filter((it) => it.dayId === d._id && it.lat != null && it.lng != null)
-        .map((it) => ({ lat: it.lat as number, lng: it.lng as number })),
-    )
-    .filter((r) => r.length >= 2);
+// ── CENTER pane: animated 3D globe (Stage 5) ────────────────────────────────
+function GlobePane({
+  full,
+  legs,
+  flights,
+  focus,
+  onPointClick,
+}: {
+  full: FullTrip;
+  legs: Doc<"tripLegs">[] | undefined;
+  flights: Doc<"tripFlights">[] | undefined;
+  focus: { lat: number; lng: number } | null;
+  onPointClick: (id: string) => void;
+}) {
+  const { items } = full;
+
+  // Points: itinerary items with coords + legs (multi-destination cities).
+  const points = useMemo<GlobePoint[]>(() => {
+    const out: GlobePoint[] = [];
+    for (const it of items) {
+      if (it.lat == null || it.lng == null) continue;
+      out.push({
+        id: it._id,
+        lat: it.lat,
+        lng: it.lng,
+        label: it.title,
+        kind: itemKindToGlobe(it.kind),
+      });
+    }
+    for (const leg of legs ?? []) {
+      if (leg.lat == null || leg.lng == null) continue;
+      out.push({
+        id: leg._id,
+        lat: leg.lat,
+        lng: leg.lng,
+        label: leg.city,
+        kind: "leg",
+      });
+    }
+    return out;
+  }, [items, legs]);
+
+  // Route arcs: between consecutive ordered stops that have coords. Legs (if any)
+  // define the high-level multi-destination route; otherwise fall back to the
+  // ordered itinerary items.
+  const [flightArcs, setFlightArcs] = useState<GlobeArc[]>([]);
+
+  const routeArcs = useMemo<GlobeArc[]>(() => {
+    const ordered: Array<{ lat: number; lng: number }> = [];
+    const legPts = (legs ?? []).filter((l) => l.lat != null && l.lng != null);
+    if (legPts.length >= 2) {
+      for (const l of legPts)
+        ordered.push({ lat: l.lat as number, lng: l.lng as number });
+    } else {
+      for (const it of items) {
+        if (it.lat == null || it.lng == null) continue;
+        ordered.push({ lat: it.lat, lng: it.lng });
+      }
+    }
+    const arcs: GlobeArc[] = [];
+    for (let i = 0; i < ordered.length - 1; i++) {
+      arcs.push({
+        startLat: ordered[i].lat,
+        startLng: ordered[i].lng,
+        endLat: ordered[i + 1].lat,
+        endLng: ordered[i + 1].lng,
+        kind: "route",
+      });
+    }
+    return arcs;
+  }, [items, legs]);
+
+  // Flight arcs: resolve segment from/to via findAirport (IATA/city → coords).
+  // Async + bundled dataset, so we compute in an effect and store in state.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const segs = (flights ?? []).flatMap((f) => f.segments);
+      if (segs.length === 0) {
+        if (!cancelled) setFlightArcs([]);
+        return;
+      }
+      const resolved: GlobeArc[] = [];
+      for (const s of segs) {
+        try {
+          const a = await findAirport(s.from);
+          const b = await findAirport(s.to);
+          if (a && b) {
+            resolved.push({
+              startLat: a.lat,
+              startLng: a.lng,
+              endLat: b.lat,
+              endLng: b.lng,
+              kind: "flight",
+            });
+          }
+        } catch {
+          /* unresolved airport → just skip the arc */
+        }
+      }
+      if (!cancelled) setFlightArcs(resolved);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [flights]);
+
+  const arcs = useMemo<GlobeArc[]>(
+    () => [...routeArcs, ...flightArcs],
+    [routeArcs, flightArcs],
+  );
 
   return (
     <Card className="flex h-full flex-col overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-rule-soft/40 px-4 py-2.5">
         <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-paper-faint">
-          Map view
+          Globe
         </p>
         <span className="flex items-center gap-1 rounded-full border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-brass">
-          <Globe2 className="h-3 w-3" /> Animated globe — Stage 5
+          <Globe2 className="h-3 w-3" /> {points.length} stops
         </span>
       </div>
-      <div className="min-h-0 flex-1 p-3">
-        <TripMap markers={markers} routes={routes} className="h-full" />
+      <div className="min-h-0 flex-1 bg-[radial-gradient(circle_at_50%_40%,oklch(0.22_0.03_255_/_0.6),oklch(0.12_0.02_255_/_0.9))]">
+        {points.length === 0 ? (
+          <div className="flex h-full items-center justify-center px-6 text-center">
+            <p className="text-[12px] text-paper-faint">
+              No mapped stops yet. Add destinations or itinerary items with a
+              location to plot them on the globe.
+            </p>
+          </div>
+        ) : (
+          <TripGlobe
+            points={points}
+            arcs={arcs}
+            focus={focus}
+            onPointClick={onPointClick}
+          />
+        )}
       </div>
     </Card>
   );
@@ -345,6 +528,13 @@ function PlanningPane({
         />
       </Card>
 
+      <Card className="space-y-4">
+        <TripLegs tripId={tripId} />
+        <div className="border-t border-rule-soft/40 pt-4">
+          <TripFlights tripId={tripId} />
+        </div>
+      </Card>
+
       <Card>
         <TripTodos tripId={tripId} />
       </Card>
@@ -368,6 +558,14 @@ export default function TripPlannerPage() {
   const legs = useQuery(api.tripExtras.listLegs, tripId ? { tripId } : "skip") as
     | Doc<"tripLegs">[]
     | undefined;
+  const flights = useQuery(
+    api.tripExtras.listFlights,
+    tripId ? { tripId } : "skip",
+  ) as Doc<"tripFlights">[] | undefined;
+
+  // Selected stop/leg → globe flies there. A fresh object identity each click
+  // (even to the same coords) lets the globe's effect re-fire a fly-to.
+  const [focus, setFocus] = useState<{ lat: number; lng: number } | null>(null);
 
   // Loading (query still resolving).
   if (full === undefined) {
@@ -412,14 +610,34 @@ export default function TripPlannerPage() {
           {/* LEFT — overview (persistent, scrollable on lg) */}
           <div className="lg:col-span-3">
             <div className="lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100dvh-6rem)]">
-              <OverviewSidebar full={full} legs={legs} />
+              <OverviewSidebar
+                full={full}
+                legs={legs}
+                onFocus={(loc) => setFocus(loc)}
+              />
             </div>
           </div>
 
-          {/* CENTER — map / globe slot */}
+          {/* CENTER — animated 3D globe */}
           <div className="lg:col-span-5">
-            <div className="h-[420px] lg:sticky lg:top-[4.5rem] lg:h-[calc(100dvh-6rem)]">
-              <MapPane full={full} />
+            <div className="h-[480px] lg:sticky lg:top-[4.5rem] lg:h-[calc(100dvh-6rem)]">
+              <GlobePane
+                full={full}
+                legs={legs}
+                flights={flights}
+                focus={focus}
+                onPointClick={(id) => {
+                  const it = full.items.find((x) => x._id === id);
+                  if (it?.lat != null && it?.lng != null) {
+                    setFocus({ lat: it.lat, lng: it.lng });
+                    return;
+                  }
+                  const leg = legs?.find((l) => l._id === id);
+                  if (leg?.lat != null && leg?.lng != null) {
+                    setFocus({ lat: leg.lat, lng: leg.lng });
+                  }
+                }}
+              />
             </div>
           </div>
 
