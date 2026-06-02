@@ -604,6 +604,23 @@ export function TravelWidget() {
     selectedId ? { tripId: selectedId } : "skip",
   ) as { trip: Trip; days: TripDay[]; items: TripItem[] } | null | undefined;
 
+  // Backfill real Google Places photos + links for items missing them, once per
+  // trip per session (shared sessionStorage guard with the expanded view; the
+  // action no-ops on already-enriched items). Media lands reactively.
+  const enrichPlaces = useAction(api.travelActions.enrichTripPlaces);
+  useEffect(() => {
+    if (!full || !selectedId) return;
+    const PLACE = new Set(["place", "food", "stay", "activity"]);
+    const needs = full.items.some(
+      (it) => PLACE.has(it.kind) && (!it.image || !it.link),
+    );
+    if (!needs || typeof window === "undefined") return;
+    const key = `enrich-${selectedId}`;
+    if (window.sessionStorage.getItem(key)) return;
+    window.sessionStorage.setItem(key, "1");
+    void enrichPlaces({ tripId: selectedId }).catch(() => {});
+  }, [full, selectedId, enrichPlaces]);
+
   const onPlanned = async (tripId: Id<"trips">) => {
     setOverride(tripId);
     try {

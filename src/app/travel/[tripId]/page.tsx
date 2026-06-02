@@ -26,7 +26,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import {
   ArrowLeft,
   Plane,
@@ -567,6 +567,25 @@ export default function TripPlannerPage() {
   // Selected stop/leg → globe flies there. A fresh object identity each click
   // (even to the same coords) lets the globe's effect re-fire a fly-to.
   const [focus, setFocus] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Backfill real photos + links for existing trips: if any place item is
+  // missing media, kick the Google Places enrichment once per trip per session
+  // (the action no-ops on items that already have both). Items update reactively
+  // as photos/links land. New trips are enriched server-side by planTrip itself.
+  const enrichPlaces = useAction(api.travelActions.enrichTripPlaces);
+  useEffect(() => {
+    if (!full) return;
+    const PLACE = new Set(["place", "food", "stay", "activity"]);
+    const needs = full.items.some(
+      (it) => PLACE.has(it.kind) && (!it.image || !it.link),
+    );
+    if (!needs) return;
+    if (typeof window === "undefined") return;
+    const key = `enrich-${tripId}`;
+    if (window.sessionStorage.getItem(key)) return;
+    window.sessionStorage.setItem(key, "1");
+    void enrichPlaces({ tripId }).catch(() => {});
+  }, [full, tripId, enrichPlaces]);
 
   // Loading (query still resolving).
   if (full === undefined) {

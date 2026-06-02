@@ -71,7 +71,21 @@ const SECRET = {
   // generic rapidapi slot. Either being present flips flightStatus to live.
   aerodatabox: { service: "aerodatabox", keyName: "AERODATABOX_API_KEY" },
   rapidapi: { service: "rapidapi", keyName: "RAPIDAPI_KEY" },
+  // Google Places (images + place details + maps/website links) and Google
+  // Directions (transport routing) share one key. Verified live in the vault.
+  googlePlaces: { service: "google", keyName: "GOOGLE_PLACES_API_KEY" },
 } as const;
+
+// Google Maps Platform endpoints (Places + Directions share the one key).
+const GP_FINDPLACE =
+  "https://maps.googleapis.com/maps/api/place/findplacefromtext/json";
+const GP_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
+const GP_PHOTO = "https://maps.googleapis.com/maps/api/place/photo";
+
+/** A "view on Google Maps" search URL — always a valid link for any place. */
+function mapsSearchUrl(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -508,7 +522,115 @@ export const planTrip = action({
 
     await ctx.runMutation(api.trips.replaceItinerary, { tripId, days });
 
+    // Fire-and-forget: backfill real Google Places photos + website/maps links
+    // onto the freshly-planned items. Scheduled (not awaited) so the plan returns
+    // immediately and images/links land reactively as the enrichment completes.
+    await ctx.scheduler.runAfter(0, api.travelActions.enrichTripPlaces, {
+      tripId,
+    });
+
     return { tripId };
+  },
+});
+
+// ─── enrichTripPlaces ────────────────────────────────────────────────────────
+//
+// Backfills REAL imagery + links onto a trip's items using Google Places:
+//   image → first place photo, fetched and stored in Convex file storage so the
+//           served URL carries no API key and survives quota windows.
+//   link  → the place's official website, else its Google Maps page, else a
+//           Maps search URL — so EVERY enrichable item ends up with a real link.
+// Only items missing image/link are touched; existing good media is never
+// overwritten. Non-place kinds (flight/transport) are skipped. Failures per item
+// are swallowed so one bad lookup never aborts the batch.
+
+/** Item kinds that map to a physical place worth a photo + link. */
+const PLACE_KINDS = new Set(["place", "food", "stay", "activity"]);
+
+export const enrichTripPlaces = action({
+  args: { tripId: v.id("trips"), limit: v.optional(v.number()) },
+  handler: async (
+    ctx,
+    { tripId, limit },
+  ): Promise<{ enriched: number; reason?: string }> => {
+    const apiKey = await getSecret(ctx, SECRET.googlePlaces);
+    if (!apiKey) return { enriched: 0, reason: "GOOGLE_PLACES_API_KEY absent" };
+
+    const full: any = await ctx.runQuery(api.trips.getFull, { tripId });
+    if (!full) return { enriched: 0, reason: "trip not found" };
+
+    const destCity: string =
+      typeof full.trip?.destCity === "string" ? full.trip.destCity : "";
+    const cap = Math.min(typeof limit === "number" ? limit : 40, 60);
+
+    let enriched = 0;
+    for (const it of full.items as any[]) {
+      if (enriched >= cap) break;
+      if (!PLACE_KINDS.has(it.kind)) continue;
+      const hasImage = typeof it.image === "string" && it.image.length > 0;
+      const hasLink = typeof it.link === "string" && it.link.length > 0;
+      if (hasImage && hasLink) continue;
+      const title = typeof it.title === "string" ? it.title.trim() : "";
+      if (!title) continue;
+
+      const query = [title, it.address || destCity].filter(Boolean).join(", ");
+      const patch: { image?: string; link?: string } = {};
+
+      try {
+        // 1) Resolve the place id.
+        const fpRes = await fetch(
+          `${GP_FINDPLACE}?input=${encodeURIComponent(query)}&inputtype=textquery&fields=place_id&key=${apiKey}`,
+        );
+        const fpJson: any = await fpRes.json();
+        const placeId: string | undefined = fpJson?.candidates?.[0]?.place_id;
+
+        if (placeId) {
+          // 2) Place details → website, maps url, photos.
+          const dtRes = await fetch(
+            `${GP_DETAILS}?place_id=${encodeURIComponent(placeId)}&fields=website,url,photos&key=${apiKey}`,
+          );
+          const dtJson: any = await dtRes.json();
+          const result = dtJson?.result ?? {};
+
+          if (!hasLink) {
+            patch.link =
+              (typeof result.website === "string" && result.website) ||
+              (typeof result.url === "string" && result.url) ||
+              mapsSearchUrl(query);
+          }
+
+          if (!hasImage) {
+            const ref: string | undefined = result?.photos?.[0]?.photo_reference;
+            if (ref) {
+              const photoRes = await fetch(
+                `${GP_PHOTO}?maxwidth=800&photo_reference=${encodeURIComponent(ref)}&key=${apiKey}`,
+              );
+              if (photoRes.ok) {
+                const blob = await photoRes.blob();
+                const storageId = await ctx.storage.store(blob);
+                const url = await ctx.storage.getUrl(storageId);
+                if (url) patch.image = url;
+              }
+            }
+          }
+        } else if (!hasLink) {
+          // No match → still give the item a real, useful link.
+          patch.link = mapsSearchUrl(query);
+        }
+
+        if (patch.image !== undefined || patch.link !== undefined) {
+          await ctx.runMutation(api.trips.updateItem, {
+            itemId: it._id,
+            patch,
+          });
+          enriched += 1;
+        }
+      } catch {
+        /* one bad lookup shouldn't abort the batch */
+      }
+    }
+
+    return { enriched };
   },
 });
 
