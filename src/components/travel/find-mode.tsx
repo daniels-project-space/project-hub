@@ -398,7 +398,8 @@ function StayCard({
       setLoading(false);
     }
   };
-  const book = async () => {
+  // Secondary "Booking.com" link: resolve the dest_id Booking page on click.
+  const bookBooking = async () => {
     // Open the tab synchronously (inside the click gesture) so popup blockers
     // don't kill it, then point it at the resolved link once it returns.
     const w = window.open("about:blank", "_blank");
@@ -414,10 +415,11 @@ function StayCard({
       window.open(u, "_blank", "noopener,noreferrer");
     }
   };
-  const save = async () => {
-    const u = await ensureLink();
-    onSave(u);
-  };
+  // Save the most specific link we have (resolved Booking page if the user opened
+  // it, else the hotel's own official page).
+  const save = () => onSave(resolved ?? o.googleLink ?? o.link);
+  // The hotel's own official website — a specific, reliable property page.
+  const officialUrl = o.googleLink ?? o.link;
 
   return (
     <div className="overflow-hidden rounded-lg border border-rule-soft/40 bg-ink-2/30">
@@ -456,28 +458,39 @@ function StayCard({
           <CheckCircle2 className="h-2.5 w-2.5" /> Free cancellation
         </span>
         <div className="flex items-center gap-2 pt-0.5">
-          <button
-            type="button"
-            onClick={() => void book()}
-            disabled={loading}
-            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-60"
+          {/* Primary: the hotel's own official page — specific + reliable. */}
+          <a
+            href={officialUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-brass hover:bg-brass/20 transition-colors"
           >
-            {loading ? (
-              <Loader2 className="h-2.5 w-2.5 animate-spin" />
-            ) : (
-              <>
-                Book on Booking.com <ExternalLink className="h-2.5 w-2.5" />
-              </>
-            )}
-          </button>
+            Book <ExternalLink className="h-2.5 w-2.5" />
+          </a>
+          {/* Secondary: Booking.com (free-cancellation), resolved on click. */}
+          {o.propertyToken && (
+            <button
+              type="button"
+              onClick={() => void bookBooking()}
+              disabled={loading}
+              title="Open on Booking.com (free cancellation)"
+              className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-paper-faint hover:text-brass hover:border-brass/50 transition-colors disabled:opacity-60"
+            >
+              {loading ? (
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              ) : (
+                "Booking"
+              )}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => void save()}
-            disabled={!canSave || loading}
+            onClick={() => save()}
+            disabled={!canSave}
             aria-label="save to trip"
             className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-paper-faint hover:text-paper hover:border-brass/50 transition-colors disabled:opacity-40"
           >
-            <Plus className="h-3 w-3" /> Save
+            <Plus className="h-3 w-3" />
           </button>
         </div>
       </div>
