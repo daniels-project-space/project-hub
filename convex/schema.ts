@@ -15,6 +15,14 @@ export default defineSchema({
     h: v.optional(v.number()),
   }).index("by_position", ["position"]),
 
+  // Key/value app settings (Pass 1 settings layer). One row per key; `value` is
+  // arbitrary JSON. Read as a flat Record via settings.all; written via
+  // settings.set (upsert by key). Keys/defaults are owned by settings-provider.
+  settings: defineTable({
+    key: v.string(),
+    value: v.any(),
+  }).index("by_key", ["key"]),
+
   // Projects (placeholder list — eventually populated as apps migrate to Vercel).
   projects: defineTable({
     slug: v.string(),

@@ -6,6 +6,9 @@ import {
   getUpcomingEvents,
   type UpcomingEvent,
 } from "@/components/widgets/calendar-widget";
+import { WeatherChip } from "@/components/weather-chip";
+import { useSettings } from "@/components/settings-provider";
+import { APPS } from "@/lib/apps";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -25,11 +28,28 @@ function formatDateDisplay(now: Date): string {
   });
 }
 
-function formatNW(gbp: number): string {
-  if (gbp >= 1_000_000) return `£${(gbp / 1_000_000).toFixed(2)}m`;
-  if (gbp >= 1_000) return `£${(gbp / 1_000).toFixed(1)}k`;
-  return `£${gbp.toFixed(0)}`;
+// Compact money formatter that honors the `nwCurrency` setting. GBP shows £; USD
+// shows $ after converting via usdPerGbp. When the FX rate is missing we fall
+// back to GBP rather than fabricate a conversion.
+function formatMoney(
+  gbp: number,
+  currency: "GBP" | "USD",
+  usdPerGbp: number | null | undefined,
+): string {
+  let value = gbp;
+  let sym = "£";
+  if (currency === "USD" && usdPerGbp) {
+    value = gbp * usdPerGbp;
+    sym = "$";
+  }
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${sign}${sym}${(abs / 1_000_000).toFixed(2)}m`;
+  if (abs >= 1_000) return `${sign}${sym}${(abs / 1_000).toFixed(1)}k`;
+  return `${sign}${sym}${abs.toFixed(0)}`;
 }
+
+const MONTH_LABEL = new Date().toLocaleDateString("en-GB", { month: "short" });
 
 function formatEventTime(start: number, allDay: boolean): string {
   if (allDay) return "all day";
@@ -58,12 +78,6 @@ function formatEventDay(start: number, now: number): string {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function NWSkeleton() {
-  return (
-    <span className="inline-block w-20 h-3.5 rounded bg-paper/[0.06] animate-pulse" />
-  );
-}
-
 function EventChip({ event, now }: { event: UpcomingEvent; now: number }) {
   const day = formatEventDay(event.start, now);
   const time = formatEventTime(event.start, event.allDay);
@@ -87,11 +101,62 @@ function EventChip({ event, now }: { event: UpcomingEvent; now: number }) {
   );
 }
 
+// A compact labelled figure. `tone` tints the value (e.g. ±cashflow, overdue).
+function StatCell({
+  label,
+  value,
+  sub,
+  tone = "default",
+  loading = false,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: "default" | "emerald" | "rose" | "brass";
+  loading?: boolean;
+}) {
+  const toneClass =
+    tone === "emerald"
+      ? "text-emerald-soft"
+      : tone === "rose"
+        ? "text-rose-soft"
+        : tone === "brass"
+          ? "text-brass"
+          : "text-paper";
+  return (
+    <div className="min-w-0">
+      <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint mb-1 truncate">
+        {label}
+      </p>
+      {loading ? (
+        <span className="inline-block w-16 h-4 rounded bg-paper/[0.06] animate-pulse" />
+      ) : (
+        <p
+          className={`font-display text-[18px] leading-none tabular-nums ${toneClass}`}
+        >
+          {value}
+          {sub && (
+            <span className="font-mono text-[9px] text-paper-faint/60 ml-1 tracking-normal">
+              {sub}
+            </span>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function CommandCenter() {
   const wealthData = useQuery(api.wealth.getWealth);
   const events = useQuery(api.events.list);
+  const todos = useQuery(api.todos.list);
+  const hunts = useQuery(api.hunts.list);
+  const alerts = useQuery(api.alerts.list);
+
+  const { get } = useSettings();
+  const nwCurrency = get("nwCurrency", "GBP") as "GBP" | "USD";
 
   const now = Date.now();
   const today = new Date();
@@ -102,6 +167,41 @@ export function CommandCenter() {
     now,
     4,
   );
+
+  // ── Derived stats (each from a real query; never fabricated) ────────────────
+  const usdPerGbp = wealthData?.live?.usdPerGbp ?? wealthData?.usdPerGbp ?? null;
+  // Freshest current total for the headline (live intraday → else summed).
+  const totalGBP = wealthData
+    ? (wealthData.currentTotalGBP ?? wealthData.totalGBP)
+    : 0;
+
+  // "Today's move": intraday delta of live vs the snapshot total when a live
+  // doc exists; otherwise fall back to the truthful monthly net cashflow.
+  const liveTotal = wealthData?.live?.totalGBP;
+  const hasIntraday = typeof liveTotal === "number" && wealthData != null;
+  const intradayDelta = hasIntraday
+    ? liveTotal - wealthData!.totalGBP
+    : 0;
+  const moveLabel = hasIntraday ? "Today's move" : "Net cashflow";
+  const moveValue = hasIntraday ? intradayDelta : (wealthData?.netCashflowGbp ?? 0);
+  const moveTone =
+    moveValue > 0 ? "emerald" : moveValue < 0 ? "rose" : "default";
+  const moveStr =
+    (moveValue > 0 ? "+" : "") + formatMoney(moveValue, nwCurrency, usdPerGbp);
+
+  // Todos: open + overdue (dueDate in the past, still open).
+  const openTodos = todos?.filter((t) => !t.done) ?? [];
+  const overdueTodos = openTodos.filter(
+    (t) => typeof t.dueDate === "number" && t.dueDate < now,
+  );
+
+  // Live apps from the static catalog (status === "live").
+  const liveApps = APPS.filter((a) => a.status === "live").length;
+  const totalApps = APPS.length;
+
+  // Active hunts / alerts (cheap — both lists already fetched).
+  const activeHunts = hunts?.filter((h) => h.active).length ?? 0;
+  const activeAlerts = alerts?.filter((a) => a.active).length ?? 0;
 
   return (
     <div className="mb-8 rounded-2xl border border-rule-soft/50 overflow-hidden"
@@ -122,39 +222,89 @@ export function CommandCenter() {
         </span>
       </div>
 
-      <div className="px-5 py-5 flex flex-col md:flex-row md:items-end gap-5 md:gap-10">
-        {/* Left: greeting + date + net worth */}
-        <div className="flex-1 min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-brass/75 mb-1">
-            {greeting},&nbsp;Daniel
-          </p>
-          <h2 className="font-display text-[26px] md:text-[32px] leading-[1.05] tracking-tight text-paper mb-3">
-            {dateDisplay}
-          </h2>
-
-          {/* Net worth */}
-          <div className="flex items-baseline gap-2.5">
-            <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-              Net Worth
-            </span>
-            <span className="w-px h-3 bg-rule-soft/60 shrink-0" />
-            {wealthData === undefined ? (
-              <NWSkeleton />
-            ) : (
-              <span className="font-display italic font-light text-[22px] text-emerald-soft leading-none tabular-nums">
-                {formatNW(wealthData.totalGBP)}
-              </span>
-            )}
-            {wealthData !== undefined && (
-              <span className="font-mono text-[9px] text-paper-faint/60">
-                across {wealthData.assetCount} assets
-              </span>
-            )}
+      <div className="px-5 py-5">
+        {/* Greeting row — date on the left, geolocated weather chip on the right */}
+        <div className="flex items-start justify-between gap-4 mb-5">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-brass/75 mb-1">
+              {greeting},&nbsp;Daniel
+            </p>
+            <h2 className="font-display text-[26px] md:text-[32px] leading-[1.05] tracking-tight text-paper">
+              {dateDisplay}
+            </h2>
           </div>
+          <WeatherChip />
         </div>
 
-        {/* Right: upcoming events strip */}
-        <div className="flex-1 min-w-0">
+        {/* Stat grid — compact labelled figures, all from real queries */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-4 border-t border-rule-soft/40 pt-4">
+          <StatCell
+            label={`Net Worth · ${nwCurrency}`}
+            value={formatMoney(totalGBP, nwCurrency, usdPerGbp)}
+            sub={
+              wealthData ? `${wealthData.assetCount} assets` : undefined
+            }
+            tone="emerald"
+            loading={wealthData === undefined}
+          />
+          <StatCell
+            label={moveLabel}
+            value={moveStr}
+            tone={moveTone}
+            loading={wealthData === undefined}
+          />
+          <StatCell
+            label={`Rental · ${MONTH_LABEL}`}
+            value={formatMoney(
+              wealthData?.confirmedRentalGbp ?? 0,
+              nwCurrency,
+              usdPerGbp,
+            )}
+            sub="confirmed"
+            tone="brass"
+            loading={wealthData === undefined}
+          />
+          <StatCell
+            label="Expenses · mo"
+            value={formatMoney(
+              wealthData?.expensesMonthlyGbp ?? 0,
+              nwCurrency,
+              usdPerGbp,
+            )}
+            tone="rose"
+            loading={wealthData === undefined}
+          />
+          <StatCell
+            label="Open Todos"
+            value={String(openTodos.length)}
+            sub={
+              overdueTodos.length > 0
+                ? `${overdueTodos.length} overdue`
+                : undefined
+            }
+            tone={overdueTodos.length > 0 ? "rose" : "default"}
+            loading={todos === undefined}
+          />
+          <StatCell
+            label="Live Apps"
+            value={String(liveApps)}
+            sub={`of ${totalApps}`}
+          />
+        </div>
+
+        {/* Optional: active hunts + alerts (only when there are any) */}
+        {(activeHunts > 0 || activeAlerts > 0) && (
+          <div className="flex items-center gap-4 mt-3 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint/70">
+            {activeHunts > 0 && <span>{activeHunts} active hunts</span>}
+            {activeHunts > 0 && activeAlerts > 0 && (
+              <span className="w-px h-3 bg-rule-soft/50" />
+            )}
+            {activeAlerts > 0 && <span>{activeAlerts} price alerts</span>}
+          </div>
+        )}
+
+        {/* Upcoming events strip */}
+        <div className="mt-5 border-t border-rule-soft/40 pt-4">
           <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint mb-2.5">
             Upcoming
           </p>

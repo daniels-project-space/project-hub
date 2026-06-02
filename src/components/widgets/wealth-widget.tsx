@@ -15,7 +15,7 @@
  * - EVERY value shows an "updated Xm ago" staleness badge (fix v1's #1 sin).
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Wallet,
   Eye,
@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
+import { useSettings } from "@/components/settings-provider";
 import { WidgetSlot } from "../widget-slot";
 import { Card } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
@@ -186,7 +187,19 @@ export function WealthWidget() {
   // separate tracker, so getMarginPositions is no longer fetched here.)
   const rental = useQuery(api.wealth.getRentalRevenue);
 
+  // Privacy blur. Default follows the `blurAmountsDefault` setting (Pass 1).
+  // Start `false` for a deterministic SSR/first paint (no hydration mismatch),
+  // then sync to the setting ONCE after settings resolve. The in-widget eye
+  // toggle is a local override that wins after the user touches it.
+  const { get } = useSettings();
+  const blurDefault = get("blurAmountsDefault", false) as boolean;
   const [hidden, setHidden] = useState(false);
+  const seededBlur = useRef(false);
+  useEffect(() => {
+    if (seededBlur.current) return;
+    seededBlur.current = true;
+    if (blurDefault) setHidden(true);
+  }, [blurDefault]);
   const [editing, setEditing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   // When set, the history overlay opens focused on a single category's series.

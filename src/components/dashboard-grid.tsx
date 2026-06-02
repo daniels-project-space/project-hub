@@ -213,7 +213,8 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
               return (
                 <div
                   key={`pending-${type}`}
-                  className={`relative col-span-1 ${COL[s.w]} ${MINH[s.h]}`}
+                  id={`w-${type}`}
+                  className={`relative col-span-1 scroll-mt-20 ${COL[s.w]} ${MINH[s.h]}`}
                 >
                   <WidgetRenderer type={type} />
                 </div>
@@ -284,8 +285,9 @@ function SortableWidget({
   return (
     <div
       ref={setNodeRef}
+      id={`w-${type}`}
       style={style}
-      className={`relative col-span-1 ${COL[size.w]} ${MINH[size.h]} ${
+      className={`relative col-span-1 scroll-mt-20 ${COL[size.w]} ${MINH[size.h]} ${
         editMode ? "ring-1 ring-brass/30 rounded-lg" : ""
       }`}
     >

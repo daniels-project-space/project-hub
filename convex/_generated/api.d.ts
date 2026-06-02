@@ -18,6 +18,7 @@ import type * as hunts from "../hunts.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
 import type * as secrets from "../secrets.js";
+import type * as settings from "../settings.js";
 import type * as todos from "../todos.js";
 import type * as wealth from "../wealth.js";
 import type * as wealthActions from "../wealthActions.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   notes: typeof notes;
   projects: typeof projects;
   secrets: typeof secrets;
+  settings: typeof settings;
   todos: typeof todos;
   wealth: typeof wealth;
   wealthActions: typeof wealthActions;

@@ -9,7 +9,7 @@ export function AppsRow() {
   const ordered = [...live, ...wip, ...idea];
 
   return (
-    <section className="mb-12">
+    <section id="apps-carousel" className="mb-12 scroll-mt-20">
       <SectionLabel
         title="Apps · Workspaces"
         hint={`${live.length} live · ${wip.length} wip · ${idea.length} idea`}

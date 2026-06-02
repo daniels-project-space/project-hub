@@ -1,13 +1,25 @@
 "use client";
 
-import { useState } from "react";
 import {
-  LayoutGrid,
-  Settings,
-  Bell,
-  Search,
-} from "lucide-react";
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useQuery } from "convex/react";
+import { LayoutGrid, Settings, Bell, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "../../convex/_generated/api";
+import { APPS, type AppEntry } from "@/lib/apps";
+import { getAppIcon } from "@/lib/app-icons";
+import { SettingsPanel } from "@/components/settings-panel";
+import {
+  buildSearchIndex,
+  filterResults,
+  groupResults,
+  navigateToResult,
+  type SearchResult,
+} from "@/lib/search";
 
 const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
   { label: "github", href: "https://github.com/orgs/daniels-project-space/repositories" },
@@ -18,7 +30,8 @@ const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
 ];
 
 export function TopBar() {
-  const [q, setQ] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
 
   return (
     <header className="border-b border-rule-soft/60 sticky top-0 z-20 backdrop-blur-xl bg-ink/75">
@@ -52,17 +65,8 @@ export function TopBar() {
           </span>
         </a>
 
-        {/* Search — compact */}
-        <label className="hidden md:flex w-[200px] items-center gap-2 px-3 h-8 rounded-md bg-ink-2/60 border border-rule-soft/60 focus-within:border-brass/40 transition-colors">
-          <Search className="w-3.5 h-3.5 text-paper-faint" />
-          <input
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search..."
-            className="bg-transparent text-[12px] text-paper placeholder:text-paper-faint outline-none w-full"
-          />
-        </label>
+        {/* Search */}
+        <SiteSearch />
 
         {/* Dashboard links cluster */}
         <nav className="hidden lg:flex items-center gap-2 text-paper-faint">
@@ -83,10 +87,21 @@ export function TopBar() {
 
         <div className="flex-1" />
 
-        {/* Right cluster — kept icons only */}
+        {/* Right cluster */}
         <div className="flex items-center gap-1.5">
-          <BarBtn icon={<LayoutGrid className="w-3.5 h-3.5" />} label="Apps" />
-          <BarIconBtn aria-label="Settings">
+          <div className="relative">
+            <BarBtn
+              icon={<LayoutGrid className="w-3.5 h-3.5" />}
+              label="Apps"
+              onClick={() => setAppsOpen((v) => !v)}
+              active={appsOpen}
+            />
+            <AppsMenu open={appsOpen} onClose={() => setAppsOpen(false)} />
+          </div>
+          <BarIconBtn
+            aria-label="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
             <Settings className="w-4 h-4" />
           </BarIconBtn>
           <BarIconBtn aria-label="Notifications">
@@ -106,18 +121,286 @@ export function TopBar() {
           </a>
         </div>
       </div>
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </header>
   );
 }
 
-function BarBtn({ icon, label }: { icon: React.ReactNode; label: string }) {
+// ── Site search ──────────────────────────────────────────────────────────────
+function SiteSearch() {
+  const [q, setQ] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Convex lists (fetched here; cheap, cached by Convex client).
+  const projects = useQuery(api.projects.list);
+  const notes = useQuery(api.notes.list);
+  const todos = useQuery(api.todos.list);
+  const events = useQuery(api.events.list);
+  const hunts = useQuery(api.hunts.list);
+  const alerts = useQuery(api.alerts.list);
+
+  // Debounce input ~120ms.
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(q), 120);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const index = useMemo(
+    () =>
+      buildSearchIndex({
+        projects: projects as never,
+        notes: notes as never,
+        todos: todos as never,
+        events: events as never,
+        hunts: hunts as never,
+        alerts: alerts as never,
+      }),
+    [projects, notes, todos, events, hunts, alerts],
+  );
+
+  const results = useMemo(
+    () => filterResults(index, debounced).slice(0, 30),
+    [index, debounced],
+  );
+  const grouped = useMemo(() => groupResults(results), [results]);
+
+  // Flat list (group order) for keyboard navigation.
+  const flat = useMemo(() => grouped.flatMap(([, rs]) => rs), [grouped]);
+
+  // Clamp the highlight into range at render time (avoids a setState-in-effect):
+  // when the result set shrinks/changes, fall back to the first item.
+  const activeIndex = flat.length === 0 ? -1 : Math.min(active, flat.length - 1);
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const choose = (r: SearchResult) => {
+    navigateToResult(r);
+    setOpen(false);
+    setQ("");
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setOpen(false);
+      return;
+    }
+    if (!open || flat.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => (Math.max(0, i) + 1) % flat.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => (Math.max(0, i) - 1 + flat.length) % flat.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const r = flat[activeIndex];
+      if (r) choose(r);
+    }
+  };
+
+  const showDropdown = open && debounced.trim().length > 0;
+
+  return (
+    <div ref={wrapRef} className="relative hidden md:block">
+      <label className="flex w-[200px] items-center gap-2 px-3 h-8 rounded-md bg-ink-2/60 border border-rule-soft/60 focus-within:border-brass/40 transition-colors">
+        <Search className="w-3.5 h-3.5 text-paper-faint" />
+        <input
+          type="text"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+            setActive(0);
+          }}
+          onFocus={() => q && setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder="Search..."
+          className="bg-transparent text-[12px] text-paper placeholder:text-paper-faint outline-none w-full"
+        />
+      </label>
+
+      {showDropdown && (
+        <div className="absolute left-0 top-[calc(100%+6px)] w-[340px] max-h-[60vh] overflow-y-auto no-scrollbar rounded-md border border-rule-soft/70 bg-ink-2/95 backdrop-blur-xl shadow-2xl z-50">
+          {results.length === 0 ? (
+            <div className="px-3 py-4 font-mono text-[11px] text-paper-faint text-center">
+              No results
+            </div>
+          ) : (
+            grouped.map(([kind, rs]) => (
+              <div key={kind} className="py-1">
+                <div className="px-3 py-1 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint/70">
+                  {kind}
+                </div>
+                {rs.map((r) => {
+                  const idx = flat.indexOf(r);
+                  const isActive = idx === activeIndex;
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onMouseEnter={() => setActive(idx)}
+                      onClick={() => choose(r)}
+                      className={cn(
+                        "w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left transition-colors",
+                        isActive ? "bg-brass-dim" : "hover:bg-paper/[0.04]",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "text-[12px] truncate",
+                          isActive ? "text-brass" : "text-paper",
+                        )}
+                      >
+                        {r.title}
+                      </span>
+                      {r.sub && (
+                        <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint shrink-0">
+                          {r.sub}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Apps dropdown ────────────────────────────────────────────────────────────
+function AppsMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose]);
+
+  const groups: Array<{ label: string; apps: AppEntry[] }> = useMemo(
+    () => [
+      { label: "Live", apps: APPS.filter((a) => a.status === "live") },
+      { label: "WIP", apps: APPS.filter((a) => a.status === "wip") },
+      { label: "Idea", apps: APPS.filter((a) => a.status === "idea") },
+    ],
+    [],
+  );
+
+  if (!open) return null;
+
+  const onPick = (a: AppEntry) => {
+    if (a.status === "live" && a.vercelUrl) {
+      window.open(a.vercelUrl, "_blank", "noopener,noreferrer");
+    } else {
+      document
+        .getElementById("apps-carousel")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-[calc(100%+6px)] w-[280px] max-h-[70vh] overflow-y-auto no-scrollbar rounded-md border border-rule-soft/70 bg-ink-2/95 backdrop-blur-xl shadow-2xl z-50"
+    >
+      {groups.map((g) =>
+        g.apps.length === 0 ? null : (
+          <div key={g.label} className="py-1">
+            <div className="px-3 py-1 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint/70">
+              {g.label}
+            </div>
+            {g.apps.map((a) => {
+              const launchable = a.status === "live" && a.vercelUrl;
+              return (
+                <button
+                  key={a.slug}
+                  type="button"
+                  onClick={() => onPick(a)}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left hover:bg-paper/[0.04] transition-colors"
+                >
+                  <span
+                    className={cn(
+                      "w-4 h-4 shrink-0 grid place-items-center [&>svg]:w-4 [&>svg]:h-4",
+                      launchable ? "text-brass" : "text-paper-faint",
+                    )}
+                  >
+                    {getAppIcon(a.slug)}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[12px] truncate",
+                      launchable ? "text-paper" : "text-paper-dim",
+                    )}
+                  >
+                    {a.name}
+                  </span>
+                  {launchable && (
+                    <span className="ml-auto font-mono text-[10px] text-paper-faint">
+                      ↗
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function BarBtn({
+  icon,
+  label,
+  onClick,
+  active,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick?: () => void;
+  active?: boolean;
+}) {
   return (
     <button
       type="button"
+      onClick={onClick}
+      aria-expanded={active}
       className={cn(
-        "hidden sm:flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-rule-soft/60",
-        "bg-ink-2/40 hover:bg-ink-2/70 hover:border-rule transition-colors",
-        "text-paper-dim hover:text-paper",
+        "hidden sm:flex items-center gap-1.5 h-8 px-2.5 rounded-md border transition-colors",
+        active
+          ? "border-brass/50 bg-brass-dim text-brass"
+          : "border-rule-soft/60 bg-ink-2/40 hover:bg-ink-2/70 hover:border-rule text-paper-dim hover:text-paper",
       )}
     >
       {icon}
