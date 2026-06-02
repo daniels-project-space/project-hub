@@ -143,9 +143,25 @@ function categorySeries(
   history: { byCategory?: Record<string, number> | null }[] | undefined,
   cat: string,
   liveValue?: number | null,
+  // Optional per-snapshot extractor. Synthetic tiles (e.g. the combined Binance
+  // tile = spot + margin) whose value is NOT a single stored snapshot key pass a
+  // function that derives the historical value from each snapshot. When omitted,
+  // the value is read straight from `byCategory[cat]` (the normal tile path).
+  valueFn?: (r: { byCategory?: Record<string, number> | null }) => number,
 ): { data: number[]; delta: number; deltaPct: number } {
   const rows = history ?? [];
-  const data = rows.map((r) => (r.byCategory?.[cat] ?? 0) as number);
+  // Skip snapshots that have NO real value for this category rather than
+  // coercing a missing key to 0. Zero-filling a category that didn't exist in
+  // older snapshots (e.g. `byCategory.binance`, stamped server-side only from a
+  // go-forward date) produced a phantom 0→liveValue jump: a bogus +£<balance>
+  // delta and a flat-line-then-spike chart. A REAL stored 0 is a valid data
+  // point and is kept; only undefined/null/non-finite are treated as ABSENT.
+  const data: number[] = [];
+  for (const r of rows) {
+    const v = valueFn ? valueFn(r) : r.byCategory?.[cat];
+    if (v == null || !Number.isFinite(v)) continue;
+    data.push(v as number);
+  }
   // Append the live value as the trailing point (dedup if the last snapshot
   // already equals it, to avoid a flat doubled tail).
   if (liveValue != null && Number.isFinite(liveValue)) {
@@ -153,13 +169,16 @@ function categorySeries(
       data.push(liveValue);
     }
   }
+  // <2 points (e.g. a brand-new category with only its live point) → no delta,
+  // so the badge is hidden and the % can never be NaN/Infinity.
   if (data.length < 2) return { data, delta: 0, deltaPct: 0 };
   const first = data[0];
   const last = data[data.length - 1];
+  const deltaPct = first ? ((last - first) / first) * 100 : 0;
   return {
     data,
     delta: last - first,
-    deltaPct: first ? ((last - first) / first) * 100 : 0,
+    deltaPct: Number.isFinite(deltaPct) ? deltaPct : 0,
   };
 }
 
@@ -172,7 +191,10 @@ function DeltaBadge({
   delta: number;
   deltaPct: number;
 }) {
-  if (!delta) return null;
+  // Guard: hide on no-change OR any non-finite value (NaN/±Infinity) so a
+  // degenerate series can never render "+∞%"/"NaN%".
+  if (!delta || !Number.isFinite(delta) || !Number.isFinite(deltaPct))
+    return null;
   const up = delta >= 0;
   return (
     <Badge tone={up ? "emerald" : "rose"}>
@@ -223,6 +245,9 @@ export function WealthWidget() {
   const [editing, setEditing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   // When set, the history overlay opens focused on a single category's series.
+  // Phase 19: "binance" is now a NORMAL category — the server emits a real
+  // `byCategory.binance` (spot + margin), so it drills via the uniform path like
+  // every sibling tile (no bespoke synthetic-series state).
   const [drillCat, setDrillCat] = useState<DisplayCategory | null>(null);
   // Range + value/percent mode are shared between the compact card and the
   // history overlay (v1 syncs the card pills with the overlay).
@@ -250,6 +275,10 @@ export function WealthWidget() {
   };
 
   // Phase 16: Coinbase vs Binance SPOT split for the Crypto card sub-breakdown.
+  // Phase 19: the crypto/binance TILE TOTALS now come straight from the server
+  // (byCategory.crypto is already ex-binance, byCategory.binance = spot+margin).
+  // cryptoSplit is retained ONLY for the Crypto tile's Coinbase sub-line and the
+  // inline edit pencil on the manual Binance spot row (binanceManual).
   // Each auto crypto asset row carries externalRef "coinbase" | "binance"
   // (Phase 16 split); manual rows labelled "Coinbase"/"Binance" also classify.
   const cryptoSplit = useMemo(() => {
@@ -446,34 +475,29 @@ export function WealthWidget() {
                 // unaffected — only this tile is removed from the grid.
                 if (hiddenTiles.includes(cat)) return null;
                 const bucket = byCategory[cat];
-                // Phase 19: Binance is its OWN tile, broken out of the Crypto
-                // category total. The Binance SPOT value lives inside the crypto
-                // category (asset row labelled "Binance"); cryptoSplit isolates it.
-                const binanceSpot = cryptoSplit.binance;
-                // Margin NET EQUITY rolls into net worth server-side; on the
-                // display side it is FOLDED INTO the Binance tile value (no
-                // standalone Margin tile). Display-only — never re-added to total.
-                const marginTotalGbp =
-                  liveByCat?.["margin"] ?? byCategory["margin"]?.total ?? 0;
                 if (cat === "binance") {
-                  // Combined tile — value = Binance SPOT + margin net equity.
-                  // Always shown when a Binance row exists (even £0) so the tile
-                  // never disappears. NO margin sub-line.
-                  const binanceCombined = binanceSpot + marginTotalGbp;
+                  // Phase 19: NORMAL category tile now. The server emits a real
+                  // `byCategory.binance` (= Binance SPOT + margin net equity), so
+                  // value/series/delta/drill all use the uniform path identical to
+                  // sibling tiles. Prefer the fresh live per-category total.
+                  const binanceCombined =
+                    liveByCat?.["binance"] ?? bucket?.total ?? 0;
+                  // Show whenever there's a combined value OR a manual spot row to
+                  // edit, so the tile never silently disappears.
                   if (
                     !cryptoSplit.binanceManual &&
-                    binanceSpot <= 0 &&
-                    Math.abs(marginTotalGbp) < 0.005
+                    Math.abs(binanceCombined) < 0.005
                   )
                     return null;
-                  // Trailing live point = the value this tile DISPLAYS
-                  // (Binance SPOT + margin net equity), so the sparkline's end
-                  // matches the headline figure and moves on edit/poll.
-                  const series = categorySeries(
-                    cardHistory,
-                    "binance",
-                    binanceCombined,
-                  );
+                  // Uniform per-tile series. Past snapshots have no
+                  // `byCategory.binance` key → categorySeries SKIPS them (they
+                  // are absent, not 0), so the series is REAL only from the first
+                  // go-forward snapshot; with just the live point present the
+                  // delta is 0 (no badge) — honest "no history yet" rather than a
+                  // bogus +£<balance> jump from a phantom 0. The live combined
+                  // value is appended as the trailing point so the tile + delta
+                  // move on edit/poll exactly like every other category.
+                  const series = categorySeries(cardHistory, "binance", binanceCombined);
                   return (
                     <StatTile
                       key={cat}
@@ -481,6 +505,7 @@ export function WealthWidget() {
                       tone={CATEGORY_TONE[cat]}
                       value={gbp(binanceCombined, hidden)}
                       chart={series.data}
+                      onClick={() => openDrill("binance")}
                       onHide={() => hideTile(cat)}
                       badge={
                         <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
@@ -504,12 +529,9 @@ export function WealthWidget() {
                   );
                 }
                 // Prefer the fresh live per-category total over summed assets.
-                let val = liveByCat?.[cat] ?? bucket?.total ?? 0;
-                // Phase 19: subtract Binance SPOT from the displayed Crypto tile so
-                // the visible grid sums correctly (Binance is its own tile now);
-                // the headline NW summed value still includes it via the crypto
-                // category, so NW is unaffected — only the tile display splits.
-                if (cat === "crypto") val = val - binanceSpot;
+                // Phase 19: crypto is already EX-binance server-side — no client
+                // double-subtract needed.
+                const val = liveByCat?.[cat] ?? bucket?.total ?? 0;
                 // (Phase 3 declutter) per-tile `oldest`/StaleBadge removed —
                 // staleness is shown once in the widget header instead.
                 // Trailing live point = the tile's displayed value (live
@@ -739,11 +761,23 @@ function HistorySheet({
       totalGBP: number;
       byCategory?: Record<string, number> | null;
     }[];
-    // Source values: a single category's series when drilled-in, else the total.
-    const valOf = (r: (typeof rows)[number]) =>
-      focusCat ? (r.byCategory?.[focusCat] ?? 0) : r.totalGBP;
-    const totals = rows.map(valOf);
-    const labels = rows.map((r) => fmtDate(r.ts));
+    // Source values: a single category's series when drilled-in, else total.
+    // Phase 19: "binance" is a normal stored category now (byCategory.binance).
+    // Snapshots predating the server-side split have NO `binance` key — those
+    // are SKIPPED (not zero-filled) so the drill chart plots only real points +
+    // the live "Now" point, instead of a phantom flat-line-at-0 then a spike
+    // (which falsely showed Low=£0 and Change=+£<whole balance>). The net-worth
+    // path (totalGBP) is always present, so it is unaffected.
+    const valOf = (r: (typeof rows)[number]): number | undefined =>
+      focusCat ? (r.byCategory?.[focusCat] ?? undefined) : r.totalGBP;
+    const totals: number[] = [];
+    const labels: string[] = [];
+    for (const r of rows) {
+      const v = valOf(r);
+      if (v == null || !Number.isFinite(v)) continue;
+      totals.push(v);
+      labels.push(fmtDate(r.ts));
+    }
     // Append the live current value as the trailing point (dedup a flat tail).
     if (
       liveTrailing != null &&
@@ -760,6 +794,7 @@ function HistorySheet({
     const last = totals[totals.length - 1];
     const data =
       mode === "gbp" ? totals : totals.map((t) => (first ? ((t - first) / first) * 100 : 0));
+    const deltaPct = first ? ((last - first) / first) * 100 : 0;
     return {
       data,
       labels,
@@ -768,7 +803,7 @@ function HistorySheet({
       min: Math.min(...totals),
       max: Math.max(...totals),
       delta: last - first,
-      deltaPct: first ? ((last - first) / first) * 100 : 0,
+      deltaPct: Number.isFinite(deltaPct) ? deltaPct : 0,
     };
   }, [history, mode, focusCat, liveTrailing]);
 
@@ -901,6 +936,9 @@ function HistorySheet({
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
                   {DISPLAY_CATEGORIES.map((cat) => {
+                    // Phase 19: "binance" is a real category now (byCategory.binance
+                    // = spot + margin), so it renders here like any sibling and
+                    // drills via the uniform setFocusCat path.
                     // Prefer the fresh live per-category total (so the value +
                     // the trailing chart point reflect manual edits / polls)
                     // and fall back to the summed-asset breakdown.

@@ -97,6 +97,31 @@ export function SettingsPanel({
             })}
           </div>
         </Row>
+
+        {/* 5 — Resources */}
+        <div className="flex flex-col gap-2 border-t border-rule-soft/40 pt-5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+            Resources
+          </span>
+          <a
+            href="/handbook.pdf"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group flex items-center justify-between gap-3 rounded-md border border-rule-soft/60 bg-paper/[0.025] hover:bg-paper/[0.05] hover:border-paper/[0.14] transition-colors px-3 py-2.5"
+          >
+            <span className="flex flex-col leading-tight">
+              <span className="font-sans text-[13px] text-paper">
+                Project Handbook
+              </span>
+              <span className="font-mono text-[10px] text-paper-faint mt-0.5">
+                Project infrastructure · PDF
+              </span>
+            </span>
+            <span className="font-mono text-[11px] text-paper-faint group-hover:text-paper transition-colors">
+              ↗
+            </span>
+          </a>
+        </div>
       </div>
     </Sheet>
   );

@@ -33,10 +33,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useSettings } from "@/components/settings-provider";
+import { Sheet } from "@/components/ui/sheet";
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 const GEO_KEY = "hub-geo";
 const WEATHER_KEY = "hub-weather";
+const DAILY_KEY = "hub-weather-daily";
 
 type Geo = { lat: number; lon: number };
 
@@ -45,6 +47,19 @@ type Reading = {
   code: number;
   wind: number; // km/h
   city: string;
+  fetchedAt: number;
+};
+
+// One forecast day. Temps stored canonical Celsius (like Reading) so a unit
+// flip never needs a network round-trip to redisplay.
+type DailyDay = {
+  date: string; // ISO yyyy-mm-dd from Open-Meteo daily.time
+  code: number; // WMO weather_code
+  hiC: number;
+  loC: number;
+};
+type DailyForecast = {
+  days: DailyDay[];
   fetchedAt: number;
 };
 
@@ -156,6 +171,12 @@ export function WeatherChip() {
   const [status, setStatus] = useState<Status>(() =>
     readJSON<Reading>(WEATHER_KEY) ? "ok" : "loading",
   );
+  // 7-day forecast for the overlay. Seeded from cache for an instant paint.
+  const [daily, setDaily] = useState<DailyForecast | null>(() =>
+    readJSON<DailyForecast>(DAILY_KEY),
+  );
+  // Overlay open state. The chip is the trigger; the sheet shows the week.
+  const [weekOpen, setWeekOpen] = useState(false);
   // Cache the resolved geo across re-fetches (e.g. unit flips) so we don't
   // re-prompt the browser permission each time the unit changes.
   const geoRef = useRef<Geo | null>(null);
@@ -166,7 +187,7 @@ export function WeatherChip() {
       geoRef.current = geo;
       const unitParam = unit === "F" ? "fahrenheit" : "celsius";
       const res = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&current=temperature_2m,weather_code,wind_speed_10m&temperature_unit=${unitParam}`,
+        `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&current=temperature_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&temperature_unit=${unitParam}`,
       );
       if (!res.ok) throw new Error(`open-meteo ${res.status}`);
       const j = (await res.json()) as {
@@ -174,6 +195,12 @@ export function WeatherChip() {
           temperature_2m?: number;
           weather_code?: number;
           wind_speed_10m?: number;
+        };
+        daily?: {
+          time?: string[];
+          weather_code?: number[];
+          temperature_2m_max?: number[];
+          temperature_2m_min?: number[];
         };
       };
       const cur = j.current;
@@ -191,6 +218,21 @@ export function WeatherChip() {
       setReading(next);
       setStatus("ok");
       writeJSON(WEATHER_KEY, next);
+
+      // Parse the 7-day daily block (canonical Celsius). Cache alongside the
+      // current reading so the overlay paints instantly on a cold mount.
+      const d = j.daily;
+      if (d?.time && d.temperature_2m_max && d.temperature_2m_min) {
+        const days: DailyDay[] = d.time.slice(0, 7).map((date, i) => ({
+          date,
+          code: d.weather_code?.[i] ?? 0,
+          hiC: toCelsius(d.temperature_2m_max![i] ?? 0, unit),
+          loC: toCelsius(d.temperature_2m_min![i] ?? 0, unit),
+        }));
+        const nextDaily: DailyForecast = { days, fetchedAt: Date.now() };
+        setDaily(nextDaily);
+        writeJSON(DAILY_KEY, nextDaily);
+      }
     } catch (err) {
       // Geolocation denial/unavailable → distinct affordance; anything else → error.
       const code =
@@ -253,15 +295,106 @@ export function WeatherChip() {
   const displayTemp = Math.round(fromCelsius(reading.tempC, tempUnit));
 
   return (
-    <div className={shell} title={`${label} · ${Math.round(reading.wind)} km/h wind`}>
-      <Icon className="w-4 h-4 text-brass/80 shrink-0" />
-      <span className="font-display text-[15px] text-paper leading-none tabular-nums">
-        {displayTemp}°{tempUnit}
-      </span>
-      <span className="w-px h-3 bg-rule-soft/50 shrink-0" />
-      <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint truncate max-w-[90px]">
-        {reading.city}
-      </span>
-    </div>
+    <>
+      <button
+        type="button"
+        onClick={() => setWeekOpen(true)}
+        className={`${shell} hover:bg-paper/[0.05] transition-colors`}
+        title={`${label} · ${Math.round(reading.wind)} km/h wind · 7-day forecast`}
+        aria-label="Open 7-day forecast"
+      >
+        <Icon className="w-4 h-4 text-brass/80 shrink-0" />
+        <span className="font-display text-[15px] text-paper leading-none tabular-nums">
+          {displayTemp}°{tempUnit}
+        </span>
+        <span className="w-px h-3 bg-rule-soft/50 shrink-0" />
+        <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint truncate max-w-[90px]">
+          {reading.city}
+        </span>
+      </button>
+
+      <WeekOverlay
+        open={weekOpen}
+        onClose={() => setWeekOpen(false)}
+        daily={daily}
+        status={status}
+        tempUnit={tempUnit}
+        city={reading.city}
+      />
+    </>
+  );
+}
+
+// ── 7-day forecast overlay ──────────────────────────────────────────────────
+// Reuses the shared Sheet (side="center" modal). Rows: weekday · WMO icon ·
+// hi/lo in the user's tempUnit (converted from canonical Celsius like the chip).
+function WeekOverlay({
+  open,
+  onClose,
+  daily,
+  status,
+  tempUnit,
+  city,
+}: {
+  open: boolean;
+  onClose: () => void;
+  daily: DailyForecast | null;
+  status: Status;
+  tempUnit: "C" | "F";
+  city: string;
+}) {
+  const weekday = (iso: string, i: number): string => {
+    // Open-Meteo daily.time[0] is today's local date. Parse as local noon to
+    // dodge timezone-edge off-by-one, and label the first row "Today".
+    if (i === 0) return "Today";
+    const parts = iso.split("-").map((n) => parseInt(n, 10));
+    const d = new Date(parts[0], (parts[1] ?? 1) - 1, parts[2] ?? 1, 12);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleDateString(undefined, { weekday: "long" });
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={`${city} · 7-Day Forecast`} side="center">
+      {!daily || daily.days.length === 0 ? (
+        status === "loading" ? (
+          <p className="font-mono text-[10px] text-paper-faint py-10 text-center">
+            Loading forecast…
+          </p>
+        ) : (
+          <p className="font-mono text-[10px] text-paper-faint py-10 text-center">
+            Forecast unavailable.
+          </p>
+        )
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {daily.days.map((d, i) => {
+            const { Icon, label } = wmo(d.code);
+            const hi = Math.round(fromCelsius(d.hiC, tempUnit));
+            const lo = Math.round(fromCelsius(d.loC, tempUnit));
+            return (
+              <li
+                key={d.date}
+                className="flex items-center gap-3 rounded-lg border border-rule-soft/40 bg-paper/[0.02] px-3 py-2.5"
+              >
+                <span className="w-24 shrink-0 font-mono text-[11px] uppercase tracking-[0.12em] text-paper-dim">
+                  {weekday(d.date, i)}
+                </span>
+                <Icon className="w-5 h-5 text-brass/80 shrink-0" />
+                <span className="flex-1 font-sans text-[12px] text-paper-faint truncate">
+                  {label}
+                </span>
+                <span className="font-display text-[14px] text-paper tabular-nums shrink-0">
+                  {hi}°
+                  <span className="text-paper-faint">
+                    {" "}/ {lo}°{tempUnit}
+                  </span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Sheet>
   );
 }

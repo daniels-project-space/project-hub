@@ -149,6 +149,36 @@ async function marginNetEquityGbp(ctx: any): Promise<number> {
   return sum;
 }
 
+// ─── Phase 19 · BINANCE DISPLAY-CATEGORY SPLIT (server-side) ─────────────────
+// Binance SPOT holdings live inside the `crypto` category (an asset row whose
+// externalRef/label matches "binance"). The UI shows Binance as its OWN tile
+// (spot + margin net equity) and the Crypto tile EXCLUDING binance spot.
+// Historically this split was done client-side, so snapshots had no `binance`
+// key → the per-tile history series + delta were bogus. We now compute the
+// binance-spot total HERE and stamp a real `binance` display-category into every
+// byCategory builder so snapshots persist a genuine series going forward.
+//
+// IMPORTANT: this is DISPLAY-ONLY. The net-worth `total` sums assets directly
+// (binance spot is already part of an asset's lastValueGBP) + margin (once) +
+// cashflow; it is NEVER derived from byCategory. Reshaping byCategory below does
+// not change `total`. Rule replicated verbatim from the old client `cryptoSplit`
+// (wealth-widget.tsx): externalRef or label contains "binance" (case-insensitive),
+// scoped to rows in the `crypto` category.
+function binanceSpotFromAssets(
+  assets: { category?: string; externalRef?: string | null; label?: string | null; lastValueGBP?: number | null }[],
+): number {
+  let spot = 0;
+  for (const a of assets) {
+    if (a.category !== "crypto") continue;
+    const ref = (a.externalRef ?? "").toLowerCase();
+    const lbl = (a.label ?? "").toLowerCase();
+    if (ref.includes("binance") || lbl.includes("binance")) {
+      spot += a.lastValueGBP ?? 0;
+    }
+  }
+  return spot;
+}
+
 // ─── CASHFLOW ADJUSTMENT (v1 parity) ─────────────────────────────────────────
 // Net worth folds in confirmed rental revenue (a credit) minus the portion of
 // monthly expenses ACCRUED so far this month (a debit), matching v1's
@@ -472,6 +502,16 @@ export const _recordSnapshot = internalMutation({
       byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
       total += marginGbp;
     }
+    // Phase 19: DISPLAY-only binance split (does NOT touch `total`). Carve the
+    // Binance SPOT total out of `crypto` and stamp a real `binance` category =
+    // spot + margin net equity, so future history snapshots carry a genuine
+    // per-tile series. `crypto` is reduced by the spot so the tiles don't
+    // double-count. `margin` is left intact (still summed into total once above).
+    const binanceSpotGbp = binanceSpotFromAssets(assets);
+    if (binanceSpotGbp !== 0 || marginGbp !== 0) {
+      byCategory["binance"] = binanceSpotGbp + marginGbp;
+      byCategory["crypto"] = (byCategory["crypto"] ?? 0) - binanceSpotGbp;
+    }
     // Fold confirmed rental revenue − accrued expenses into the headline (v1).
     const cashflow = await computeCashflowAdjustment(ctx);
     total += cashflow.netCashflowGbp;
@@ -548,6 +588,15 @@ async function recomputeLiveDoc(
   if (marginGbp !== 0) {
     byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
     total += marginGbp;
+  }
+  // Phase 19: DISPLAY-only binance split (does NOT touch `total`). See
+  // binanceSpotFromAssets — carve Binance SPOT out of crypto and expose a real
+  // `binance` category = spot + margin net equity for live tiles + go-forward
+  // history. crypto is net of spot; margin key + total are unchanged.
+  const binanceSpotGbp = binanceSpotFromAssets(assets);
+  if (binanceSpotGbp !== 0 || marginGbp !== 0) {
+    byCategory["binance"] = binanceSpotGbp + marginGbp;
+    byCategory["crypto"] = (byCategory["crypto"] ?? 0) - binanceSpotGbp;
   }
   // Fold confirmed rental revenue − accrued expenses into the live total (v1).
   const cashflow = await computeCashflowAdjustment(ctx);
@@ -647,17 +696,17 @@ export const getWealth = query({
     // Phase 16: roll Binance margin NET EQUITY into the headline as a synthetic
     // "margin" category (v1 behaviour) so the breakdown total == live/snapshot.
     const marginRows = await ctx.db.query("marginPositions").collect();
+    const marginTiles: any[] = [];
+    let marginEquity = 0;
     if (marginRows.length > 0) {
-      let marginEquity = 0;
       let marginOldest: number | null = null;
-      const tiles: any[] = [];
       for (const p of marginRows) {
         marginEquity += p.netEquityGbp ?? 0;
         marginOldest =
           marginOldest === null
             ? p.updatedAt
             : Math.min(marginOldest, p.updatedAt);
-        tiles.push({
+        marginTiles.push({
           _id: p._id,
           label: p.symbol,
           category: "margin",
@@ -668,7 +717,7 @@ export const getWealth = query({
           lastPricedAt: p.updatedAt,
         });
       }
-      byCategory["margin"] = { total: marginEquity, assets: tiles };
+      byCategory["margin"] = { total: marginEquity, assets: marginTiles };
       total += marginEquity;
       if (marginOldest != null) {
         oldestPricedAt =
@@ -676,6 +725,31 @@ export const getWealth = query({
             ? marginOldest
             : Math.min(oldestPricedAt, marginOldest);
       }
+    }
+    // Phase 19: DISPLAY-only binance split (does NOT touch `total`, which already
+    // summed binance spot via its crypto asset row + margin once above). Carve
+    // the Binance SPOT total out of `crypto` and expose a real `binance` display
+    // category = spot + margin net equity. The `binance` bucket carries the
+    // matching crypto SPOT asset rows (so the inline edit pencil for the manual
+    // Binance row still resolves) plus the margin tiles; `crypto` keeps its rows
+    // but its total is reduced by spot so the tiles don't double-count.
+    const binanceSpotGbp = binanceSpotFromAssets(assets);
+    // Only emit the display split when binance content actually exists (a spot
+    // row or margin equity); otherwise leave byCategory untouched so an empty DB
+    // stays `{}` and a binance-free portfolio keeps its full crypto total.
+    if (binanceSpotGbp !== 0 || marginEquity !== 0) {
+      const cryptoBucket = byCategory["crypto"];
+      const binanceSpotRows =
+        cryptoBucket?.assets.filter((a: any) => {
+          const ref = (a.externalRef ?? "").toLowerCase();
+          const lbl = (a.label ?? "").toLowerCase();
+          return ref.includes("binance") || lbl.includes("binance");
+        }) ?? [];
+      byCategory["binance"] = {
+        total: binanceSpotGbp + marginEquity,
+        assets: [...binanceSpotRows, ...marginTiles],
+      };
+      if (cryptoBucket) cryptoBucket.total -= binanceSpotGbp;
     }
     // Fold confirmed rental revenue − accrued expenses into the headline (v1),
     // matching _recordSnapshot / _recordLive / the ingest live-doc recompute.
