@@ -55,6 +55,39 @@ export const setEnabled = mutation({
   },
 });
 
+// ---------------------------------------------------------------------------
+// SIZE — per-widget grid sizing (Phase 1). `w` = column span (1–4), `h` =
+// height step (1–2). Derived from the previous hardcoded SPAN map in
+// dashboard-grid.tsx. Exported so the grid can fall back to these when a row
+// has no persisted w/h (no migration needed — optional schema fields).
+// ---------------------------------------------------------------------------
+export const DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
+  wealth: { w: 3, h: 2 },
+  projects: { w: 4, h: 1 },
+  notes: { w: 2, h: 1 },
+  calendar: { w: 2, h: 1 },
+  todo: { w: 2, h: 1 },
+  expenses: { w: 2, h: 1 },
+  hunts: { w: 2, h: 1 },
+  idea: { w: 2, h: 1 },
+  channelIdea: { w: 2, h: 1 },
+  remoteWorkHub: { w: 2, h: 1 },
+};
+
+// Fallback size for an unmapped type (matches the grid's md:col-span-2 default).
+export const FALLBACK_SIZE = { w: 2, h: 1 } as const;
+
+// Resize a single widget. Clamps w∈[1,4], h∈[1,2] and patches the row.
+export const setSize = mutation({
+  args: { id: v.id("widgets"), w: v.number(), h: v.number() },
+  handler: async (ctx, { id, w, h }) => {
+    const cw = Math.max(1, Math.min(4, Math.round(w)));
+    const ch = Math.max(1, Math.min(2, Math.round(h)));
+    await ctx.db.patch(id, { w: cw, h: ch });
+    return id;
+  },
+});
+
 // Idempotent seed of the five Pass-1 widgets. No-op if the table is non-empty.
 const DEFAULT_WIDGETS: { type: string; position: number }[] = [
   { type: "notes", position: 0 },
@@ -73,11 +106,14 @@ export const seed = mutation({
     }
     let seeded = 0;
     for (const w of DEFAULT_WIDGETS) {
+      const size = DEFAULT_SIZE[w.type] ?? FALLBACK_SIZE;
       await ctx.db.insert("widgets", {
         type: w.type,
         position: w.position,
         enabled: true,
         config: {},
+        w: size.w,
+        h: size.h,
       });
       seeded += 1;
     }
@@ -128,11 +164,14 @@ export const reconcile = mutation({
     const appended: string[] = [];
     for (const type of wanted) {
       if (present.has(type)) continue;
+      const size = DEFAULT_SIZE[type] ?? FALLBACK_SIZE;
       await ctx.db.insert("widgets", {
         type,
         position: nextPos,
         enabled: true, // newly-surfaced widgets are VISIBLE, never hidden
         config: {},
+        w: size.w,
+        h: size.h,
       });
       present.add(type);
       nextPos += 1;

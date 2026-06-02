@@ -8,6 +8,11 @@ export default defineSchema({
     position: v.number(),
     enabled: v.boolean(),
     config: v.any(), // arbitrary widget-specific config
+    // Per-widget grid sizing (Phase 1, additive/optional → backward-compatible).
+    // `w` = column span 1–4; `h` = height step 1–2. Rows without these fall back
+    // to DEFAULT_SIZE in convex/widgets.ts so existing layouts render unmigrated.
+    w: v.optional(v.number()),
+    h: v.optional(v.number()),
   }).index("by_position", ["position"]),
 
   // Projects (placeholder list — eventually populated as apps migrate to Vercel).

@@ -51,7 +51,7 @@ export function StatTile({
         ? { type: "button" as const, onClick, "aria-label": label }
         : {})}
       className={cn(
-        "relative overflow-hidden rounded-lg border border-rule-soft/60 px-3.5 py-3 text-left w-full",
+        "relative overflow-hidden rounded-lg border border-rule-soft/60 px-3 py-2.5 text-left w-full",
         interactive &&
           "cursor-pointer transition-colors hover:border-brass/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/60",
         className,
@@ -83,7 +83,7 @@ export function StatTile({
         </div>
         <p
           className={cn(
-            "mt-1 font-display text-[22px] leading-none tabular-nums",
+            "mt-1 font-display text-[18px] leading-none tabular-nums",
             TONE_TEXT[tone],
           )}
         >

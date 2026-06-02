@@ -1,5 +1,7 @@
 "use client";
+import { useState } from "react";
 import { useQuery } from "convex/react";
+import { Pencil, Check } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import { TopBar } from "@/components/top-bar";
 import { AppsRow } from "@/components/apps-row";
@@ -12,6 +14,7 @@ export default function HomePage() {
   const secretsSummary = useQuery(api.secrets.summary);
   const liveCount = APPS.filter((a) => a.status === "live").length;
   const wipCount = APPS.filter((a) => a.status === "wip").length;
+  const [editMode, setEditMode] = useState(false);
 
   return (
     <main className="min-h-dvh">
@@ -78,9 +81,32 @@ export default function HomePage() {
         <section className="mb-12">
           <SectionLabel
             title="Widgets"
-            hint="Drag to reorder · eye to hide — saved to Convex"
+            hint={
+              editMode
+                ? "Drag · resize · remove — saved to Convex"
+                : "Tap Edit to rearrange, resize or add widgets"
+            }
+            action={
+              <button
+                type="button"
+                onClick={() => setEditMode((v) => !v)}
+                aria-pressed={editMode}
+                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] transition-colors ${
+                  editMode
+                    ? "border-brass/50 bg-brass-dim text-brass"
+                    : "border-rule-soft/60 bg-paper/[0.025] hover:bg-paper/[0.05] text-paper-faint hover:text-brass"
+                }`}
+              >
+                {editMode ? (
+                  <Check className="w-3 h-3" />
+                ) : (
+                  <Pencil className="w-3 h-3" />
+                )}
+                {editMode ? "Done" : "Edit"}
+              </button>
+            }
           />
-          <DashboardGrid />
+          <DashboardGrid editMode={editMode} />
         </section>
       </section>
 

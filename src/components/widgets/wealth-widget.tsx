@@ -472,15 +472,8 @@ export function WealthWidget() {
                 // the headline NW summed value still includes it via the crypto
                 // category, so NW is unaffected — only the tile display splits.
                 if (cat === "crypto") val = val - binanceSpot;
-                const oldest = bucket?.assets?.reduce<number | null>(
-                  (m: number | null, a: { lastPricedAt?: number | null }) =>
-                    a.lastPricedAt == null
-                      ? m
-                      : m == null
-                        ? a.lastPricedAt
-                        : Math.min(m, a.lastPricedAt),
-                  null,
-                );
+                // (Phase 3 declutter) per-tile `oldest`/StaleBadge removed —
+                // staleness is shown once in the widget header instead.
                 // Trailing live point = the tile's displayed value (live
                 // per-category total, with crypto already net of Binance spot),
                 // so a manual edit / poll moves THIS sparkline immediately.
@@ -505,14 +498,17 @@ export function WealthWidget() {
                     }
                     sub={
                       <span className="flex flex-col gap-0.5">
+                        {/* Declutter (Phase 3): per-tile "updated" StaleBadge and
+                            the "{pct} of NW" subline were removed — staleness now
+                            lives once in the widget header (oldest …). The USD
+                            companion line stays (small + useful), and the inline
+                            edit pencils remain in their own row. */}
                         {usdPerGbp != null && (
                           <span className="tabular-nums text-paper-dim">
                             {usd(val, usdPerGbp, hidden)}
                           </span>
                         )}
                         <span className="flex items-center gap-1.5">
-                          <span>{pct(val, total)} of NW</span>
-                          <StaleBadge pricedAt={oldest} />
                           {stocksAsset && (
                             <EditValueButton asset={stocksAsset} />
                           )}
