@@ -149,6 +149,55 @@ async function marginNetEquityGbp(ctx: any): Promise<number> {
   return sum;
 }
 
+// ─── CASHFLOW ADJUSTMENT (v1 parity) ─────────────────────────────────────────
+// Net worth folds in confirmed rental revenue (a credit) minus the portion of
+// monthly expenses ACCRUED so far this month (a debit), matching v1's
+// hub-main.js:733-754. Expenses accrue linearly across the ACTUAL days in the
+// current month: accrued = monthlyTotal × (dayOfMonth / daysInMonth), where
+// daysInMonth = new Date(y, m+1, 0).getDate(). Used by the snapshot + live-doc
+// mutations and the getWealth query so the live total, daily history, and the
+// read path all agree. One `new Date()` per call.
+async function computeCashflowAdjustment(ctx: any): Promise<{
+  confirmedRentalGbp: number;
+  expensesMonthlyGbp: number;
+  expensesAccruedGbp: number;
+  dayOfMonth: number;
+  daysInMonth: number;
+  netCashflowGbp: number;
+}> {
+  // Confirmed rental revenue: RMv2 NET confirmed.month_revenue singleton.
+  const rentalRow = await ctx.db
+    .query("rentalRevenue")
+    .withIndex("by_source", (q: any) => q.eq("source", "rmv2"))
+    .first();
+  const confirmedRentalGbp = rentalRow?.monthRevenueGbp ?? 0;
+
+  // Monthly expenses total (sum of all expense rows' amountGBP).
+  const expenseRows = await ctx.db.query("expenses").collect();
+  let expensesMonthlyGbp = 0;
+  for (const e of expenseRows) expensesMonthlyGbp += e.amountGBP ?? 0;
+
+  // Accrue expenses by days elapsed over ACTUAL days in the current month.
+  const now = new Date();
+  const dayOfMonth = now.getDate();
+  const daysInMonth = new Date(
+    now.getFullYear(),
+    now.getMonth() + 1,
+    0,
+  ).getDate();
+  const expensesAccruedGbp = expensesMonthlyGbp * (dayOfMonth / daysInMonth);
+
+  const netCashflowGbp = confirmedRentalGbp - expensesAccruedGbp;
+  return {
+    confirmedRentalGbp,
+    expensesMonthlyGbp,
+    expensesAccruedGbp,
+    dayOfMonth,
+    daysInMonth,
+    netCashflowGbp,
+  };
+}
+
 // Wholesale replace all margin positions for an exchange (delete-then-insert) so
 // closed positions never linger. Called by the READ-ONLY refreshMargin action.
 export const _replaceMarginPositions = internalMutation({
@@ -277,7 +326,7 @@ export const addMarginPosition = mutation({
       uPnlUsd: a.uPnlUsd,
       usdToGbp,
     });
-    return await ctx.db.insert("marginPositions", {
+    const id = await ctx.db.insert("marginPositions", {
       exchange: (a.exchange ?? "Binance").trim() || "Binance",
       market: a.market,
       symbol: a.symbol.trim(),
@@ -293,6 +342,10 @@ export const addMarginPosition = mutation({
       source: "manual",
       updatedAt: Date.now(),
     });
+    // Margin net equity rolls into NW via the synthetic "margin" category — the
+    // Binance tile PREFERS the live doc's margin total, so refresh it now.
+    await recomputeLiveDoc(ctx);
+    return id;
   },
 });
 
@@ -354,6 +407,8 @@ export const updateMarginPosition = mutation({
     if (a.liqPrice !== undefined) patch.liqPrice = a.liqPrice;
     if (a.netEquityGbp !== undefined) patch.netEquityGbp = a.netEquityGbp;
     await ctx.db.patch(a.id, patch);
+    // Refresh the live doc so the Binance tile's margin total + headline update now.
+    await recomputeLiveDoc(ctx);
     return a.id;
   },
 });
@@ -362,6 +417,8 @@ export const removeMarginPosition = mutation({
   args: { id: v.id("marginPositions"), ownerId: v.optional(v.string()) },
   handler: async (ctx, { id }) => {
     await ctx.db.delete(id);
+    // Refresh the live doc so the Binance tile's margin total + headline update now.
+    await recomputeLiveDoc(ctx);
     return id;
   },
 });
@@ -415,6 +472,9 @@ export const _recordSnapshot = internalMutation({
       byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
       total += marginGbp;
     }
+    // Fold confirmed rental revenue − accrued expenses into the headline (v1).
+    const cashflow = await computeCashflowAdjustment(ctx);
+    total += cashflow.netCashflowGbp;
     await ctx.db.insert("netWorthSnapshots", {
       ts: Date.now(),
       totalGBP: total,
@@ -450,45 +510,88 @@ export const _upsertFxRate = internalMutation({
   },
 })
 
+// ─── SHARED LIVE-DOC RECOMPUTE (single source of truth) ──────────────────────
+// Rebuilds the singleton live (intraday) `currentPrices` doc from whatever values
+// currently live in the DB: Σ assets `lastValueGBP` + Binance margin net equity
+// (synthetic "margin" category) + net cashflow (confirmed rental − accrued
+// expenses). Mirrors the daily snapshot / getWealth math EXACTLY so the live
+// total, the daily history, and the read path all agree.
+//
+// CRITICAL (the manual-edit bug): the live doc is what the widget PREFERS for the
+// headline (`currentTotalGBP`) and per-tile values (`live.byCategory`). Manual
+// edits only patch `assets.lastValueGBP`, which updates getWealth's FRESH
+// `byCategory`/`totalGBP` — but UNLESS the live doc is recomputed too, the
+// PREFERRED live values stay stale (up to 30 min, until refreshLive runs) and the
+// edit appears to do nothing. So every mutation that changes an asset/margin value
+// MUST call this helper.
+//
+// Pure DB work — no external prices/FX needed (FX is read from the persisted
+// fxRates row), so it is safe to run inside a mutation context. `usdPerGbp`:
+// when an explicit value is passed (cron with a fresh quote) it wins; otherwise we
+// PRESERVE the existing live doc's rate (then fall back to the fxRates row) so a
+// manual edit never wipes the dual-currency display.
+async function recomputeLiveDoc(
+  ctx: any,
+  opts?: { usdPerGbp?: number; ts?: number },
+): Promise<{ totalGBP: number; usdPerGbp: number | null }> {
+  const assets = await ctx.db.query("assets").collect();
+  const byCategory: Record<string, number> = {};
+  let total = 0;
+  for (const a of assets) {
+    const val = a.lastValueGBP ?? 0;
+    byCategory[a.category] = (byCategory[a.category] ?? 0) + val;
+    total += val;
+  }
+  // Phase 16: roll Binance margin net equity into the live total + a synthetic
+  // "margin" category (matches the daily snapshot + getWealth).
+  const marginGbp = await marginNetEquityGbp(ctx);
+  if (marginGbp !== 0) {
+    byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
+    total += marginGbp;
+  }
+  // Fold confirmed rental revenue − accrued expenses into the live total (v1).
+  const cashflow = await computeCashflowAdjustment(ctx);
+  total += cashflow.netCashflowGbp;
+
+  const ts = opts?.ts ?? Date.now();
+  const existing = await ctx.db
+    .query("currentPrices")
+    .withIndex("by_kind", (q: any) => q.eq("kind", "live"))
+    .first();
+  // Resolve the dual-currency rate: explicit > existing live doc > persisted FX.
+  let usdPerGbp: number | null =
+    opts?.usdPerGbp !== undefined ? opts.usdPerGbp : (existing?.usdPerGbp ?? null);
+  if (usdPerGbp == null) {
+    const fx = await ctx.db
+      .query("fxRates")
+      .withIndex("by_pair", (q: any) => q.eq("base", "GBP").eq("quote", "USD"))
+      .first();
+    usdPerGbp = fx?.rate ?? null;
+  }
+  const doc = {
+    kind: "live",
+    totalGBP: total,
+    byCategory,
+    ts,
+    ...(usdPerGbp != null ? { usdPerGbp } : {}),
+  };
+  if (existing) {
+    await ctx.db.patch(existing._id, doc);
+  } else {
+    await ctx.db.insert("currentPrices", doc);
+  }
+  return { totalGBP: total, usdPerGbp };
+}
+
 // Upsert the singleton live (intraday) net-worth doc. Written by the frequent
 // prices-only refresh cron (NOT a history row). Mirrors the daily snapshot's
-// byCategory shape so the frontend can reuse it for fresh tiles.
+// byCategory shape so the frontend can reuse it for fresh tiles. Thin wrapper
+// over the shared `recomputeLiveDoc` so the cron and the manual mutations stay
+// in lock-step.
 export const _recordLive = internalMutation({
   args: { usdPerGbp: v.optional(v.number()) },
   handler: async (ctx, { usdPerGbp }) => {
-    const assets = await ctx.db.query("assets").collect();
-    const byCategory: Record<string, number> = {};
-    let total = 0;
-    for (const a of assets) {
-      const val = a.lastValueGBP ?? 0;
-      byCategory[a.category] = (byCategory[a.category] ?? 0) + val;
-      total += val;
-    }
-    // Phase 16: roll Binance margin net equity into the live total + a synthetic
-    // "margin" category (matches the daily snapshot + getWealth).
-    const marginGbp = await marginNetEquityGbp(ctx);
-    if (marginGbp !== 0) {
-      byCategory["margin"] = (byCategory["margin"] ?? 0) + marginGbp;
-      total += marginGbp;
-    }
-    const ts = Date.now();
-    const existing = await ctx.db
-      .query("currentPrices")
-      .withIndex("by_kind", (q) => q.eq("kind", "live"))
-      .first();
-    const doc = {
-      kind: "live",
-      totalGBP: total,
-      byCategory,
-      ts,
-      ...(usdPerGbp !== undefined ? { usdPerGbp } : {}),
-    };
-    if (existing) {
-      await ctx.db.patch(existing._id, doc);
-    } else {
-      await ctx.db.insert("currentPrices", doc);
-    }
-    return { totalGBP: total, usdPerGbp: usdPerGbp ?? null };
+    return await recomputeLiveDoc(ctx, { usdPerGbp });
   },
 })
 
@@ -574,6 +677,10 @@ export const getWealth = query({
             : Math.min(oldestPricedAt, marginOldest);
       }
     }
+    // Fold confirmed rental revenue − accrued expenses into the headline (v1),
+    // matching _recordSnapshot / _recordLive / the ingest live-doc recompute.
+    const cashflow = await computeCashflowAdjustment(ctx);
+    total += cashflow.netCashflowGbp;
     // Additive: persisted GBP→USD for dual-currency display.
     const fx = await ctx.db
       .query("fxRates")
@@ -604,6 +711,14 @@ export const getWealth = query({
       // Convenience: the freshest current total (live if present, else summed).
       currentTotalGBP: live?.totalGBP ?? total,
       currentTotalTs: live?.ts ?? oldestPricedAt,
+      // Cashflow components (v1 parity) — exposed so the Expenses/Rental tiles
+      // use the SAME server numbers folded into the total (no client drift).
+      confirmedRentalGbp: cashflow.confirmedRentalGbp,
+      expensesMonthlyGbp: cashflow.expensesMonthlyGbp,
+      expensesAccruedGbp: cashflow.expensesAccruedGbp,
+      dayOfMonth: cashflow.dayOfMonth,
+      daysInMonth: cashflow.daysInMonth,
+      netCashflowGbp: cashflow.netCashflowGbp,
     };
   },
 });
@@ -765,13 +880,18 @@ export const upsertAsset = mutation({
         patch.lastPricedAt = Date.now();
       }
       await ctx.db.patch(a.id, patch);
+      // Refresh the live doc so the PREFERRED headline + tiles update now.
+      await recomputeLiveDoc(ctx);
       return a.id;
     }
-    return await ctx.db.insert("assets", {
+    const newId = await ctx.db.insert("assets", {
       ...base,
       lastValueGBP: a.lastValueGBP,
       lastPricedAt: a.lastValueGBP !== undefined ? Date.now() : undefined,
     });
+    // Refresh the live doc so the PREFERRED headline + tiles update now.
+    await recomputeLiveDoc(ctx);
+    return newId;
   },
 });
 
@@ -779,6 +899,9 @@ export const removeAsset = mutation({
   args: { id: v.id("assets"), ownerId: v.optional(v.string()) },
   handler: async (ctx, { id }) => {
     await ctx.db.delete(id);
+    // Refresh the live doc so the PREFERRED headline + tiles drop the removed
+    // asset's value immediately (not just getWealth's fresh total).
+    await recomputeLiveDoc(ctx);
     return id;
   },
 });
@@ -814,6 +937,8 @@ export const setManualAssetValue = mutation({
       lastValueGBP: valueGBP,
       lastPricedAt: Date.now(),
     });
+    // Refresh the live doc so the PREFERRED headline + tile values update now.
+    await recomputeLiveDoc(ctx);
     return match._id;
   },
 });
@@ -864,7 +989,61 @@ export const seedBinanceSpot = mutation({
       lastPricedAt: Date.now(),
       ownerId,
     });
+    // New Binance spot row → refresh the live doc so the Binance tile + headline
+    // reflect it now. (The existing-row path above is a no-op by design.)
+    await recomputeLiveDoc(ctx);
     return { created: true, id, value: start };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CASH INLINE-VALUE EDIT (client-facing) — UPSERTING.
+// The Cash tile is inline-editable like Stocks, but unlike Stocks there may be
+// NO manual cash row yet (cash can come purely from auto/seeded sources). So,
+// unlike setManualAssetValue (which THROWS when no row exists), this mutation
+// UPSERTS: it patches the existing manual cash row if present, otherwise inserts
+// one (label "Cash", source "manual", category "cash"). Cash flows into
+// byCategory.cash → total, so an edit moves the net-worth headline automatically.
+// Idempotent in the sense that repeated edits just patch the same single row.
+// ─────────────────────────────────────────────────────────────────────────────
+export const setCashValue = mutation({
+  args: {
+    valueGBP: v.number(),
+    label: v.optional(v.string()), // default "Cash"
+    ownerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { valueGBP, label, ownerId }) => {
+    assertFinite("valueGBP", valueGBP);
+    const desiredLabel = label ?? "Cash";
+    const cashRows = await ctx.db
+      .query("assets")
+      .withIndex("by_category", (q) => q.eq("category", "cash"))
+      .collect();
+    // Prefer the exact-label manual row; else the first manual cash row.
+    const existing =
+      cashRows.find((r) => r.source === "manual" && r.label === desiredLabel) ??
+      cashRows.find((r) => r.source === "manual");
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        lastValueGBP: valueGBP,
+        lastPricedAt: Date.now(),
+      });
+      // Refresh the live doc so the PREFERRED headline + Cash tile update now.
+      await recomputeLiveDoc(ctx);
+      return { created: false, id: existing._id, value: valueGBP };
+    }
+    const id = await ctx.db.insert("assets", {
+      category: "cash",
+      label: desiredLabel,
+      source: "manual",
+      currency: GBP,
+      lastValueGBP: valueGBP,
+      lastPricedAt: Date.now(),
+      ownerId,
+    });
+    // Refresh the live doc so the PREFERRED headline + Cash tile update now.
+    await recomputeLiveDoc(ctx);
+    return { created: true, id, value: valueGBP };
   },
 });
 
@@ -1108,35 +1287,14 @@ export const ingest = mutation({
     }
 
     // ── 4. Refresh the live `currentPrices` doc so headline NW updates now ──
-    // (mirrors _recordLive: sum assets + roll margin net equity into "margin").
-    const allAssets = await ctx.db.query("assets").collect();
-    const liveByCat: Record<string, number> = {};
-    let liveTotal = 0;
-    for (const x of allAssets) {
-      const val = x.lastValueGBP ?? 0;
-      liveByCat[x.category] = (liveByCat[x.category] ?? 0) + val;
-      liveTotal += val;
-    }
-    const marginRows = await ctx.db.query("marginPositions").collect();
-    let marginGbp = 0;
-    for (const m of marginRows) marginGbp += m.netEquityGbp ?? 0;
-    if (marginGbp !== 0) {
-      liveByCat["margin"] = (liveByCat["margin"] ?? 0) + marginGbp;
-      liveTotal += marginGbp;
-    }
-    const liveDoc = {
-      kind: "live",
-      totalGBP: liveTotal,
-      byCategory: liveByCat,
+    // Routed through the shared `recomputeLiveDoc` (single source of truth) so the
+    // bridge, the cron, and the manual mutations build the live doc identically:
+    // Σ assets + margin net equity ("margin" category) + net cashflow. Pass the
+    // bridge's fresh FX + timestamp so the live doc carries them.
+    const { totalGBP: liveTotal } = await recomputeLiveDoc(ctx, {
+      usdPerGbp: a.usdPerGbp && a.usdPerGbp > 0 ? a.usdPerGbp : undefined,
       ts: now,
-      ...(a.usdPerGbp && a.usdPerGbp > 0 ? { usdPerGbp: a.usdPerGbp } : {}),
-    };
-    const liveExisting = await ctx.db
-      .query("currentPrices")
-      .withIndex("by_kind", (q) => q.eq("kind", "live"))
-      .first();
-    if (liveExisting) await ctx.db.patch(liveExisting._id, liveDoc);
-    else await ctx.db.insert("currentPrices", liveDoc);
+    });
 
     return {
       ok: true,

@@ -28,8 +28,6 @@ import {
   X,
   Pencil,
   Check,
-  TrendingUp,
-  TrendingDown,
   Home,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
@@ -55,9 +53,10 @@ type Category = (typeof CATEGORIES)[number];
 
 // Display categories = the 6 asset categories + the synthetic "binance" tile
 // (Phase 19: Binance gets its OWN top-level tile, v1-style — broken out of the
-// Crypto category total so it reads as a discrete exchange) + the synthetic
-// "margin" category (Binance margin/futures NET EQUITY, which rolls into net
-// worth — Phase 16). "binance" is inserted right after "crypto".
+// Crypto category total so it reads as a discrete exchange). "binance" is
+// inserted right after "crypto". Margin NET EQUITY still rolls into net worth
+// server-side, but is shown FOLDED INTO the Binance tile value (no standalone
+// Margin tile, no separate tracker).
 const DISPLAY_CATEGORIES = [
   "crypto",
   "binance",
@@ -66,7 +65,6 @@ const DISPLAY_CATEGORIES = [
   "cash",
   "property",
   "inventory",
-  "margin",
 ] as const;
 type DisplayCategory = (typeof DISPLAY_CATEGORIES)[number];
 
@@ -78,7 +76,6 @@ const CATEGORY_TONE: Record<DisplayCategory, Tone> = {
   cash: "default",
   property: "default",
   inventory: "default",
-  margin: "rose",
 };
 
 const CATEGORY_LABEL: Record<DisplayCategory, string> = {
@@ -87,9 +84,8 @@ const CATEGORY_LABEL: Record<DisplayCategory, string> = {
   stocks: "Stocks / ETF",
   gold: "Gold",
   cash: "Cash",
-  property: "Property",
+  property: "AI Income",
   inventory: "Inventory",
-  margin: "Margin",
 };
 
 const RANGES = ["1W", "1M", "3M", "1Y"] as const;
@@ -125,12 +121,30 @@ function usd(
 // Per-category trajectory from snapshot history (byCategory = Record<cat,total>).
 // Returns the series + GBP/% delta over the selected range, mirroring the
 // headline spark/delta pattern so every tile reads identically.
+//
+// `liveValue` (optional) is the CURRENT per-category value (from the live doc /
+// recomputeLiveDoc). When provided it is appended as the trailing chart point so
+// the sparkline moves IMMEDIATELY on a manual edit or a fresh poll — without it,
+// the chart would only show past daily snapshots and stay frozen until the next
+// cron snapshot. The trailing point therefore always equals the tile's live
+// figure. Synthetic tiles whose live split differs from the stored snapshot
+// breakdown (e.g. the combined Binance tile = spot + margin) pass the displayed
+// value here so the live point is truthful even when no matching snapshot key
+// exists yet.
 function categorySeries(
   history: { byCategory?: Record<string, number> | null }[] | undefined,
   cat: string,
+  liveValue?: number | null,
 ): { data: number[]; delta: number; deltaPct: number } {
   const rows = history ?? [];
   const data = rows.map((r) => (r.byCategory?.[cat] ?? 0) as number);
+  // Append the live value as the trailing point (dedup if the last snapshot
+  // already equals it, to avoid a flat doubled tail).
+  if (liveValue != null && Number.isFinite(liveValue)) {
+    if (data.length === 0 || Math.abs(data[data.length - 1] - liveValue) > 0.005) {
+      data.push(liveValue);
+    }
+  }
   if (data.length < 2) return { data, delta: 0, deltaPct: 0 };
   const first = data[0];
   const last = data[data.length - 1];
@@ -167,8 +181,9 @@ function fmtDate(ts: number): string {
 export function WealthWidget() {
   const wealth = useQuery(api.wealth.getWealth);
   const prices = useQuery(api.wealth.getLivePrices);
-  // Phase 16: Binance margin/futures tracker + rental revenue cache.
-  const margin = useQuery(api.wealth.getMarginPositions);
+  // Phase 16: rental revenue cache. (Margin net equity still rolls into net
+  // worth server-side, but is now shown folded into the Binance tile — no
+  // separate tracker, so getMarginPositions is no longer fetched here.)
   const rental = useQuery(api.wealth.getRentalRevenue);
 
   const [hidden, setHidden] = useState(false);
@@ -241,15 +256,26 @@ export function WealthWidget() {
 
   const spark = useMemo(() => {
     const rows = cardHistory ?? [];
-    if (rows.length === 0) return { data: [] as number[], delta: 0, deltaPct: 0 };
-    const first = rows[0].totalGBP;
-    const last = rows[rows.length - 1].totalGBP;
+    const data = rows.map((r: { totalGBP: number }) => r.totalGBP);
+    // Trailing point = the live net-worth total (currentTotalGBP) so the
+    // headline sparkline moves the instant an asset is edited or re-polled,
+    // not just on the next daily snapshot. Dedup a flat doubled tail.
+    if (
+      total != null &&
+      Number.isFinite(total) &&
+      (data.length === 0 || Math.abs(data[data.length - 1] - total) > 0.005)
+    ) {
+      data.push(total);
+    }
+    if (data.length === 0) return { data: [] as number[], delta: 0, deltaPct: 0 };
+    const first = data[0];
+    const last = data[data.length - 1];
     return {
-      data: rows.map((r: { totalGBP: number }) => r.totalGBP),
+      data,
       delta: last - first,
       deltaPct: first ? ((last - first) / first) * 100 : 0,
     };
-  }, [cardHistory]);
+  }, [cardHistory, total]);
 
   const up = spark.delta >= 0;
 
@@ -387,19 +413,36 @@ export function WealthWidget() {
                 // category total. The Binance SPOT value lives inside the crypto
                 // category (asset row labelled "Binance"); cryptoSplit isolates it.
                 const binanceSpot = cryptoSplit.binance;
+                // Margin NET EQUITY rolls into net worth server-side; on the
+                // display side it is FOLDED INTO the Binance tile value (no
+                // standalone Margin tile). Display-only — never re-added to total.
                 const marginTotalGbp =
                   liveByCat?.["margin"] ?? byCategory["margin"]?.total ?? 0;
                 if (cat === "binance") {
-                  // Synthetic tile — value = Binance SPOT GBP. Always shown when a
-                  // Binance row exists (even £0) so the tile never disappears.
-                  if (!cryptoSplit.binanceManual && binanceSpot <= 0) return null;
-                  const series = categorySeries(cardHistory, "binance");
+                  // Combined tile — value = Binance SPOT + margin net equity.
+                  // Always shown when a Binance row exists (even £0) so the tile
+                  // never disappears. NO margin sub-line.
+                  const binanceCombined = binanceSpot + marginTotalGbp;
+                  if (
+                    !cryptoSplit.binanceManual &&
+                    binanceSpot <= 0 &&
+                    Math.abs(marginTotalGbp) < 0.005
+                  )
+                    return null;
+                  // Trailing live point = the value this tile DISPLAYS
+                  // (Binance SPOT + margin net equity), so the sparkline's end
+                  // matches the headline figure and moves on edit/poll.
+                  const series = categorySeries(
+                    cardHistory,
+                    "binance",
+                    binanceCombined,
+                  );
                   return (
                     <StatTile
                       key={cat}
                       label={CATEGORY_LABEL[cat]}
                       tone={CATEGORY_TONE[cat]}
-                      value={gbp(binanceSpot, hidden)}
+                      value={gbp(binanceCombined, hidden)}
                       chart={series.data}
                       badge={
                         <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
@@ -408,29 +451,15 @@ export function WealthWidget() {
                         <span className="flex flex-col gap-0.5">
                           {usdPerGbp != null && (
                             <span className="tabular-nums text-paper-dim">
-                              {usd(binanceSpot, usdPerGbp, hidden)}
+                              {usd(binanceCombined, usdPerGbp, hidden)}
                             </span>
                           )}
                           <span className="flex items-center gap-1.5">
-                            <span>spot</span>
+                            <span>spot + margin</span>
                             {cryptoSplit.binanceManual && (
                               <EditValueButton asset={cryptoSplit.binanceManual} />
                             )}
                           </span>
-                          {/* Phase 19: small margin indicator — net equity of the
-                              Binance margin/futures positions that roll into NW. */}
-                          {Math.abs(marginTotalGbp) >= 0.005 && (
-                            <span className="mt-0.5 flex items-center justify-between border-t border-rule-soft/30 pt-0.5 text-paper-dim">
-                              <span className="flex items-center gap-1">
-                                <span className="font-mono text-[8px] uppercase tracking-wide text-rose-soft px-1 rounded bg-rose-soft/10">
-                                  margin
-                                </span>
-                              </span>
-                              <span className="tabular-nums text-paper-dim">
-                                {gbp(marginTotalGbp, hidden)}
-                              </span>
-                            </span>
-                          )}
                         </span>
                       }
                     />
@@ -443,10 +472,6 @@ export function WealthWidget() {
                 // the headline NW summed value still includes it via the crypto
                 // category, so NW is unaffected — only the tile display splits.
                 if (cat === "crypto") val = val - binanceSpot;
-                // Hide the margin tile entirely when there's no margin equity.
-                if (cat === "margin" && Math.abs(val) < 0.005 && !bucket) {
-                  return null;
-                }
                 const oldest = bucket?.assets?.reduce<number | null>(
                   (m: number | null, a: { lastPricedAt?: number | null }) =>
                     a.lastPricedAt == null
@@ -456,7 +481,10 @@ export function WealthWidget() {
                         : Math.min(m, a.lastPricedAt),
                   null,
                 );
-                const series = categorySeries(cardHistory, cat);
+                // Trailing live point = the tile's displayed value (live
+                // per-category total, with crypto already net of Binance spot),
+                // so a manual edit / poll moves THIS sparkline immediately.
+                const series = categorySeries(cardHistory, cat, val);
                 // Editable stocks: find the manual stocks asset row (v1 "IBKR").
                 const stocksAsset =
                   cat === "stocks"
@@ -488,6 +516,13 @@ export function WealthWidget() {
                           {stocksAsset && (
                             <EditValueButton asset={stocksAsset} />
                           )}
+                          {/* Cash is inline-editable like Stocks, but uses an
+                              UPSERTING mutation so the pencil works even before a
+                              manual cash row exists. Edits flow into byCategory.cash
+                              → total, moving the net-worth headline. */}
+                          {cat === "cash" && (
+                            <CashEditButton currentValue={val} />
+                          )}
                         </span>
                         {/* Phase 19: Binance is now its OWN top-level tile, so
                             the Crypto tile shows only the Coinbase sub-line (the
@@ -507,12 +542,36 @@ export function WealthWidget() {
                   />
                 );
               })}
-            </div>
 
-            {/* Phase 16: MARGIN POSITIONS tracker (Binance isolated/cross/USDⓂ/
-                COINⓂ). Net equity rolls into NW; this lists each position + total
-                uPnL + net equity. Real data only — empty account → empty-state. */}
-            <MarginTracker margin={margin} hidden={hidden} usdPerGbp={usdPerGbp} />
+              {/* Expenses — small in-grid tile sitting next to the category
+                  tiles. Accrued expenses are DEDUCTED from net worth server-side
+                  (getWealth folds them into the total via netCashflowGbp), so the
+                  figures come straight from the already-fetched `wealth` query. */}
+              {wealth?.expensesMonthlyGbp !== undefined && (
+                <StatTile
+                  key="expenses"
+                  label="Expenses"
+                  tone="rose"
+                  value={gbp(wealth.expensesMonthlyGbp, hidden)}
+                  sub={
+                    <span className="flex flex-col gap-0.5">
+                      <span className="tabular-nums text-paper-dim">
+                        − {gbp(wealth.expensesAccruedGbp)} accrued · day{" "}
+                        {wealth.dayOfMonth}/{wealth.daysInMonth}
+                      </span>
+                      <span className="tabular-nums text-paper-dim">
+                        {gbp(
+                          wealth.daysInMonth
+                            ? wealth.expensesMonthlyGbp / wealth.daysInMonth
+                            : 0,
+                        )}
+                        /day · deducted from net worth
+                      </span>
+                    </span>
+                  }
+                />
+              )}
+            </div>
 
             {/* Phase 16: RENTAL REVENUE tile (rental-manager-v2, NET, this month). */}
             <RentalRevenueTile rental={rental} hidden={hidden} usdPerGbp={usdPerGbp} />
@@ -597,25 +656,46 @@ function HistorySheet({
   const history = useQuery(api.wealth.getHistory, open ? { range } : "skip");
   const wealth = useQuery(api.wealth.getWealth, open ? {} : "skip");
 
+  // Freshest CURRENT value to append as the chart's trailing point: the live
+  // per-category total when drilled-in, else the live net-worth total
+  // (currentTotalGBP). This makes a manual edit / poll move the big chart at
+  // once instead of waiting for the next daily snapshot.
+  const liveTotal = wealth?.currentTotalGBP ?? wealth?.totalGBP ?? null;
+  const liveCatVal = (wealth?.live?.byCategory as Record<string, number> | null | undefined)?.[
+    focusCat ?? ""
+  ];
+  const liveTrailing = focusCat ? (liveCatVal ?? null) : liveTotal;
+
   const series = useMemo(() => {
     const rows = (history ?? []) as {
       ts: number;
       totalGBP: number;
       byCategory?: Record<string, number> | null;
     }[];
-    if (rows.length === 0)
-      return { data: [] as number[], labels: [] as string[], first: 0, last: 0, min: 0, max: 0, delta: 0, deltaPct: 0 };
     // Source values: a single category's series when drilled-in, else the total.
     const valOf = (r: (typeof rows)[number]) =>
       focusCat ? (r.byCategory?.[focusCat] ?? 0) : r.totalGBP;
     const totals = rows.map(valOf);
+    const labels = rows.map((r) => fmtDate(r.ts));
+    // Append the live current value as the trailing point (dedup a flat tail).
+    if (
+      liveTrailing != null &&
+      Number.isFinite(liveTrailing) &&
+      (totals.length === 0 ||
+        Math.abs(totals[totals.length - 1] - liveTrailing) > 0.005)
+    ) {
+      totals.push(liveTrailing);
+      labels.push("Now");
+    }
+    if (totals.length === 0)
+      return { data: [] as number[], labels: [] as string[], first: 0, last: 0, min: 0, max: 0, delta: 0, deltaPct: 0 };
     const first = totals[0];
     const last = totals[totals.length - 1];
     const data =
       mode === "gbp" ? totals : totals.map((t) => (first ? ((t - first) / first) * 100 : 0));
     return {
       data,
-      labels: rows.map((r) => fmtDate(r.ts)),
+      labels,
       first,
       last,
       min: Math.min(...totals),
@@ -623,10 +703,15 @@ function HistorySheet({
       delta: last - first,
       deltaPct: first ? ((last - first) / first) * 100 : 0,
     };
-  }, [history, mode, focusCat]);
+  }, [history, mode, focusCat, liveTrailing]);
 
   const up = series.delta >= 0;
   const byCategory = wealth?.byCategory ?? {};
+  // Fresh per-category live totals (Record<cat,total>) from the live doc — used
+  // as each breakdown sparkline's trailing point so edits/polls show at once.
+  const liveByCat = (wealth?.live?.byCategory ?? null) as
+    | Record<string, number>
+    | null;
   const total = wealth?.totalGBP ?? 0;
 
   return (
@@ -749,9 +834,12 @@ function HistorySheet({
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
                   {DISPLAY_CATEGORIES.map((cat) => {
-                    const val = byCategory[cat]?.total ?? 0;
-                    if (cat === "margin" && Math.abs(val) < 0.005) return null;
-                    const cs = categorySeries(history, cat);
+                    // Prefer the fresh live per-category total (so the value +
+                    // the trailing chart point reflect manual edits / polls)
+                    // and fall back to the summed-asset breakdown.
+                    const liveCat = liveByCat?.[cat];
+                    const val = liveCat ?? byCategory[cat]?.total ?? 0;
+                    const cs = categorySeries(history, cat, val);
                     return (
                       <StatTile
                         key={cat}
@@ -1051,364 +1139,82 @@ function EditValueButton({
   );
 }
 
-// ─── Phase 16 · Margin positions tracker ─────────────────────────────────────
-// Binance isolated/cross/USDⓂ/COINⓂ positions. Net equity rolls into net worth;
-// this section lists each position (symbol · side colored · size · entry→mark ·
-// leverage · uPnL £/$ colored · liq price) + total uPnL + total net equity.
-// REAL DATA ONLY — empty/zero account renders an explicit empty-state.
-
-type MarginData = {
-  positions: {
-    _id: string;
-    market: string;
-    symbol: string;
-    side: string;
-    size: number;
-    entryPrice: number;
-    markPrice: number;
-    leverage: number | null;
-    uPnlUsd: number;
-    uPnlGbp: number;
-    marginLevel: number | null;
-    liqPrice: number | null;
-    netEquityGbp: number;
-  }[];
-  count: number;
-  totalUPnlGbp: number;
-  totalUPnlUsd: number;
-  totalNetEquityGbp: number;
-  updatedAt: number | null;
-} | undefined;
-
-const MARKET_LABEL: Record<string, string> = {
-  isolated: "ISO",
-  cross: "CROSS",
-  usdm: "USDⓂ",
-  coinm: "COINⓂ",
-};
-
-function num(n: number, dp = 4): string {
-  if (!Number.isFinite(n)) return "—";
-  const abs = Math.abs(n);
-  const d = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
-  return n.toLocaleString("en-US", { maximumFractionDigits: Math.min(d, dp) });
-}
-
-const MARGIN_MARKETS = ["isolated", "cross", "usdm", "coinm"] as const;
-
-const BLANK_MARGIN = {
-  exchange: "Binance",
-  market: "usdm" as (typeof MARGIN_MARKETS)[number],
-  symbol: "",
-  side: "long" as "long" | "short",
-  size: "",
-  entryPrice: "",
-  markPrice: "",
-  leverage: "",
-  liqPrice: "",
-  netEquityGbp: "",
-};
-
-function MarginTracker({
-  margin,
-  hidden,
-  usdPerGbp,
-}: {
-  margin: MarginData;
-  hidden: boolean;
-  usdPerGbp: number | null;
-}) {
-  // Phase 17: Binance is geo-blocked (HTTP 451) → margin positions are MANUAL.
-  // Add / edit-by-delete-and-readd / delete via this tile. Net equity still rolls
-  // into net worth (synthetic "margin" category). REAL data only — no fixtures.
-  const addPosition = useMutation(api.wealth.addMarginPosition);
-  const removePosition = useMutation(api.wealth.removeMarginPosition);
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState(BLANK_MARGIN);
+// ─── Inline-editable Cash value (upserting) ──────────────────────────────────
+// Like EditValueButton (Stocks/Binance) but for Cash, which may have NO manual
+// row yet. Always rendered (pencil never gated on an existing row); uses the
+// UPSERTING `setCashValue` mutation, which inserts a manual "Cash" row if none
+// exists. The edited value flows into byCategory.cash → total, so the net-worth
+// headline updates immediately. `currentValue` seeds the input with the live
+// cash total so the user edits from the number they see.
+function CashEditButton({ currentValue }: { currentValue: number }) {
+  const setCash = useMutation(api.wealth.setCashValue);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const parseNum = (s: string) => (s.trim() === "" ? undefined : Number(s));
+  const begin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(Number.isFinite(currentValue) ? String(Math.round(currentValue)) : "");
+    setOpen(true);
+  };
 
-  const submitMargin = async () => {
-    if (!form.symbol.trim() || busy) return;
+  const save = async (e?: React.MouseEvent | React.FormEvent) => {
+    e?.stopPropagation();
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setOpen(false);
+      return;
+    }
     setBusy(true);
     try {
-      await addPosition({
-        exchange: form.exchange.trim() || "Binance",
-        market: form.market,
-        symbol: form.symbol.trim(),
-        side: form.side,
-        size: parseNum(form.size),
-        entryPrice: parseNum(form.entryPrice),
-        markPrice: parseNum(form.markPrice),
-        leverage: parseNum(form.leverage),
-        liqPrice: parseNum(form.liqPrice),
-        netEquityGbp: parseNum(form.netEquityGbp),
-      });
-      setForm(BLANK_MARGIN);
-      setAdding(false);
+      await setCash({ valueGBP: n });
+      setOpen(false);
     } finally {
       setBusy(false);
     }
   };
 
-  if (margin === undefined) return null; // loading — stay quiet
-  const { positions, totalUPnlGbp, totalUPnlUsd, totalNetEquityGbp, updatedAt } =
-    margin;
-  const upTotal = totalUPnlGbp >= 0;
-
-  const inputCls =
-    "bg-ink-2/80 border border-rule-soft/60 rounded px-2 py-1 text-[12px] text-paper";
-
-  const addForm = adding ? (
-    <Card className="space-y-2 mb-3">
-      <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
-        <Plus className="w-3 h-3" /> Add margin position
-      </p>
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          placeholder="Exchange"
-          value={form.exchange}
-          onChange={(e) => setForm({ ...form, exchange: e.target.value })}
-          className={inputCls}
-        />
-        <select
-          value={form.market}
-          onChange={(e) =>
-            setForm({
-              ...form,
-              market: e.target.value as (typeof MARGIN_MARKETS)[number],
-            })
-          }
-          className={inputCls}
-        >
-          {MARGIN_MARKETS.map((m) => (
-            <option key={m} value={m}>
-              {MARKET_LABEL[m] ?? m}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="Symbol (e.g. SOLUSDT)"
-          value={form.symbol}
-          onChange={(e) =>
-            setForm({ ...form, symbol: e.target.value.toUpperCase() })
-          }
-          className={inputCls}
-        />
-        <select
-          value={form.side}
-          onChange={(e) =>
-            setForm({ ...form, side: e.target.value as "long" | "short" })
-          }
-          className={inputCls}
-        >
-          <option value="long">long</option>
-          <option value="short">short</option>
-        </select>
-        <input
-          placeholder="Size"
-          value={form.size}
-          onChange={(e) => setForm({ ...form, size: e.target.value })}
-          className={inputCls}
-        />
-        <input
-          placeholder="Leverage (×)"
-          value={form.leverage}
-          onChange={(e) => setForm({ ...form, leverage: e.target.value })}
-          className={inputCls}
-        />
-        <input
-          placeholder="Entry price"
-          value={form.entryPrice}
-          onChange={(e) => setForm({ ...form, entryPrice: e.target.value })}
-          className={inputCls}
-        />
-        <input
-          placeholder="Mark price"
-          value={form.markPrice}
-          onChange={(e) => setForm({ ...form, markPrice: e.target.value })}
-          className={inputCls}
-        />
-        <input
-          placeholder="Liq price"
-          value={form.liqPrice}
-          onChange={(e) => setForm({ ...form, liqPrice: e.target.value })}
-          className={inputCls}
-        />
-        <input
-          placeholder="Net equity £ (→ NW)"
-          value={form.netEquityGbp}
-          onChange={(e) => setForm({ ...form, netEquityGbp: e.target.value })}
-          className={inputCls}
-        />
-      </div>
-      <p className="font-mono text-[9px] text-paper-faint leading-relaxed">
-        uPnL is derived from size + entry → mark (long: mark−entry, short:
-        entry−mark). Net equity £ is the amount that rolls into net worth.
-      </p>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={submitMargin}
-          disabled={busy || !form.symbol.trim()}
-          className="px-3 py-1.5 rounded bg-emerald-soft/20 text-emerald-soft font-mono text-[10px] uppercase tracking-[0.18em] disabled:opacity-50"
-        >
-          {busy ? "Saving…" : "Save position"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setForm(BLANK_MARGIN);
-            setAdding(false);
-          }}
-          className="px-3 py-1.5 rounded bg-ink-3/60 text-paper-dim font-mono text-[10px] uppercase tracking-[0.18em]"
-        >
-          Cancel
-        </button>
-      </div>
-    </Card>
-  ) : null;
+  if (!open) {
+    return (
+      <button
+        type="button"
+        aria-label="Edit cash value"
+        onClick={begin}
+        className="p-0.5 rounded text-paper-faint hover:text-brass"
+      >
+        <Pencil className="w-3 h-3" />
+      </button>
+    );
+  }
 
   return (
-    <Card>
-      <div className="flex items-center justify-between mb-2">
-        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
-          {upTotal ? (
-            <TrendingUp className="w-3.5 h-3.5 text-emerald-soft" />
-          ) : (
-            <TrendingDown className="w-3.5 h-3.5 text-rose-soft" />
-          )}
-          Margin Positions
-        </p>
-        <span className="flex items-center gap-1.5">
-          {updatedAt != null && <StaleBadge pricedAt={updatedAt} />}
-          <button
-            type="button"
-            aria-label="Add margin position"
-            onClick={() => setAdding((s) => !s)}
-            className="p-1 rounded text-paper-faint hover:text-brass"
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </button>
-        </span>
-      </div>
-
-      {addForm}
-
-      {positions.length === 0 ? (
-        <EmptyState
-          title="No open margin positions"
-          hint="Manual entry — add Binance isolated / cross / USDⓂ / COINⓂ positions by hand"
-        />
-      ) : (
-        <>
-          {/* totals header */}
-          <div className="grid grid-cols-2 gap-2.5 mb-3">
-            <StatTile
-              label="Total uPnL"
-              tone={upTotal ? "emerald" : "rose"}
-              value={`${upTotal ? "+" : ""}${gbp(totalUPnlGbp, hidden)}`}
-              sub={
-                usdPerGbp != null || !hidden ? (
-                  <span className="tabular-nums">
-                    {hidden
-                      ? "≈ $••••"
-                      : `≈ ${totalUPnlUsd >= 0 ? "+" : ""}$${Math.round(totalUPnlUsd).toLocaleString("en-US")}`}
-                  </span>
-                ) : undefined
-              }
-            />
-            <StatTile
-              label="Net Equity → NW"
-              tone="brass"
-              value={gbp(totalNetEquityGbp, hidden)}
-              sub={
-                usdPerGbp != null ? (
-                  <span className="tabular-nums">
-                    {usd(totalNetEquityGbp, usdPerGbp, hidden)}
-                  </span>
-                ) : undefined
-              }
-            />
-          </div>
-
-          {/* per-position rows */}
-          <div className="space-y-1.5">
-            {positions.map((p) => {
-              const up = p.uPnlGbp >= 0;
-              const long = p.side === "long";
-              return (
-                <div
-                  key={p._id}
-                  className="flex items-center justify-between gap-2 px-2.5 py-2 rounded border border-rule-soft/50"
-                >
-                  <div className="min-w-0">
-                    <p className="flex items-center gap-1.5 text-[12px] text-paper truncate">
-                      <span className="font-mono">{p.symbol}</span>
-                      <span
-                        className={`font-mono text-[9px] uppercase tracking-wide ${
-                          long ? "text-emerald-soft" : "text-rose-soft"
-                        }`}
-                      >
-                        {p.side}
-                      </span>
-                      <span className="font-mono text-[8px] uppercase tracking-wide text-paper-faint px-1 rounded bg-ink-3/60">
-                        {MARKET_LABEL[p.market] ?? p.market}
-                      </span>
-                      {p.leverage ? (
-                        <span className="font-mono text-[8px] text-paper-faint">
-                          {p.leverage}×
-                        </span>
-                      ) : null}
-                    </p>
-                    <p className="mt-0.5 font-mono text-[9px] text-paper-faint flex items-center gap-2 flex-wrap">
-                      {p.size ? <span>size {num(p.size)}</span> : null}
-                      {p.entryPrice ? (
-                        <span>
-                          {num(p.entryPrice)} → {num(p.markPrice)}
-                        </span>
-                      ) : null}
-                      {p.liqPrice ? (
-                        <span className="text-rose-soft/80">
-                          liq {num(p.liqPrice)}
-                        </span>
-                      ) : null}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <div className="text-right">
-                      <p
-                        className={`font-mono text-[12px] tabular-nums ${
-                          up ? "text-emerald-soft" : "text-rose-soft"
-                        }`}
-                      >
-                        {up ? "+" : ""}
-                        {gbp(p.uPnlGbp, hidden)}
-                      </p>
-                      {!hidden && (
-                        <p className="font-mono text-[9px] tabular-nums text-paper-faint">
-                          {up ? "+" : ""}${Math.round(p.uPnlUsd).toLocaleString("en-US")}
-                        </p>
-                      )}
-                    </div>
-                    {/* Phase 17: manual delete (no auto-fetch to repopulate). */}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${p.symbol}`}
-                      onClick={() => void removePosition({ id: p._id as any })}
-                      className="p-1 rounded text-paper-faint hover:text-rose-soft"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </Card>
+    <span
+      className="inline-flex items-center gap-1"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="text-paper-faint">£</span>
+      <input
+        autoFocus
+        type="number"
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+          if (e.key === "Escape") setOpen(false);
+        }}
+        className="w-16 bg-ink-2/80 border border-rule-soft/60 rounded px-1 py-0.5 text-[11px] tabular-nums text-paper"
+      />
+      <button
+        type="button"
+        aria-label="Save cash value"
+        disabled={busy}
+        onClick={save}
+        className="p-0.5 rounded text-emerald-soft hover:text-paper disabled:opacity-50"
+      >
+        <Check className="w-3 h-3" />
+      </button>
+    </span>
   );
 }
 
