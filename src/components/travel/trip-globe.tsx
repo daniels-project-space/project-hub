@@ -1,35 +1,37 @@
 "use client";
 
 /**
- * TripGlobe — an interactive animated 3D globe for the expanded trip view
- * (Stage 5). Thin wrapper over react-globe.gl (which wraps three.js / globe.gl).
+ * TripGlobe — interactive 3D globe for the expanded trip view.
+ *
+ * Engine: MapLibre GL's true globe projection (v5+) over the same CARTO dark
+ * raster basemap the 2D widget map uses. We switched away from react-globe.gl
+ * (three.js) because that wraps a SINGLE static earth texture onto a sphere —
+ * zooming just magnifies a blurry image and it can never resolve to
+ * streets/labels, and its markers are WebGL spheres sized in globe-radius units
+ * (always chunky). MapLibre uses real tiled imagery, so detail resolves at every
+ * zoom level, markers are crisp pixel-sized DOM dots, and country borders +
+ * place labels come for free from the basemap.
  *
  * SSR SAFETY (critical):
- *  - react-globe.gl references `window`/`document` at IMPORT time, so this whole
- *    module MUST only ever be loaded on the client. The ONLY allowed entry is a
- *    `next/dynamic(() => import("@/components/travel/trip-globe"), { ssr:false })`
- *    in the consumer. No file that is SSR/statically rendered may import this
- *    statically. Because the dynamic import defers evaluation to the browser,
- *    importing react-globe.gl at this module's top is safe.
- *  - "use client" marks the boundary; all three/globe usage stays inside here.
+ *  - "use client" so this file is never evaluated during server rendering, AND
+ *    the consumer loads it via next/dynamic(..., { ssr:false }).
+ *  - maplibre-gl dereferences `window` at import time, so it is imported ONLY
+ *    inside effects via a DYNAMIC import — never at module top. The CSS import is
+ *    static (stylesheet imports are SSR-safe).
+ *  - Any init/tile failure falls back to a marker list instead of crashing.
  *
  * Behavior:
- *  - pointsData markers colored by `kind`, with rich hover cards (image + title).
- *  - arcsData animated glowing arcs between consecutive ordered stops.
- *  - country borders (polygonsData) hugging the surface for orientation, plus
- *    country name labels that fade in only once the camera is zoomed in.
- *  - controls().autoRotate = true (slow) until the user interacts, then stops.
- *  - on a new trip's points → auto-frames the camera to FIT all stops (jumps to
- *    that part of the globe and zooms so the whole itinerary fills the view).
- *  - `focus` change → animated fly-to via globeRef.pointOfView(...).
- *  - Sizes to its container via a ResizeObserver (width/height props are exact px).
- *  - Empty points → still renders a calm auto-rotating earth (no crash).
+ *  - Markers colored by `kind`, with a rich hover popup (place image + title).
+ *  - Route + flight arcs drawn as densified great-circle lines on the globe.
+ *  - On a new trip's points → fitBounds frames the whole itinerary (jumps to that
+ *    part of the globe and zooms so every stop fits).
+ *  - `focus` change → animated flyTo via map.flyTo(...).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Globe, { type GlobeMethods } from "react-globe.gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 
-// ── Public types ────────────────────────────────────────────────────────────
+// ── Public types (unchanged — page.tsx imports these) ────────────────────────
 export type GlobePointKind =
   | "place"
   | "food"
@@ -46,7 +48,7 @@ export interface GlobePoint {
   label: string;
   kind: GlobePointKind;
   id: string;
-  /** Optional photo of the place — shown in the hover card on the globe. */
+  /** Optional photo of the place — shown in the hover popup. */
   imageUrl?: string;
 }
 
@@ -69,7 +71,7 @@ export interface TripGlobeProps {
   className?: string;
 }
 
-// Marker dot color by kind (inline hex — drawn on a WebGL canvas, not via CSS).
+// Marker dot color by kind.
 const KIND_COLORS: Record<GlobePointKind, string> = {
   place: "#0ea5e9", // sky
   food: "#f97316", // orange
@@ -77,38 +79,37 @@ const KIND_COLORS: Record<GlobePointKind, string> = {
   flight: "#38bdf8", // light sky
   transport: "#64748b", // slate
   activity: "#10b981", // emerald
-  leg: "#b08d57", // brass (hub accent) — multi-destination legs
-  default: "#b08d57",
+  leg: "#d4a574", // brass (hub accent) — multi-destination legs
+  default: "#d4a574",
 };
 
-// Glowing arc gradients (two-stop arrays animate along the arc).
-const ROUTE_ARC_COLOR = ["#b08d57", "#f5d9a8"]; // brass → warm
-const FLIGHT_ARC_COLOR = ["#38bdf8", "#bae6fd"]; // sky → pale
+const ROUTE_COLOR = "#d4a574"; // brass
+const FLIGHT_COLOR = "#38bdf8"; // sky
 
-// No-token night-earth texture (unpkg CDN that ships with three-globe examples).
-const GLOBE_IMG =
-  "https://unpkg.com/three-globe/example/img/earth-night.jpg";
-const BUMP_IMG = "https://unpkg.com/three-globe/example/img/earth-topology.png";
+// CARTO "dark_all" raster basemap (OpenStreetMap data) + globe projection. Real
+// streets, place/street labels and country borders that resolve at every zoom.
+const GLOBE_STYLE = {
+  version: 8 as const,
+  projection: { type: "globe" as const },
+  sources: {
+    carto: {
+      type: "raster" as const,
+      tiles: [
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors © CARTO",
+    },
+  },
+  layers: [{ id: "carto", type: "raster" as const, source: "carto" }],
+};
 
-// Country borders (Natural Earth 110m) — fetched once on the client from a CDN.
-// Drives the country outlines + name labels. If the fetch fails the globe still
-// renders fine (polygons/labels just stay empty), so it's purely additive.
-const COUNTRIES_GEOJSON =
-  "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson";
+const EMPTY_FC = { type: "FeatureCollection" as const, features: [] };
 
-// Below this camera altitude we consider the globe "zoomed in" and reveal the
-// country name labels (kept hidden when zoomed out to avoid a cluttered planet).
-const LABEL_ZOOM_THRESHOLD = 1.3;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type CountryFeature = any;
-interface CountryLabel {
-  text: string;
-  lat: number;
-  lng: number;
-}
-
-// Minimal HTML escape for values interpolated into the hover-card markup.
+// Minimal HTML escape for values interpolated into the hover-popup markup.
 function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -117,38 +118,51 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Great-circle angular distance between two lat/lng points, in degrees.
-function angularDistanceDeg(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number,
-): number {
+// Densify a segment into points along the great circle so it hugs the globe.
+function greatCircle(
+  start: { lat: number; lng: number },
+  end: { lat: number; lng: number },
+  n = 64,
+): Array<[number, number]> {
   const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 180) / Math.PI;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const lat1 = toRad(start.lat);
+  const lon1 = toRad(start.lng);
+  const lat2 = toRad(end.lat);
+  const lon2 = toRad(end.lng);
+  const d =
+    2 *
+    Math.asin(
+      Math.sqrt(
+        Math.sin((lat2 - lat1) / 2) ** 2 +
+          Math.cos(lat1) * Math.cos(lat2) * Math.sin((lon2 - lon1) / 2) ** 2,
+      ),
+    );
+  if (!Number.isFinite(d) || d === 0) {
+    return [
+      [start.lng, start.lat],
+      [end.lng, end.lat],
+    ];
+  }
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i <= n; i++) {
+    const f = i / n;
+    const A = Math.sin((1 - f) * d) / Math.sin(d);
+    const B = Math.sin(f * d) / Math.sin(d);
+    const x = A * Math.cos(lat1) * Math.cos(lon1) + B * Math.cos(lat2) * Math.cos(lon2);
+    const y = A * Math.cos(lat1) * Math.sin(lon1) + B * Math.cos(lat2) * Math.sin(lon2);
+    const z = A * Math.sin(lat1) + B * Math.sin(lat2);
+    out.push([toDeg(Math.atan2(y, x)), toDeg(Math.atan2(z, Math.sqrt(x * x + y * y)))]);
+  }
+  return out;
 }
 
-// Camera altitude (in globe-radius units) that frames all points so the whole
-// itinerary fills the view. Derived from the camera's visible angular radius:
-// at distance R(1+h) the horizon half-angle β satisfies cos(β)=1/(1+h), so to
-// fit a cluster spanning angular radius β we set h = 1/cos(β) - 1 (with padding).
-function fitAltitude(pts: GlobePoint[], lat: number, lng: number): number {
-  if (pts.length === 0) return 2.2;
-  let maxAng = 0;
-  for (const p of pts) {
-    maxAng = Math.max(maxAng, angularDistanceDeg(lat, lng, p.lat, p.lng));
-  }
-  // Single stop or a very tight cluster → a close, comfortable zoom.
-  if (pts.length === 1 || maxAng < 1.5) return 0.75;
-  const betaDeg = Math.min(82, maxAng * 1.25 + 6); // padding so dots aren't on the rim
-  const beta = (betaDeg * Math.PI) / 180;
-  const h = 1 / Math.cos(beta) - 1;
-  return Math.min(2.8, Math.max(0.5, h));
+function popupHTML(p: GlobePoint): string {
+  const color = KIND_COLORS[p.kind] ?? KIND_COLORS.default;
+  const img = p.imageUrl
+    ? `<img src="${esc(p.imageUrl)}" alt="" style="width:168px;height:96px;object-fit:cover;display:block;border-radius:8px 8px 0 0;" onerror="this.style.display='none'"/>`
+    : "";
+  return `<div style="width:168px;border-radius:8px;overflow:hidden;background:rgba(13,16,24,0.96);border:1px solid ${color};box-shadow:0 6px 20px rgba(0,0,0,0.5);font-family:ui-sans-serif,system-ui,sans-serif;">${img}<div style="padding:6px 9px;display:flex;align-items:center;gap:6px;"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:${color};box-shadow:0 0 6px ${color};"></span><span style="font-size:12px;line-height:1.25;color:#f5efe3;">${esc(p.label)}</span></div></div>`;
 }
 
 export function TripGlobe({
@@ -158,221 +172,278 @@ export function TripGlobe({
   onPointClick,
   className,
 }: TripGlobeProps) {
-  const globeRef = useRef<GlobeMethods | undefined>(undefined);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Map instance + markers kept in refs (module dynamically imported, so we type
+  // these loosely rather than referencing maplibre types at module scope).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const markersRef = useRef<any[]>([]);
   const interactedRef = useRef(false);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
-  // ── Country borders (fetched once, client-side) ───────────────────────────
-  const [countries, setCountries] = useState<CountryFeature[]>([]);
+  // Keep the latest onPointClick without re-running the marker effect.
+  const clickRef = useRef(onPointClick);
+  clickRef.current = onPointClick;
+
+  // ── Create the map once ────────────────────────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
-    fetch(COUNTRIES_GEOJSON)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (!cancelled && j && Array.isArray(j.features)) {
-          setCountries(j.features as CountryFeature[]);
+    if (typeof window === "undefined") return;
+    if (!containerRef.current) return;
+    let disposed = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let map: any = null;
+    let ro: ResizeObserver | null = null;
+
+    (async () => {
+      try {
+        const maplibregl = (await import("maplibre-gl")).default;
+        if (disposed || !containerRef.current) return;
+
+        map = new maplibregl.Map({
+          container: containerRef.current,
+          style: GLOBE_STYLE,
+          center: [0, 20],
+          zoom: 1.1,
+          attributionControl: false,
+          dragRotate: true,
+        });
+        mapRef.current = map;
+        map.addControl(new maplibregl.AttributionControl({ compact: true }));
+
+        map.on("load", () => {
+          if (disposed) return;
+          try {
+            map.setProjection({ type: "globe" });
+          } catch {
+            /* older builds → falls back to mercator, still resolves on zoom */
+          }
+          // Arc layers (filled by the points/arcs effect via setData).
+          map.addSource("trip-route", { type: "geojson", data: EMPTY_FC });
+          map.addLayer({
+            id: "trip-route-line",
+            type: "line",
+            source: "trip-route",
+            layout: { "line-join": "round", "line-cap": "round" },
+            paint: {
+              "line-color": ROUTE_COLOR,
+              "line-width": 2,
+              "line-opacity": 0.85,
+              "line-blur": 0.4,
+            },
+          });
+          map.addSource("trip-flight", { type: "geojson", data: EMPTY_FC });
+          map.addLayer({
+            id: "trip-flight-line",
+            type: "line",
+            source: "trip-flight",
+            layout: { "line-join": "round", "line-cap": "round" },
+            paint: {
+              "line-color": FLIGHT_COLOR,
+              "line-width": 1.8,
+              "line-opacity": 0.85,
+              "line-blur": 0.4,
+              "line-dasharray": [2, 1.5],
+            },
+          });
+          setReady(true);
+        });
+
+        const stop = () => {
+          interactedRef.current = true;
+        };
+        map.on("mousedown", stop);
+        map.on("touchstart", stop);
+        map.on("wheel", stop);
+        map.on("dragstart", stop);
+        map.on("error", () => {
+          if (!disposed) setFailed(true);
+        });
+
+        // Resize with the container (the pane is responsive width).
+        ro = new ResizeObserver(() => {
+          try {
+            map.resize();
+          } catch {
+            /* ignore */
+          }
+        });
+        ro.observe(containerRef.current);
+      } catch {
+        if (!disposed) setFailed(true);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (ro) ro.disconnect();
+      markersRef.current.forEach((m) => {
+        try {
+          m.remove();
+        } catch {
+          /* ignore */
         }
-      })
-      .catch(() => {
-        /* offline / blocked → globe still renders without borders */
       });
+      markersRef.current = [];
+      try {
+        if (map) map.remove();
+      } catch {
+        /* ignore */
+      }
+      mapRef.current = null;
+      setReady(false);
+    };
+  }, []);
+
+  // ── Markers + arcs (rebuild when data changes) ─────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    let cancelled = false;
+
+    (async () => {
+      const maplibregl = (await import("maplibre-gl")).default;
+      if (cancelled || !mapRef.current) return;
+
+      // Clear old markers.
+      markersRef.current.forEach((m) => {
+        try {
+          m.remove();
+        } catch {
+          /* ignore */
+        }
+      });
+      markersRef.current = [];
+
+      // Markers (small, crisp DOM dots) + hover popups.
+      for (const p of points) {
+        const color = KIND_COLORS[p.kind] ?? KIND_COLORS.default;
+        const el = document.createElement("div");
+        el.style.cssText = `width:11px;height:11px;border-radius:50%;background:${color};border:1.5px solid #0d1018;box-shadow:0 0 0 1.5px ${color}55,0 1px 3px rgba(0,0,0,0.5);cursor:pointer;`;
+        const popup = new maplibregl.Popup({
+          offset: 12,
+          closeButton: false,
+          className: "trip-globe-popup",
+        }).setHTML(popupHTML(p));
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([p.lng, p.lat])
+          .addTo(map);
+        el.addEventListener("mouseenter", () => {
+          popup.setLngLat([p.lng, p.lat]).addTo(map);
+        });
+        el.addEventListener("mouseleave", () => {
+          popup.remove();
+        });
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          clickRef.current?.(p.id);
+        });
+        markersRef.current.push(marker);
+      }
+
+      // Arc lines (densified great circles), split by kind.
+      const route: object[] = [];
+      const flight: object[] = [];
+      for (const a of arcs) {
+        const coords = greatCircle(
+          { lat: a.startLat, lng: a.startLng },
+          { lat: a.endLat, lng: a.endLng },
+        );
+        const feature = {
+          type: "Feature",
+          properties: {},
+          geometry: { type: "LineString", coordinates: coords },
+        };
+        (a.kind === "flight" ? flight : route).push(feature);
+      }
+      const setData = (id: string, features: object[]) => {
+        const src = map.getSource(id);
+        if (src && typeof src.setData === "function") {
+          src.setData({ type: "FeatureCollection", features });
+        }
+      };
+      setData("trip-route", route);
+      setData("trip-flight", flight);
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [points, arcs, ready]);
 
-  // Country name labels, placed at Natural Earth's LABEL_X/Y when present.
-  const countryLabels = useMemo<CountryLabel[]>(() => {
-    const out: CountryLabel[] = [];
-    for (const f of countries) {
-      const p = f?.properties ?? {};
-      const text: string | undefined = p.NAME ?? p.name ?? p.ADMIN;
-      const lng = typeof p.LABEL_X === "number" ? p.LABEL_X : undefined;
-      const lat = typeof p.LABEL_Y === "number" ? p.LABEL_Y : undefined;
-      if (text && lat != null && lng != null) out.push({ text, lat, lng });
+  // ── Auto-FRAME all stops on a new trip's points ────────────────────────────
+  const pointsKey = useMemo(() => points.map((p) => p.id).join("|"), [points]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (focus) return; // explicit focus wins
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      map.flyTo({ center: [points[0].lng, points[0].lat], zoom: 9, duration: 1200 });
+      return;
     }
-    return out;
-  }, [countries]);
-
-  // ── Reveal labels only when zoomed in (driven by onZoom) ───────────────────
-  const [zoomedIn, setZoomedIn] = useState(false);
-  const zoomedInRef = useRef(false);
-  const visibleLabels = zoomedIn ? countryLabels : [];
-
-  // ── Size to container (ResizeObserver) ────────────────────────────────────
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const el = wrapRef.current;
-    if (!el) return;
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      setSize({ w: Math.max(1, Math.round(r.width)), h: Math.max(1, Math.round(r.height)) });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // ── Autorotate until first interaction ────────────────────────────────────
-  // Set up once the globe instance exists. We poll briefly for controls() since
-  // the ref is populated after the first internal mount.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    let raf = 0;
-    let tries = 0;
-    const arm = () => {
-      const g = globeRef.current;
-      const controls = g?.controls?.();
-      if (controls) {
-        controls.autoRotate = !interactedRef.current;
-        controls.autoRotateSpeed = 0.35; // slow
-        const stop = () => {
-          interactedRef.current = true;
-          controls.autoRotate = false;
-        };
-        controls.addEventListener("start", stop);
-        return;
-      }
-      if (tries++ < 60) raf = requestAnimationFrame(arm);
-    };
-    raf = requestAnimationFrame(arm);
-    return () => cancelAnimationFrame(raf);
-  }, [size.w, size.h]);
+    let minLng = Infinity;
+    let minLat = Infinity;
+    let maxLng = -Infinity;
+    let maxLat = -Infinity;
+    for (const p of points) {
+      minLng = Math.min(minLng, p.lng);
+      maxLng = Math.max(maxLng, p.lng);
+      minLat = Math.min(minLat, p.lat);
+      maxLat = Math.max(maxLat, p.lat);
+    }
+    try {
+      map.fitBounds(
+        [
+          [minLng, minLat],
+          [maxLng, maxLat],
+        ],
+        { padding: 80, maxZoom: 11, duration: 1200 },
+      );
+    } catch {
+      /* degenerate bounds → ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointsKey, ready]);
 
   // ── Fly-to on focus change ────────────────────────────────────────────────
   useEffect(() => {
-    if (!focus) return;
-    const g = globeRef.current;
-    if (!g) return;
-    // Treating a fly-to as an interaction so we don't fight the camera.
+    const map = mapRef.current;
+    if (!map || !ready || !focus) return;
     interactedRef.current = true;
-    const controls = g.controls?.();
-    if (controls) controls.autoRotate = false;
-    g.pointOfView({ lat: focus.lat, lng: focus.lng, altitude: 0.9 }, 1000);
-  }, [focus?.lat, focus?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+    map.flyTo({
+      center: [focus.lng, focus.lat],
+      zoom: Math.max(map.getZoom?.() ?? 0, 7),
+      duration: 1000,
+    });
+  }, [focus?.lat, focus?.lng, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Auto-FRAME all stops on a new trip's points ────────────────────────────
-  // Re-runs whenever the actual set of points changes (keyed by ids, not just
-  // count) so loading a different trip jumps + zooms to fit its whole itinerary.
-  // Retries briefly until the globe instance exists (points often arrive before
-  // the ref is populated). Skipped while an explicit focus is active.
-  const pointsKey = useMemo(() => points.map((p) => p.id).join("|"), [points]);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (focus) return; // explicit focus wins
-    if (points.length === 0) return;
-    const lat = points.reduce((s, p) => s + p.lat, 0) / points.length;
-    const lng = points.reduce((s, p) => s + p.lng, 0) / points.length;
-    const altitude = fitAltitude(points, lat, lng);
-    let raf = 0;
-    let tries = 0;
-    const arm = () => {
-      const g = globeRef.current;
-      if (g) {
-        g.pointOfView({ lat, lng, altitude }, 1200);
-        return;
-      }
-      if (tries++ < 90) raf = requestAnimationFrame(arm);
-    };
-    raf = requestAnimationFrame(arm);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointsKey]);
+  const base = "relative h-full w-full overflow-hidden";
+  const cls = className ? `${base} ${className}` : base;
 
-  const arcColor = useMemo(
-    () => (a: object) =>
-      (a as GlobeArc).kind === "flight" ? FLIGHT_ARC_COLOR : ROUTE_ARC_COLOR,
-    [],
-  );
-
-  // Rich hover card: place image (if any) + colored title.
-  const pointLabel = useMemo(
-    () => (d: object) => {
-      const p = d as GlobePoint;
-      const color = KIND_COLORS[p.kind] ?? KIND_COLORS.default;
-      const img = p.imageUrl
-        ? `<img src="${esc(p.imageUrl)}" alt="" style="width:168px;height:96px;object-fit:cover;display:block;border-radius:8px 8px 0 0;" onerror="this.style.display='none'"/>`
-        : "";
-      return `<div style="width:168px;border-radius:8px;overflow:hidden;background:rgba(13,16,24,0.94);border:1px solid ${color};box-shadow:0 6px 20px rgba(0,0,0,0.5);font-family:ui-sans-serif,system-ui,sans-serif;">${img}<div style="padding:6px 9px;display:flex;align-items:center;gap:6px;"><span style="flex:none;width:7px;height:7px;border-radius:50%;background:${color};box-shadow:0 0 6px ${color};"></span><span style="font-size:12px;line-height:1.25;color:#f5efe3;">${esc(p.label)}</span></div></div>`;
-    },
-    [],
-  );
+  if (failed) {
+    return (
+      <div className={cls} role="img" aria-label="Trip globe (unavailable)">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center">
+          <span className="text-xs text-paper/50">Globe unavailable</span>
+          {points.length > 0 && (
+            <ul className="max-h-full space-y-0.5 overflow-auto text-[11px] text-paper/40">
+              {points.slice(0, 10).map((p) => (
+                <li key={p.id}>• {p.label}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={wrapRef}
-      className={
-        className
-          ? `relative h-full w-full overflow-hidden ${className}`
-          : "relative h-full w-full overflow-hidden"
-      }
-    >
-      {size.w > 0 && size.h > 0 && (
-        <Globe
-          ref={globeRef}
-          width={size.w}
-          height={size.h}
-          backgroundColor="rgba(0,0,0,0)"
-          globeImageUrl={GLOBE_IMG}
-          bumpImageUrl={BUMP_IMG}
-          showAtmosphere
-          atmosphereColor="#9ec5ff"
-          atmosphereAltitude={0.18}
-          onZoom={(pov: { altitude?: number }) => {
-            const show = (pov?.altitude ?? 99) < LABEL_ZOOM_THRESHOLD;
-            // Only re-render when the threshold is actually crossed (onZoom fires
-            // every frame while moving — guarding avoids a setState storm).
-            if (show !== zoomedInRef.current) {
-              zoomedInRef.current = show;
-              setZoomedIn(show);
-            }
-          }}
-          // Country borders (subtle outlines hugging the surface)
-          polygonsData={countries as unknown as object[]}
-          polygonCapColor={() => "rgba(0,0,0,0)"}
-          polygonSideColor={() => "rgba(0,0,0,0)"}
-          polygonStrokeColor={() => "rgba(176,141,87,0.45)"}
-          polygonAltitude={0.006}
-          // Country name labels (revealed only when zoomed in)
-          labelsData={visibleLabels as unknown as object[]}
-          labelLat={(d: object) => (d as CountryLabel).lat}
-          labelLng={(d: object) => (d as CountryLabel).lng}
-          labelText={(d: object) => (d as CountryLabel).text}
-          labelSize={0.9}
-          labelDotRadius={0.18}
-          labelColor={() => "rgba(245,239,227,0.78)"}
-          labelResolution={2}
-          labelAltitude={0.008}
-          // Points
-          pointsData={points as unknown as object[]}
-          pointLat={(d: object) => (d as GlobePoint).lat}
-          pointLng={(d: object) => (d as GlobePoint).lng}
-          pointColor={(d: object) =>
-            KIND_COLORS[(d as GlobePoint).kind] ?? KIND_COLORS.default
-          }
-          pointAltitude={0.012}
-          pointRadius={0.14}
-          pointResolution={12}
-          pointLabel={pointLabel}
-          onPointClick={(d: object) =>
-            onPointClick?.((d as GlobePoint).id)
-          }
-          // Arcs
-          arcsData={arcs as unknown as object[]}
-          arcStartLat={(d: object) => (d as GlobeArc).startLat}
-          arcStartLng={(d: object) => (d as GlobeArc).startLng}
-          arcEndLat={(d: object) => (d as GlobeArc).endLat}
-          arcEndLng={(d: object) => (d as GlobeArc).endLng}
-          arcColor={arcColor}
-          arcStroke={0.5}
-          arcAltitudeAutoScale={0.4}
-          arcDashLength={0.4}
-          arcDashGap={0.18}
-          arcDashAnimateTime={2200}
-        />
-      )}
+    <div className={cls}>
+      {/* Dark-theme popup chrome (transparent wrapper; our card carries the styling). */}
+      <style>{`.trip-globe-popup .maplibregl-popup-content{background:transparent;padding:0;box-shadow:none;border:none;}.trip-globe-popup .maplibregl-popup-tip{display:none;}`}</style>
+      <div ref={containerRef} className="h-full w-full" />
     </div>
   );
 }
