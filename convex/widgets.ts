@@ -72,6 +72,7 @@ export const DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   idea: { w: 2, h: 1 },
   channelIdea: { w: 2, h: 1 },
   remoteWorkHub: { w: 2, h: 1 },
+  travel: { w: 4, h: 2 },
 };
 
 // Fallback size for an unmapped type (matches the grid's md:col-span-2 default).
@@ -137,6 +138,7 @@ export const ALL_WIDGET_TYPES: string[] = [
   "idea",
   "channelIdea",
   "remoteWorkHub",
+  "travel",
 ];
 
 // ---------------------------------------------------------------------------

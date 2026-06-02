@@ -58,7 +58,9 @@ export default defineSchema({
     ownerId: v.optional(v.string()), // unused now; for later auth scoping
   }).index("by_position", ["position"]),
 
-  // Calendar events (W4). Manual entry only.
+  // Calendar events (W4). Manual entry + Travel widget save→calendar.
+  // `source` (optional, additive/backward-compatible) tags the origin of a row,
+  // e.g. "trip" for events created by trips.saveToCalendar. Absent = manual.
   events: defineTable({
     title: v.string(),
     start: v.number(),
@@ -67,6 +69,7 @@ export default defineSchema({
     color: v.string(),
     location: v.optional(v.string()),
     notes: v.optional(v.string()),
+    source: v.optional(v.string()),
     ownerId: v.optional(v.string()),
   }).index("by_start", ["start"]),
 
@@ -229,4 +232,65 @@ export default defineSchema({
     targetGbp: v.optional(v.number()), // monthly.target_gbp if present
     fetchedAt: v.number(),
   }).index("by_source", ["source"]),
+
+  // --- Travel widget (Wave 1A — backend data layer only) ---
+  // Relational itinerary model ported from v1's SQLite schema (trips →
+  // trip_days → trip_items). New tables, no migration. All planning/enrichment
+  // fields optional so a trip can exist with just a title (manual or AI-built).
+
+  // One trip = one planned journey. `active` marks the trip the widget shows by
+  // default (exactly one active at a time, enforced by trips.setActive).
+  trips: defineTable({
+    title: v.string(),
+    startDate: v.optional(v.string()), // ISO YYYY-MM-DD
+    endDate: v.optional(v.string()),
+    budgetGbp: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    originCity: v.optional(v.string()),
+    destCity: v.optional(v.string()),
+    destLat: v.optional(v.number()),
+    destLng: v.optional(v.number()),
+    destCountryCode: v.optional(v.string()), // ISO-3166 alpha-2 for info-rail lookups
+    status: v.optional(v.string()), // "planning" | "booked" | "done" ...
+    active: v.optional(v.boolean()),
+    createdAt: v.number(),
+  })
+    .index("by_active", ["active"])
+    .index("by_createdAt", ["createdAt"]),
+
+  // One day within a trip. `dayIndex` is the 0-based ordinal (sort key);
+  // `date` is optional so undated/template days are valid. `weather` is the raw
+  // Open-Meteo blob (json) cached at plan time.
+  tripDays: defineTable({
+    tripId: v.id("trips"),
+    date: v.optional(v.string()), // ISO YYYY-MM-DD
+    dayIndex: v.number(),
+    summary: v.optional(v.string()),
+    weather: v.optional(v.any()),
+  }).index("by_trip", ["tripId"]),
+
+  // One itinerary item within a day (a place, meal, stay, flight, etc.).
+  // `sortOrder` orders items within their day (0..n, maintained by reorderItems
+  // / addItem). `status` tracks planned→done→skip.
+  tripItems: defineTable({
+    tripId: v.id("trips"),
+    dayId: v.id("tripDays"),
+    kind: v.string(), // "place"|"food"|"stay"|"flight"|"transport"|"activity"
+    sortOrder: v.number(),
+    startTime: v.optional(v.string()), // "HH:MM"
+    endTime: v.optional(v.string()),
+    title: v.string(),
+    description: v.optional(v.string()),
+    priceGbp: v.optional(v.number()),
+    status: v.optional(v.string()), // "planned"|"done"|"skip"
+    lat: v.optional(v.number()),
+    lng: v.optional(v.number()),
+    address: v.optional(v.string()),
+    link: v.optional(v.string()),
+    image: v.optional(v.string()),
+    rating: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+  })
+    .index("by_trip", ["tripId"])
+    .index("by_day", ["dayId"]),
 });

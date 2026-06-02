@@ -50,6 +50,7 @@ const DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   idea: { w: 2, h: 1 },
   channelIdea: { w: 2, h: 1 },
   remoteWorkHub: { w: 2, h: 1 },
+  travel: { w: 4, h: 2 },
 };
 const FALLBACK_SIZE = { w: 2, h: 1 };
 

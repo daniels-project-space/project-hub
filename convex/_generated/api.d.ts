@@ -20,6 +20,8 @@ import type * as projects from "../projects.js";
 import type * as secrets from "../secrets.js";
 import type * as settings from "../settings.js";
 import type * as todos from "../todos.js";
+import type * as travelActions from "../travelActions.js";
+import type * as trips from "../trips.js";
 import type * as wealth from "../wealth.js";
 import type * as wealthActions from "../wealthActions.js";
 import type * as widgets from "../widgets.js";
@@ -43,6 +45,8 @@ declare const fullApi: ApiFromModules<{
   secrets: typeof secrets;
   settings: typeof settings;
   todos: typeof todos;
+  travelActions: typeof travelActions;
+  trips: typeof trips;
   wealth: typeof wealth;
   wealthActions: typeof wealthActions;
   widgets: typeof widgets;

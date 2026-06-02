@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { useSettings } from "@/components/settings-provider";
 import { Sheet } from "@/components/ui/sheet";
+import { wmoInfo, type WmoIconName } from "@/lib/travel/wmo";
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 const GEO_KEY = "hub-geo";
@@ -66,20 +67,21 @@ type DailyForecast = {
 type Status = "loading" | "ok" | "denied" | "error";
 
 // ── WMO weather_code → label + icon ─────────────────────────────────────────────
-// https://open-meteo.com/en/docs (WMO Weather interpretation codes)
+// The code→{label, iconName} map is shared with the travel widget in
+// @/lib/travel/wmo. Here we map the icon NAME to the actual lucide component so
+// the existing { label, Icon } contract used throughout this file is preserved.
+const WMO_ICONS: Record<WmoIconName, LucideIcon> = {
+  Sun,
+  Cloud,
+  CloudRain,
+  CloudSnow,
+  CloudLightning,
+  CloudFog,
+  CloudDrizzle,
+};
 function wmo(code: number): { label: string; Icon: LucideIcon } {
-  if (code === 0) return { label: "Clear", Icon: Sun };
-  if (code === 1) return { label: "Mostly clear", Icon: Sun };
-  if (code === 2) return { label: "Partly cloudy", Icon: Cloud };
-  if (code === 3) return { label: "Overcast", Icon: Cloud };
-  if (code === 45 || code === 48) return { label: "Fog", Icon: CloudFog };
-  if (code >= 51 && code <= 57) return { label: "Drizzle", Icon: CloudDrizzle };
-  if (code >= 61 && code <= 67) return { label: "Rain", Icon: CloudRain };
-  if (code >= 71 && code <= 77) return { label: "Snow", Icon: CloudSnow };
-  if (code >= 80 && code <= 82) return { label: "Showers", Icon: CloudRain };
-  if (code === 85 || code === 86) return { label: "Snow showers", Icon: CloudSnow };
-  if (code >= 95 && code <= 99) return { label: "Thunderstorm", Icon: CloudLightning };
-  return { label: "—", Icon: Cloud };
+  const { label, iconName } = wmoInfo(code);
+  return { label, Icon: WMO_ICONS[iconName] };
 }
 
 // ── localStorage helpers (SSR-guarded) ──────────────────────────────────────────
