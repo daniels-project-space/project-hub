@@ -102,6 +102,10 @@ const legPatchValidator = v.object({
   countryCode: v.optional(v.string()),
   arriveDate: v.optional(v.string()),
   departDate: v.optional(v.string()),
+  transportMode: v.optional(v.string()),
+  routeDurationText: v.optional(v.string()),
+  routeDistanceText: v.optional(v.string()),
+  routePolyline: v.optional(v.string()),
 });
 
 /** All legs for a trip, sorted by order (ascending). Reactive. */

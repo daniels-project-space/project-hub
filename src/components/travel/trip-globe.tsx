@@ -59,6 +59,9 @@ export interface GlobeArc {
   endLng: number;
   /** Optional kind to tint the arc (e.g. "flight" vs the default route). */
   kind?: "route" | "flight";
+  /** Optional precomputed [lng,lat] path (real road/rail route from Directions).
+   *  When present it's drawn verbatim instead of a great-circle approximation. */
+  path?: Array<[number, number]>;
 }
 
 export interface TripGlobeProps {
@@ -346,10 +349,14 @@ export function TripGlobe({
       const route: object[] = [];
       const flight: object[] = [];
       for (const a of arcs) {
-        const coords = greatCircle(
-          { lat: a.startLat, lng: a.startLng },
-          { lat: a.endLat, lng: a.endLng },
-        );
+        // Prefer a real route path (decoded Directions polyline); else great-circle.
+        const coords =
+          a.path && a.path.length >= 2
+            ? a.path
+            : greatCircle(
+                { lat: a.startLat, lng: a.startLng },
+                { lat: a.endLat, lng: a.endLng },
+              );
         const feature = {
           type: "Feature",
           properties: {},

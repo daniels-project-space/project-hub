@@ -325,6 +325,14 @@ export default defineSchema({
     countryCode: v.optional(v.string()),
     arriveDate: v.optional(v.string()), // ISO YYYY-MM-DD
     departDate: v.optional(v.string()),
+    // --- Transport INTO this leg (from the previous leg), via Google Directions.
+    // Additive. transportMode drives the lookup; the rest cache the result so we
+    // don't re-hit Directions on every render. routePolyline is Google's encoded
+    // overview polyline, decoded to draw the real road/rail route on the globe.
+    transportMode: v.optional(v.string()), // "car" | "train" | "bus"
+    routeDurationText: v.optional(v.string()), // e.g. "3 hr 15 min"
+    routeDistanceText: v.optional(v.string()), // e.g. "314 km"
+    routePolyline: v.optional(v.string()),
   }).index("by_trip", ["tripId"]),
 
   // Connecting flights (one row = one journey, possibly multi-segment). `order`

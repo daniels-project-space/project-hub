@@ -81,6 +81,7 @@ const GP_FINDPLACE =
   "https://maps.googleapis.com/maps/api/place/findplacefromtext/json";
 const GP_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
 const GP_PHOTO = "https://maps.googleapis.com/maps/api/place/photo";
+const GP_DIRECTIONS = "https://maps.googleapis.com/maps/api/directions/json";
 
 /** A "view on Google Maps" search URL — always a valid link for any place. */
 function mapsSearchUrl(query: string): string {
@@ -631,6 +632,81 @@ export const enrichTripPlaces = action({
     }
 
     return { enriched };
+  },
+});
+
+// ─── routeLeg (transport routing) ────────────────────────────────────────────
+//
+// Google Directions lookup between two coordinates for a chosen mode. Returns
+// the real travel time, distance and the encoded overview polyline (so the
+// client can draw the actual road/rail route on the globe). Per the product
+// decision, NO price is returned — transport surfaces a "book/view" deep-link
+// instead (built client-side). Transit (train/bus) returns times + geometry;
+// driving returns road geometry. Degrades gracefully (available:false) so the
+// UI can show "no route found" rather than erroring.
+
+type RouteResult =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      mode: string;
+      durationText: string;
+      distanceText: string;
+      polyline: string;
+    };
+
+/** Map our UI mode → Google Directions (mode, optional transit_mode). */
+function directionsParams(mode: string): { mode: string; transitMode?: string } {
+  if (mode === "train") return { mode: "transit", transitMode: "train|tram|subway|rail" };
+  if (mode === "bus") return { mode: "transit", transitMode: "bus" };
+  return { mode: "driving" }; // "car" / default
+}
+
+export const routeLeg = action({
+  args: {
+    fromLat: v.number(),
+    fromLng: v.number(),
+    toLat: v.number(),
+    toLng: v.number(),
+    mode: v.string(), // "car" | "train" | "bus"
+  },
+  handler: async (ctx, args): Promise<RouteResult> => {
+    const apiKey = await getSecret(ctx, SECRET.googlePlaces);
+    if (!apiKey) return { available: false, reason: "GOOGLE_PLACES_API_KEY absent" };
+
+    const { mode, transitMode } = directionsParams(args.mode);
+    const params = new URLSearchParams({
+      origin: `${args.fromLat},${args.fromLng}`,
+      destination: `${args.toLat},${args.toLng}`,
+      mode,
+      key: apiKey,
+    });
+    if (transitMode) params.set("transit_mode", transitMode);
+
+    try {
+      const res = await fetch(`${GP_DIRECTIONS}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.status !== "OK" || !Array.isArray(json.routes) || !json.routes[0]) {
+        return {
+          available: false,
+          reason: `No ${args.mode} route (${json?.status ?? res.status})`,
+        };
+      }
+      const route = json.routes[0];
+      const leg = route.legs?.[0] ?? {};
+      return {
+        available: true,
+        mode: args.mode,
+        durationText: leg.duration?.text ?? "",
+        distanceText: leg.distance?.text ?? "",
+        polyline: route.overview_polyline?.points ?? "",
+      };
+    } catch (e) {
+      return {
+        available: false,
+        reason: `Directions error: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
   },
 });
 

@@ -21,7 +21,7 @@
  */
 
 import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import {
   MapPin,
   Plane,
@@ -32,6 +32,10 @@ import {
   Loader2,
   Navigation,
   ArrowRight,
+  Car,
+  Train,
+  Bus,
+  ExternalLink,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id, Doc } from "../../../convex/_generated/dataModel";
@@ -53,6 +57,88 @@ function fmtDate(d?: string): string | null {
   return t.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
+const TRANSPORT_MODES = [
+  { key: "car", Icon: Car, label: "Car" },
+  { key: "train", Icon: Train, label: "Train" },
+  { key: "bus", Icon: Bus, label: "Bus" },
+] as const;
+
+/** Google Maps directions deep-link — the "view route / book" link for a hop. */
+function mapsDirLink(
+  prev: Doc<"tripLegs">,
+  leg: Doc<"tripLegs">,
+  mode: string,
+): string | null {
+  if (prev.lat == null || prev.lng == null || leg.lat == null || leg.lng == null)
+    return null;
+  const travelmode = mode === "car" ? "driving" : "transit";
+  return `https://www.google.com/maps/dir/?api=1&origin=${prev.lat},${prev.lng}&destination=${leg.lat},${leg.lng}&travelmode=${travelmode}`;
+}
+
+/** Transport connector between two consecutive legs: mode toggle + real time +
+ *  distance (from Google Directions) + a "view route" deep-link. */
+function TransportConnector({
+  prev,
+  leg,
+  routing,
+  onPick,
+}: {
+  prev: Doc<"tripLegs">;
+  leg: Doc<"tripLegs">;
+  routing: boolean;
+  onPick: (mode: "car" | "train" | "bus") => void;
+}) {
+  const coords =
+    prev.lat != null && prev.lng != null && leg.lat != null && leg.lng != null;
+  const link = mapsDirLink(prev, leg, leg.transportMode ?? "car");
+  return (
+    <div className="mb-1 ml-2 flex flex-wrap items-center gap-1.5 border-l border-dashed border-rule-soft/50 pl-3 py-0.5">
+      <div className="inline-flex overflow-hidden rounded-md border border-rule-soft/60">
+        {TRANSPORT_MODES.map(({ key, Icon, label }) => {
+          const active = leg.transportMode === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-label={`${label} to ${leg.city}`}
+              aria-pressed={active}
+              disabled={!coords || routing}
+              onClick={() => onPick(key)}
+              className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors disabled:opacity-40 ${
+                active
+                  ? "bg-brass/20 text-brass"
+                  : "text-paper-faint hover:text-paper"
+              }`}
+            >
+              <Icon className="h-3 w-3" />
+            </button>
+          );
+        })}
+      </div>
+      {routing ? (
+        <Loader2 className="h-3 w-3 animate-spin text-brass/70" />
+      ) : leg.routeDurationText ? (
+        <span className="text-[10px] text-paper-faint tabular-nums">
+          {leg.routeDurationText}
+          {leg.routeDistanceText ? ` · ${leg.routeDistanceText}` : ""}
+        </span>
+      ) : leg.transportMode && !coords ? (
+        <span className="text-[10px] text-paper-faint/70">need coords</span>
+      ) : null}
+      {leg.transportMode && link && (
+        <a
+          href={link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-0.5 text-[10px] text-paper-faint hover:text-brass transition-colors"
+        >
+          Route <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      )}
+    </div>
+  );
+}
+
 // ── Legs (multi-destination) ────────────────────────────────────────────────
 export function TripLegs({ tripId }: { tripId: Id<"trips"> }) {
   const legs = useQuery(api.tripExtras.listLegs, { tripId }) as
@@ -62,10 +148,51 @@ export function TripLegs({ tripId }: { tripId: Id<"trips"> }) {
   const updateLeg = useMutation(api.tripExtras.updateLeg);
   const removeLeg = useMutation(api.tripExtras.removeLeg);
   const reorderLegs = useMutation(api.tripExtras.reorderLegs);
+  const routeLeg = useAction(api.travelActions.routeLeg);
 
   const [city, setCity] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Which leg is currently fetching a route (shows a spinner on its connector).
+  const [routingId, setRoutingId] = useState<Id<"tripLegs"> | null>(null);
+
+  // Pick a transport mode for the hop INTO `leg` (from `prev`): persist the mode,
+  // then fetch the real time/distance/route from Google Directions and cache it
+  // on the leg (so the globe can draw the actual road/rail geometry).
+  const applyMode = async (
+    prev: Doc<"tripLegs">,
+    leg: Doc<"tripLegs">,
+    mode: "car" | "train" | "bus",
+  ) => {
+    await updateLeg({ legId: leg._id, patch: { transportMode: mode } });
+    if (prev.lat == null || prev.lng == null || leg.lat == null || leg.lng == null)
+      return;
+    setRoutingId(leg._id);
+    try {
+      const r = await routeLeg({
+        fromLat: prev.lat,
+        fromLng: prev.lng,
+        toLat: leg.lat,
+        toLng: leg.lng,
+        mode,
+      });
+      await updateLeg({
+        legId: leg._id,
+        patch: r.available
+          ? {
+              transportMode: mode,
+              routeDurationText: r.durationText,
+              routeDistanceText: r.distanceText,
+              routePolyline: r.polyline,
+            }
+          : { routeDurationText: "", routeDistanceText: "", routePolyline: "" },
+      });
+    } catch {
+      /* keep the chosen mode; route stays whatever it was */
+    } finally {
+      setRoutingId(null);
+    }
+  };
 
   const handleAdd = async () => {
     const q = city.trim();
@@ -121,10 +248,16 @@ export function TripLegs({ tripId }: { tripId: Id<"trips"> }) {
       ) : (
         <ol className="mb-2 space-y-1">
           {legs.map((leg, i) => (
-            <li
-              key={leg._id}
-              className="flex items-center gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/30 px-2 py-1.5"
-            >
+            <li key={leg._id}>
+              {i > 0 && (
+                <TransportConnector
+                  prev={legs[i - 1]}
+                  leg={leg}
+                  routing={routingId === leg._id}
+                  onPick={(mode) => void applyMode(legs[i - 1], leg, mode)}
+                />
+              )}
+              <div className="flex items-center gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/30 px-2 py-1.5">
               <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-brass/50 font-mono text-[8px] text-brass">
                 {i + 1}
               </span>
@@ -177,6 +310,7 @@ export function TripLegs({ tripId }: { tripId: Id<"trips"> }) {
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
+              </div>
             </li>
           ))}
         </ol>

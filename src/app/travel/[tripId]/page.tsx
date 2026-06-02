@@ -60,6 +60,7 @@ import type {
   GlobePointKind,
 } from "@/components/travel/trip-globe";
 import { findAirport } from "@/lib/travel/airports";
+import { decodePolyline } from "@/lib/travel/polyline";
 
 // SSR SAFETY: trip-globe (react-globe.gl → three) touches window at import time.
 // The ONLY entry point is this dynamic import with ssr:false, so the module is
@@ -390,26 +391,38 @@ function GlobePane({
   const [flightArcs, setFlightArcs] = useState<GlobeArc[]>([]);
 
   const routeArcs = useMemo<GlobeArc[]>(() => {
-    const ordered: Array<{ lat: number; lng: number }> = [];
     const legPts = (legs ?? []).filter((l) => l.lat != null && l.lng != null);
-    if (legPts.length >= 2) {
-      for (const l of legPts)
-        ordered.push({ lat: l.lat as number, lng: l.lng as number });
-    } else {
-      for (const it of items) {
-        if (it.lat == null || it.lng == null) continue;
-        ordered.push({ lat: it.lat, lng: it.lng });
-      }
-    }
     const arcs: GlobeArc[] = [];
-    for (let i = 0; i < ordered.length - 1; i++) {
-      arcs.push({
-        startLat: ordered[i].lat,
-        startLng: ordered[i].lng,
-        endLat: ordered[i + 1].lat,
-        endLng: ordered[i + 1].lng,
-        kind: "route",
-      });
+    if (legPts.length >= 2) {
+      // Multi-destination route: one arc per consecutive leg pair. The transport
+      // INTO leg b (from a) is stored on b — when it has a routePolyline, draw
+      // the real road/rail geometry; otherwise fall back to a great-circle.
+      for (let i = 0; i < legPts.length - 1; i++) {
+        const a = legPts[i];
+        const b = legPts[i + 1];
+        const poly = b.routePolyline
+          ? decodePolyline(b.routePolyline)
+          : undefined;
+        arcs.push({
+          startLat: a.lat as number,
+          startLng: a.lng as number,
+          endLat: b.lat as number,
+          endLng: b.lng as number,
+          kind: "route",
+          path: poly && poly.length >= 2 ? poly : undefined,
+        });
+      }
+    } else {
+      const ordered = items.filter((it) => it.lat != null && it.lng != null);
+      for (let i = 0; i < ordered.length - 1; i++) {
+        arcs.push({
+          startLat: ordered[i].lat as number,
+          startLng: ordered[i].lng as number,
+          endLat: ordered[i + 1].lat as number,
+          endLng: ordered[i + 1].lng as number,
+          kind: "route",
+        });
+      }
     }
     return arcs;
   }, [items, legs]);
