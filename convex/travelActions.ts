@@ -738,6 +738,24 @@ type StayOption = {
   propertyToken?: string;
 };
 
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+/** Clean Booking.com link to a SPECIFIC property (dest_type=hotel + dest_id),
+ *  with dates + free-cancellation filter — stable, unlike the gclid ad-redirect. */
+function bookingPropertyUrl(
+  destId: string,
+  checkIn?: string,
+  checkOut?: string,
+  adults?: number,
+): string {
+  const p = new URLSearchParams({ dest_id: destId, dest_type: "hotel" });
+  if (checkIn) p.set("checkin", checkIn);
+  if (checkOut) p.set("checkout", checkOut);
+  if (adults) p.set("group_adults", String(adults));
+  return `https://www.booking.com/searchresults.html?${p.toString()}&nflt=fc%3D2`;
+}
+
 /** Booking.com search deep-link with free-cancellation filter pre-applied. */
 function bookingDeepLink(
   name: string,
@@ -867,16 +885,48 @@ export const resolveStayLink = action({
         (Array.isArray(x?.rooms) && typeof x.rooms[0]?.link === "string"
           ? x.rooms[0].link
           : undefined);
-      // Prefer Booking.com, else any source with a link, else the hotel's own page.
-      const booking = all.find(
-        (x) => /booking\.com/i.test(String(x?.source ?? "")) && linkOf(x),
+
+      // The Booking.com "link" is a gclid ad-redirect that's flaky when opened
+      // standalone. Follow it server-side to its real destination and lift the
+      // dest_id, then hand back a CLEAN Booking.com property URL.
+      const bookingAclk = linkOf(
+        all.find((x) => /booking\.com/i.test(String(x?.source ?? "")) && linkOf(x)),
       );
+      if (bookingAclk) {
+        try {
+          const fr = await fetch(bookingAclk, {
+            headers: { "User-Agent": BROWSER_UA },
+          });
+          const finalUrl = fr.url ?? "";
+          const m = finalUrl.match(/[?&;]dest_id=(\d+)/);
+          if (m && /booking\.com/i.test(finalUrl)) {
+            return {
+              url: bookingPropertyUrl(
+                m[1],
+                args.checkIn,
+                args.checkOut,
+                adults,
+              ),
+              source: "Booking.com",
+            };
+          }
+        } catch {
+          /* fall through to other links */
+        }
+      }
+
+      // Fallbacks: the hotel's own website (a real property page), else any OTA
+      // link, else null so the caller uses the search deep-link.
+      const ownSite =
+        typeof json?.link === "string" && /^https?:\/\//.test(json.link)
+          ? json.link
+          : null;
+      if (ownSite) return { url: ownSite, source: "Hotel website" };
       const anyPriced = all.find((x) => linkOf(x));
-      const pick = booking ?? anyPriced;
-      const url =
-        (pick && linkOf(pick)) ??
-        (typeof json?.link === "string" ? json.link : null);
-      return { url: url ?? null, source: pick?.source ?? null };
+      return {
+        url: anyPriced ? (linkOf(anyPriced) ?? null) : null,
+        source: anyPriced?.source ?? null,
+      };
     } catch {
       return { url: null, source: null };
     }
