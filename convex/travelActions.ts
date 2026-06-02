@@ -757,6 +757,9 @@ export const searchStays = action({
     checkIn: v.string(),
     checkOut: v.string(),
     adults: v.optional(v.number()),
+    // Budget ceiling (per night). When set, Google Hotels returns only options
+    // at or below it, so the Find-mode budget toggle shapes the recommendations.
+    maxPricePerNight: v.optional(v.number()),
   },
   handler: async (
     ctx,
@@ -777,6 +780,9 @@ export const searchStays = action({
       hl: "en",
       api_key: key,
     });
+    if (args.maxPricePerNight && args.maxPricePerNight > 0) {
+      params.set("max_price", String(Math.floor(args.maxPricePerNight)));
+    }
 
     try {
       const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
@@ -848,6 +854,8 @@ export const searchFlights = action({
     outboundDate: v.string(),
     returnDate: v.optional(v.string()),
     adults: v.optional(v.number()),
+    // Budget ceiling (total ticket price). Options above it are filtered out.
+    maxPrice: v.optional(v.number()),
   },
   handler: async (
     ctx,
@@ -856,6 +864,8 @@ export const searchFlights = action({
     const key = await getSecret(ctx, SECRET.serpapi);
     if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
     const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
+    const maxPrice =
+      args.maxPrice && args.maxPrice > 0 ? args.maxPrice : undefined;
 
     const params = new URLSearchParams({
       engine: "google_flights",
@@ -879,7 +889,10 @@ export const searchFlights = action({
         ...(Array.isArray(json?.best_flights) ? json.best_flights : []),
         ...(Array.isArray(json?.other_flights) ? json.other_flights : []),
       ];
-      const options: FlightOption[] = raw.slice(0, 16).map((f) => {
+      const withinBudget = maxPrice
+        ? raw.filter((f) => typeof f?.price === "number" && f.price <= maxPrice)
+        : raw;
+      const options: FlightOption[] = withinBudget.slice(0, 16).map((f) => {
         const legs: any[] = Array.isArray(f?.flights) ? f.flights : [];
         const first = legs[0] ?? {};
         const last = legs[legs.length - 1] ?? {};

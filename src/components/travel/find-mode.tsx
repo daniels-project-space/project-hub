@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id, Doc } from "../../../convex/_generated/dataModel";
+import { BudgetControl, nightsBetween } from "@/components/travel/budget-control";
 
 type StayOption = {
   name: string;
@@ -84,15 +85,45 @@ export function FindMode({
   destCity,
   startDate,
   endDate,
+  budgetGbp,
+  onSetBudget,
 }: {
   tripId: Id<"trips"> | null;
   destCity?: string;
   startDate?: string;
   endDate?: string;
+  budgetGbp?: number;
+  onSetBudget: (v: number) => void;
 }) {
   const [tab, setTab] = useState<"stays" | "flights">("stays");
+
+  // Combined committed Find spend for the period (saved stays × nights + flights).
+  const stays = useQuery(
+    api.tripExtras.listStays,
+    tripId ? { tripId } : "skip",
+  ) as Doc<"tripStays">[] | undefined;
+  const flights = useQuery(
+    api.tripExtras.listFlights,
+    tripId ? { tripId } : "skip",
+  ) as Doc<"tripFlights">[] | undefined;
+  const tripNights = nightsBetween(startDate, endDate);
+  const total =
+    (stays ?? []).reduce(
+      (s, x) =>
+        s +
+        (x.priceGbp ?? 0) *
+          (nightsBetween(x.checkIn, x.checkOut) || tripNights || 1),
+      0,
+    ) + (flights ?? []).reduce((s, x) => s + (x.priceGbp ?? 0), 0);
+
   return (
     <div className="space-y-3">
+      <BudgetControl
+        budgetGbp={budgetGbp}
+        onSetBudget={onSetBudget}
+        total={total}
+        subLabel={tripNights ? `${tripNights} nights` : "saved"}
+      />
       <div className="inline-flex rounded-lg border border-rule-soft/60 bg-ink-2/40 p-0.5">
         {([
           { k: "stays", label: "Stays", Icon: BedDouble },
@@ -117,12 +148,14 @@ export function FindMode({
           destCity={destCity}
           startDate={startDate}
           endDate={endDate}
+          budgetGbp={budgetGbp}
         />
       ) : (
         <FlightsSearch
           tripId={tripId}
           startDate={startDate}
           endDate={endDate}
+          budgetGbp={budgetGbp}
         />
       )}
     </div>
@@ -135,11 +168,13 @@ function StaysSearch({
   destCity,
   startDate,
   endDate,
+  budgetGbp,
 }: {
   tripId: Id<"trips"> | null;
   destCity?: string;
   startDate?: string;
   endDate?: string;
+  budgetGbp?: number;
 }) {
   const search = useAction(api.travelActions.searchStays);
   const saveStay = useMutation(api.tripExtras.saveStay);
@@ -164,8 +199,20 @@ function StaysSearch({
     }
     setBusy(true);
     setErr(null);
+    // Budget shapes the search: cap per-night so the whole stay fits the budget.
+    const nN = nightsBetween(ci, co);
+    const maxPricePerNight =
+      budgetGbp && budgetGbp > 0
+        ? Math.max(1, Math.floor(nN > 0 ? budgetGbp / nN : budgetGbp))
+        : undefined;
     try {
-      const r = await search({ query: q.trim(), checkIn: ci, checkOut: co, adults });
+      const r = await search({
+        query: q.trim(),
+        checkIn: ci,
+        checkOut: co,
+        adults,
+        maxPricePerNight,
+      });
       if (!r.available) {
         setErr(r.reason ?? "No results.");
         setResults([]);
@@ -241,7 +288,13 @@ function StaysSearch({
       {results.length > 0 && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {results.map((o, i) => (
-            <StayCard key={`${o.name}-${i}`} o={o} canSave={!!tripId} onSave={() => save(o)} />
+            <StayCard
+              key={`${o.name}-${i}`}
+              o={o}
+              nights={nightsBetween(ci, co)}
+              canSave={!!tripId}
+              onSave={() => save(o)}
+            />
           ))}
         </div>
       )}
@@ -296,13 +349,17 @@ function StaysSearch({
 
 function StayCard({
   o,
+  nights,
   canSave,
   onSave,
 }: {
   o: StayOption;
+  nights: number;
   canSave: boolean;
   onSave: () => void;
 }) {
+  const periodTotal =
+    typeof o.priceGbp === "number" && nights > 0 ? o.priceGbp * nights : undefined;
   return (
     <div className="overflow-hidden rounded-lg border border-rule-soft/40 bg-ink-2/30">
       {o.image && (
@@ -323,11 +380,16 @@ function StayCard({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-baseline gap-2">
           {gbp(o.priceGbp) && (
             <span className="text-[13px] font-semibold tabular-nums text-paper">
               {gbp(o.priceGbp)}
               <span className="text-[10px] font-normal text-paper-faint"> /night</span>
+            </span>
+          )}
+          {periodTotal != null && (
+            <span className="text-[10px] tabular-nums text-paper-faint">
+              {gbp(periodTotal)} · {nights} night{nights > 1 ? "s" : ""}
             </span>
           )}
         </div>
@@ -363,10 +425,12 @@ function FlightsSearch({
   tripId,
   startDate,
   endDate,
+  budgetGbp,
 }: {
   tripId: Id<"trips"> | null;
   startDate?: string;
   endDate?: string;
+  budgetGbp?: number;
 }) {
   const search = useAction(api.travelActions.searchFlights);
   const addFlight = useMutation(api.tripExtras.addFlight);
@@ -399,6 +463,7 @@ function FlightsSearch({
         outboundDate: outbound,
         returnDate: ret || undefined,
         adults,
+        maxPrice: budgetGbp && budgetGbp > 0 ? budgetGbp : undefined,
       });
       if (!r.available) {
         setErr(r.reason ?? "No results.");

@@ -61,6 +61,7 @@ import type {
 } from "@/components/travel/trip-globe";
 import { findAirport } from "@/lib/travel/airports";
 import { decodePolyline } from "@/lib/travel/polyline";
+import { BudgetControl, nightsBetween } from "@/components/travel/budget-control";
 
 // SSR SAFETY: trip-globe (react-globe.gl → three) touches window at import time.
 // The ONLY entry point is this dynamic import with ssr:false, so the module is
@@ -170,11 +171,16 @@ function OverviewSidebar({
   full,
   legs,
   onFocus,
+  total,
+  onSetBudget,
 }: {
   full: FullTrip;
   legs: Doc<"tripLegs">[] | undefined;
   /** Click a stop/leg with coords → fly the globe there. */
   onFocus: (loc: { lat: number; lng: number }) => void;
+  /** Total cost for the period (items + stays + flights). */
+  total: number;
+  onSetBudget: (v: number) => void;
 }) {
   const { trip, days, items } = full;
   const dayById = useMemo(() => {
@@ -232,6 +238,20 @@ function OverviewSidebar({
             </span>
           )}
         </div>
+      </div>
+
+      {/* budget toggle + period total (items + stays + flights) */}
+      <div className="border-b border-rule-soft/40 p-4">
+        <BudgetControl
+          budgetGbp={trip.budgetGbp}
+          onSetBudget={onSetBudget}
+          total={total}
+          subLabel={
+            nightsBetween(trip.startDate, trip.endDate)
+              ? `${nightsBetween(trip.startDate, trip.endDate)} nights`
+              : undefined
+          }
+        />
       </div>
 
       {/* legs (multi-destination), if any */}
@@ -576,6 +596,11 @@ export default function TripPlannerPage() {
     api.tripExtras.listFlights,
     tripId ? { tripId } : "skip",
   ) as Doc<"tripFlights">[] | undefined;
+  const stays = useQuery(
+    api.tripExtras.listStays,
+    tripId ? { tripId } : "skip",
+  ) as Doc<"tripStays">[] | undefined;
+  const updateTrip = useMutation(api.trips.update);
 
   // Selected stop/leg → globe flies there. A fresh object identity each click
   // (even to the same coords) lets the globe's effect re-fire a fly-to.
@@ -635,6 +660,23 @@ export default function TripPlannerPage() {
     );
   }
 
+  // Period total = itinerary items + saved stays (× nights) + saved flights.
+  const tripNights = nightsBetween(full.trip.startDate, full.trip.endDate);
+  const periodTotal =
+    full.items.reduce((s, it) => s + (it.priceGbp ?? 0), 0) +
+    (stays ?? []).reduce(
+      (s, x) =>
+        s +
+        (x.priceGbp ?? 0) * (nightsBetween(x.checkIn, x.checkOut) || tripNights || 1),
+      0,
+    ) +
+    (flights ?? []).reduce((s, x) => s + (x.priceGbp ?? 0), 0);
+  const setBudget = (v: number) =>
+    void updateTrip({
+      tripId,
+      patch: { budgetGbp: Number.isFinite(v) ? v : 0 },
+    });
+
   return (
     <main className="min-h-dvh">
       <TopBar title={full.trip.title} />
@@ -647,6 +689,8 @@ export default function TripPlannerPage() {
                 full={full}
                 legs={legs}
                 onFocus={(loc) => setFocus(loc)}
+                total={periodTotal}
+                onSetBudget={setBudget}
               />
             </div>
           </div>

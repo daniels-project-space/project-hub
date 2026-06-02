@@ -44,7 +44,7 @@ import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { WidgetSlot } from "../widget-slot";
-import { EditableValue } from "@/components/ui/editable-value";
+import { BudgetControl, nightsBetween } from "@/components/travel/budget-control";
 import { cn } from "@/lib/utils";
 import { TripMap, type TripMarker } from "@/components/travel/trip-map";
 import {
@@ -339,55 +339,6 @@ function TripSelector({
 }
 
 // ── Budget bar ─────────────────────────────────────────────────────────────
-function BudgetBar({
-  trip,
-  spent,
-  onSetBudget,
-}: {
-  trip: Trip;
-  spent: number;
-  onSetBudget: (v: number) => void;
-}) {
-  const total = trip.budgetGbp ?? 0;
-  const over = total > 0 && spent > total;
-  const pct = total > 0 ? Math.min(100, (spent / total) * 100) : 0;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-[11px]">
-        <span className="font-mono uppercase tracking-[0.16em] text-paper-faint">
-          Budget
-        </span>
-        <span className={cn("tabular-nums flex items-center gap-1", over ? "text-rose-soft" : "text-paper")}>
-          <span>{gbp(spent)} / £</span>
-          <EditableValue
-            value={total ? String(total) : ""}
-            type="number"
-            placeholder="set budget"
-            onCommit={(v) => {
-              const n = Number(v);
-              onSetBudget(Number.isFinite(n) ? n : 0);
-            }}
-            className="text-paper underline decoration-dotted decoration-paper-faint/50"
-          />
-        </span>
-      </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-paper/[0.06]">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            over ? "bg-rose-soft" : "bg-brass/70",
-          )}
-          style={{ width: `${total > 0 ? pct : 0}%` }}
-        />
-      </div>
-      {over && (
-        <p className="text-[10px] text-rose-soft">
-          Over budget by {gbp(spent - total)}
-        </p>
-      )}
-    </div>
-  );
-}
 
 // ── Mode switch (segmented: Planner | Find | Trip) ─────────────────────────
 function ModeSwitch({
@@ -522,8 +473,47 @@ function DateRange({
 
 
 function TripPanel({ tripId }: { tripId: Id<"trips"> | null }) {
+  const full = useQuery(api.trips.getFull, tripId ? { tripId } : "skip") as
+    | { trip: Trip; days: TripDay[]; items: TripItem[] }
+    | null
+    | undefined;
+  const stays = useQuery(api.tripExtras.listStays, tripId ? { tripId } : "skip") as
+    | Array<{ priceGbp?: number; checkIn?: string; checkOut?: string }>
+    | undefined;
+  const flights = useQuery(
+    api.tripExtras.listFlights,
+    tripId ? { tripId } : "skip",
+  ) as Array<{ priceGbp?: number }> | undefined;
+  const updateTrip = useMutation(api.trips.update);
+
+  const trip = full?.trip;
+  const nights = nightsBetween(trip?.startDate, trip?.endDate);
+  const total =
+    (full?.items ?? []).reduce((s, it) => s + (it.priceGbp ?? 0), 0) +
+    (stays ?? []).reduce(
+      (s, x) =>
+        s + (x.priceGbp ?? 0) * (nightsBetween(x.checkIn, x.checkOut) || nights || 1),
+      0,
+    ) +
+    (flights ?? []).reduce((s, x) => s + (x.priceGbp ?? 0), 0);
+
   return (
-    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
+    <div className="space-y-3">
+      {trip && (
+        <BudgetControl
+          budgetGbp={trip.budgetGbp}
+          onSetBudget={(v) =>
+            tripId &&
+            void updateTrip({
+              tripId,
+              patch: { budgetGbp: Number.isFinite(v) ? v : 0 },
+            })
+          }
+          total={total}
+          subLabel={nights ? `${nights} nights` : undefined}
+        />
+      )}
+      <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
       <Globe2 className="mx-auto h-6 w-6 text-brass/70" />
       <div className="space-y-1">
         <p className="text-sm font-display text-paper">Expanded Trip Planner</p>
@@ -548,6 +538,7 @@ function TripPanel({ tripId }: { tripId: Id<"trips"> | null }) {
           <Maximize2 className="h-3.5 w-3.5" /> Select a trip first
         </button>
       )}
+      </div>
     </div>
   );
 }
@@ -799,6 +790,11 @@ export function TravelWidget() {
             destCity={selectedTrip?.destCity}
             startDate={selectedTrip?.startDate}
             endDate={selectedTrip?.endDate}
+            budgetGbp={selectedTrip?.budgetGbp}
+            onSetBudget={(v) =>
+              selectedId &&
+              void updateTrip({ tripId: selectedId, patch: { budgetGbp: v } })
+            }
           />
         )}
 
@@ -841,17 +837,18 @@ export function TravelWidget() {
               </div>
             )}
 
-            {/* Budget bar */}
-            {trip && (trip.budgetGbp != null || spent > 0) && (
-              <BudgetBar
-                trip={trip}
-                spent={spent}
+            {/* Budget toggle + period total (respected by planTrip's hard cap) */}
+            {trip && (
+              <BudgetControl
+                budgetGbp={trip.budgetGbp}
                 onSetBudget={(v) =>
                   void updateTrip({
                     tripId: trip._id,
                     patch: { budgetGbp: Number.isFinite(v) ? v : 0 },
                   })
                 }
+                total={spent}
+                subLabel={days.length ? `${days.length} days` : undefined}
               />
             )}
 
