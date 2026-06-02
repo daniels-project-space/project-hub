@@ -74,7 +74,11 @@ const SECRET = {
   // Google Places (images + place details + maps/website links) and Google
   // Directions (transport routing) share one key. Verified live in the vault.
   googlePlaces: { service: "google", keyName: "GOOGLE_PLACES_API_KEY" },
+  // SerpApi — Google Hotels (Deal mode) + Google Flights. Verified live.
+  serpapi: { service: "serpapi", keyName: "SERPAPI_KEY" },
 } as const;
+
+const SERPAPI_URL = "https://serpapi.com/search.json";
 
 // Google Maps Platform endpoints (Places + Directions share the one key).
 const GP_FINDPLACE =
@@ -705,6 +709,205 @@ export const routeLeg = action({
       return {
         available: false,
         reason: `Directions error: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  },
+});
+
+// ─── Deal mode: searchStays (Google Hotels via SerpApi) ──────────────────────
+//
+// Returns real, priced hotel options (image, £/night, rating, source) for a
+// query + timeframe. Per the product decision, each option's `link` is a
+// BOOKING.COM deep-link for the hotel + dates with the free-cancellation filter
+// (nflt=fc=2) pre-applied, so booking happens on Booking.com with free-cancel.
+// `googleLink` is the Google hotel page as a secondary "details" link.
+
+type StayOption = {
+  name: string;
+  provider?: string;
+  priceGbp?: number;
+  totalGbp?: number;
+  image?: string;
+  rating?: number;
+  freeCancellation?: boolean;
+  lat?: number;
+  lng?: number;
+  link: string;
+  googleLink?: string;
+};
+
+/** Booking.com search deep-link with free-cancellation filter pre-applied. */
+function bookingDeepLink(
+  name: string,
+  checkIn?: string,
+  checkOut?: string,
+  adults?: number,
+): string {
+  const p = new URLSearchParams({ ss: name });
+  if (checkIn) p.set("checkin", checkIn);
+  if (checkOut) p.set("checkout", checkOut);
+  if (adults) p.set("group_adults", String(adults));
+  // nflt=fc%3D2 → Booking.com "Free cancellation" facet.
+  return `https://www.booking.com/searchresults.html?${p.toString()}&nflt=fc%3D2`;
+}
+
+export const searchStays = action({
+  args: {
+    query: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
+    const key = await getSecret(ctx, SECRET.serpapi);
+    if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
+
+    const params = new URLSearchParams({
+      engine: "google_hotels",
+      q: args.query,
+      check_in_date: args.checkIn,
+      check_out_date: args.checkOut,
+      adults: String(adults),
+      currency: GBP,
+      gl: "uk",
+      hl: "en",
+      api_key: key,
+    });
+
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.error) return { available: false, reason: json.error, options: [] };
+      const props: any[] = Array.isArray(json?.properties) ? json.properties : [];
+      const options: StayOption[] = props.slice(0, 24).map((p) => {
+        const img =
+          p?.images?.[0]?.original_image ?? p?.images?.[0]?.thumbnail ?? undefined;
+        const coords = p?.gps_coordinates ?? {};
+        return {
+          name: typeof p?.name === "string" ? p.name : "Hotel",
+          provider: p?.prices?.[0]?.source ?? undefined,
+          priceGbp: finiteOrUndef(p?.rate_per_night?.extracted_lowest),
+          totalGbp: finiteOrUndef(p?.total_rate?.extracted_lowest),
+          image: typeof img === "string" ? img : undefined,
+          rating: finiteOrUndef(p?.overall_rating),
+          freeCancellation:
+            typeof p?.free_cancellation === "boolean" ? p.free_cancellation : undefined,
+          lat: finiteOrUndef(coords?.latitude),
+          lng: finiteOrUndef(coords?.longitude),
+          link: bookingDeepLink(p?.name ?? args.query, args.checkIn, args.checkOut, adults),
+          googleLink: typeof p?.link === "string" ? p.link : undefined,
+        };
+      });
+      return { available: true, options };
+    } catch (e) {
+      return {
+        available: false,
+        reason: `Hotel search error: ${e instanceof Error ? e.message : String(e)}`,
+        options: [],
+      };
+    }
+  },
+});
+
+// ─── Flights: searchFlights (Google Flights via SerpApi) ─────────────────────
+
+type FlightOption = {
+  priceGbp?: number;
+  durationMin?: number;
+  airline?: string;
+  airlineLogo?: string;
+  stops: number;
+  from?: string;
+  to?: string;
+  departTime?: string;
+  arriveTime?: string;
+  bookLink: string;
+};
+
+/** Google Flights deep-link for a route + dates. */
+function flightsDeepLink(
+  origin: string,
+  destination: string,
+  outboundDate: string,
+  returnDate?: string,
+): string {
+  const q =
+    `Flights from ${origin} to ${destination} on ${outboundDate}` +
+    (returnDate ? ` through ${returnDate}` : "");
+  return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
+}
+
+export const searchFlights = action({
+  args: {
+    origin: v.string(),
+    destination: v.string(),
+    outboundDate: v.string(),
+    returnDate: v.optional(v.string()),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ available: boolean; reason?: string; options: FlightOption[] }> => {
+    const key = await getSecret(ctx, SECRET.serpapi);
+    if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
+
+    const params = new URLSearchParams({
+      engine: "google_flights",
+      departure_id: args.origin.trim().toUpperCase(),
+      arrival_id: args.destination.trim().toUpperCase(),
+      outbound_date: args.outboundDate,
+      type: args.returnDate ? "1" : "2", // 1 = round trip, 2 = one way
+      currency: GBP,
+      gl: "uk",
+      hl: "en",
+      adults: String(adults),
+      api_key: key,
+    });
+    if (args.returnDate) params.set("return_date", args.returnDate);
+
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.error) return { available: false, reason: json.error, options: [] };
+      const raw: any[] = [
+        ...(Array.isArray(json?.best_flights) ? json.best_flights : []),
+        ...(Array.isArray(json?.other_flights) ? json.other_flights : []),
+      ];
+      const options: FlightOption[] = raw.slice(0, 16).map((f) => {
+        const legs: any[] = Array.isArray(f?.flights) ? f.flights : [];
+        const first = legs[0] ?? {};
+        const last = legs[legs.length - 1] ?? {};
+        return {
+          priceGbp: finiteOrUndef(f?.price),
+          durationMin: finiteOrUndef(f?.total_duration),
+          airline: typeof first?.airline === "string" ? first.airline : undefined,
+          airlineLogo:
+            typeof f?.airline_logo === "string" ? f.airline_logo : undefined,
+          stops: Math.max(0, legs.length - 1),
+          from: first?.departure_airport?.id ?? undefined,
+          to: last?.arrival_airport?.id ?? undefined,
+          departTime: first?.departure_airport?.time ?? undefined,
+          arriveTime: last?.arrival_airport?.time ?? undefined,
+          bookLink: flightsDeepLink(
+            args.origin,
+            args.destination,
+            args.outboundDate,
+            args.returnDate,
+          ),
+        };
+      });
+      return { available: true, options };
+    } catch (e) {
+      return {
+        available: false,
+        reason: `Flight search error: ${e instanceof Error ? e.message : String(e)}`,
+        options: [],
       };
     }
   },

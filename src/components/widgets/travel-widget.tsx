@@ -54,6 +54,7 @@ import {
   type TripDay,
 } from "@/components/travel/itinerary-timeline";
 import { InfoRail } from "@/components/travel/info-rail";
+import { FindMode } from "@/components/travel/find-mode";
 import { FlightChip } from "@/components/travel/flight-chip";
 import { PackingChecklist } from "@/components/travel/packing-checklist";
 import {
@@ -519,30 +520,6 @@ function DateRange({
   );
 }
 
-// ── Find / Trip placeholders (real builds land in Stage 3 / Stage 4) ───────
-function FindPlaceholder() {
-  return (
-    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
-      <Tag className="mx-auto h-6 w-6 text-brass/70" />
-      <div className="space-y-1">
-        <p className="text-sm font-display text-paper">Find a deal</p>
-        <p className="text-[12px] text-paper-faint mx-auto max-w-sm">
-          Hotel search with free cancellation &amp; pay-later. Arrives next.
-        </p>
-      </div>
-      <input
-        type="text"
-        disabled
-        placeholder="e.g. 4 nights in Lisbon, free cancellation, under £600"
-        aria-label="deal search (coming soon)"
-        className="w-full max-w-md mx-auto block rounded-lg border border-rule-soft/40 bg-ink-2/40 px-3 py-2 text-sm text-paper-faint placeholder:text-paper-faint/70 outline-none opacity-50 cursor-not-allowed"
-      />
-      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-paper-faint/70">
-        Stage 3 · coming soon
-      </p>
-    </div>
-  );
-}
 
 function TripPanel({ tripId }: { tripId: Id<"trips"> | null }) {
   return (
@@ -815,8 +792,15 @@ export function TravelWidget() {
           </div>
         </div>
 
-        {/* ── FIND mode (Stage 3 placeholder) ── */}
-        {mode === "deal" && <FindPlaceholder />}
+        {/* ── FIND / DEAL mode (hotels via Booking.com + flights) ── */}
+        {mode === "deal" && (
+          <FindMode
+            tripId={selectedId}
+            destCity={selectedTrip?.destCity}
+            startDate={selectedTrip?.startDate}
+            endDate={selectedTrip?.endDate}
+          />
+        )}
 
         {/* ── TRIP mode (expanded planner entry) ── */}
         {mode === "trip" && <TripPanel tripId={selectedId} />}

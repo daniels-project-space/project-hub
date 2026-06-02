@@ -350,6 +350,9 @@ export default defineSchema({
         flightNo: v.optional(v.string()),
       }),
     ),
+    // Saved from a flight search (additive): price + a booking deep-link.
+    priceGbp: v.optional(v.number()),
+    bookLink: v.optional(v.string()),
   }).index("by_trip", ["tripId"]),
 
   // Saved stay options (Mode-B deal results). Cards carry image + book link and

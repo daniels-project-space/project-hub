@@ -212,8 +212,14 @@ export const addFlight = mutation({
   args: {
     tripId: v.id("trips"),
     segments: v.array(flightSegmentValidator),
+    priceGbp: v.optional(v.number()),
+    bookLink: v.optional(v.string()),
   },
-  handler: async (ctx, { tripId, segments }): Promise<Id<"tripFlights">> => {
+  handler: async (
+    ctx,
+    { tripId, segments, priceGbp, bookLink },
+  ): Promise<Id<"tripFlights">> => {
+    assertFinite("priceGbp", priceGbp);
     const existing = await ctx.db
       .query("tripFlights")
       .withIndex("by_trip", (q) => q.eq("tripId", tripId))
@@ -223,6 +229,8 @@ export const addFlight = mutation({
       tripId,
       order: maxOrder + 1,
       segments,
+      ...(priceGbp !== undefined ? { priceGbp } : {}),
+      ...(bookLink !== undefined ? { bookLink } : {}),
     });
   },
 });
