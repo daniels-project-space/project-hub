@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Plane,
   Sparkles,
@@ -29,6 +30,7 @@ import {
   Tag,
   Globe2,
   CalendarRange,
+  Maximize2,
   Utensils,
   Coffee,
   Landmark,
@@ -542,26 +544,33 @@ function FindPlaceholder() {
   );
 }
 
-function TripPlaceholder() {
+function TripPanel({ tripId }: { tripId: Id<"trips"> | null }) {
   return (
     <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 p-5 text-center space-y-3">
       <Globe2 className="mx-auto h-6 w-6 text-brass/70" />
       <div className="space-y-1">
         <p className="text-sm font-display text-paper">Expanded Trip Planner</p>
         <p className="text-[12px] text-paper-faint mx-auto max-w-sm">
-          Globe + sidebar — arrives next.
+          Full-screen overview, map, itinerary, to-dos &amp; notes for the
+          selected trip.
         </p>
       </div>
-      <button
-        type="button"
-        disabled
-        className="mx-auto flex items-center gap-1.5 rounded-lg border border-rule-soft/40 bg-ink-2/40 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-paper-faint opacity-50 cursor-not-allowed"
-      >
-        <Globe2 className="h-3.5 w-3.5" /> Open
-      </button>
-      <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-paper-faint/70">
-        Stage 4 · coming soon
-      </p>
+      {tripId ? (
+        <Link
+          href={`/travel/${tripId}`}
+          className="mx-auto flex w-fit items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors"
+        >
+          <Maximize2 className="h-3.5 w-3.5" /> Open
+        </Link>
+      ) : (
+        <button
+          type="button"
+          disabled
+          className="mx-auto flex items-center gap-1.5 rounded-lg border border-rule-soft/40 bg-ink-2/40 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.14em] text-paper-faint opacity-50 cursor-not-allowed"
+        >
+          <Maximize2 className="h-3.5 w-3.5" /> Select a trip first
+        </button>
+      )}
     </div>
   );
 }
@@ -768,6 +777,16 @@ export function TravelWidget() {
             {saveMsg && (
               <span className="text-[11px] text-emerald-soft">{saveMsg}</span>
             )}
+            {selectedId && (
+              <Link
+                href={`/travel/${selectedId}`}
+                aria-label="open expanded trip planner"
+                title="Open expanded view"
+                className="flex items-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-2.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.14em] text-paper-faint hover:text-brass hover:border-brass/50 transition-colors"
+              >
+                <Maximize2 className="h-3.5 w-3.5" /> Expand
+              </Link>
+            )}
             <button
               type="button"
               onClick={handleSave}
@@ -782,8 +801,8 @@ export function TravelWidget() {
         {/* ── FIND mode (Stage 3 placeholder) ── */}
         {mode === "deal" && <FindPlaceholder />}
 
-        {/* ── TRIP mode (Stage 4 placeholder) ── */}
-        {mode === "trip" && <TripPlaceholder />}
+        {/* ── TRIP mode (expanded planner entry) ── */}
+        {mode === "trip" && <TripPanel tripId={selectedId} />}
 
         {/* ── PLANNER mode (full current view) ── */}
         {mode === "planner" && (
