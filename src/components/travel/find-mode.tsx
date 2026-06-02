@@ -190,9 +190,22 @@ function StaysSearch({
   const [ci, setCi] = useState(startDate ?? "");
   const [co, setCo] = useState(endDate ?? "");
   const [adults, setAdults] = useState(2);
+  const [stayType, setStayType] = useState<"hotels" | "rentals">("hotels");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [results, setResults] = useState<StayOption[]>([]);
+
+  // Airbnb has no listings API (heavy anti-scraping) and isn't in Google's feed,
+  // so we can't embed its listings — but we can deep-link straight into an Airbnb
+  // search for the same place + dates.
+  const airbnbUrl = (() => {
+    const place = (q.trim() || destCity || "").replace(/\s+hotel$/i, "").trim();
+    const p = new URLSearchParams();
+    if (ci) p.set("checkin", ci);
+    if (co) p.set("checkout", co);
+    p.set("adults", String(adults));
+    return `https://www.airbnb.com/s/${encodeURIComponent(place || "homes")}/homes?${p.toString()}`;
+  })();
 
   const run = async () => {
     if (!q.trim() || !ci || !co) {
@@ -214,6 +227,7 @@ function StaysSearch({
         checkOut: co,
         adults,
         maxPricePerNight,
+        vacationRentals: stayType === "rentals",
       });
       if (!r.available) {
         setErr(r.reason ?? "No results.");
@@ -266,12 +280,40 @@ function StaysSearch({
 
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="inline-flex rounded-md border border-rule-soft/60 bg-ink-2/40 p-0.5">
+          {([
+            { k: "hotels", label: "Hotels" },
+            { k: "rentals", label: "Rentals" },
+          ] as const).map(({ k, label }) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setStayType(k)}
+              className={`rounded px-2.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.12em] transition-colors ${
+                stayType === k ? "bg-brass/20 text-brass" : "text-paper-faint hover:text-paper"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <a
+          href={airbnbUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.12em] text-paper-faint hover:text-[#ff5a5f] hover:border-[#ff5a5f]/50 transition-colors"
+          title="Search the same place + dates on Airbnb"
+        >
+          Airbnb <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && void run()}
-          placeholder="e.g. luxury Bali resort"
+          placeholder={stayType === "rentals" ? "e.g. Lisbon apartment" : "e.g. luxury Bali resort"}
           className={`${inputCls} min-w-[10rem] flex-1`}
         />
         <input
@@ -304,6 +346,11 @@ function StaysSearch({
       </div>
       {err && <p className="text-[11px] text-amber-400/80">{err}</p>}
 
+      {results.length > 0 && (
+        <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-paper-faint">
+          {results.length} {stayType === "rentals" ? "rentals" : "hotels"}
+        </p>
+      )}
       {results.length > 0 && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {results.map((o, i) => (

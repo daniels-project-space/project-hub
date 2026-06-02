@@ -780,6 +780,8 @@ export const searchStays = action({
     // Budget ceiling (per night). When set, Google Hotels returns only options
     // at or below it, so the Find-mode budget toggle shapes the recommendations.
     maxPricePerNight: v.optional(v.number()),
+    // Vacation rentals (apartments/homes from Vrbo/Expedia/etc.) instead of hotels.
+    vacationRentals: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
@@ -789,7 +791,7 @@ export const searchStays = action({
     if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
     const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
 
-    const params = new URLSearchParams({
+    const baseParams: Record<string, string> = {
       engine: "google_hotels",
       q: args.query,
       check_in_date: args.checkIn,
@@ -799,17 +801,35 @@ export const searchStays = action({
       gl: "uk",
       hl: "en",
       api_key: key,
-    });
+    };
     if (args.maxPricePerNight && args.maxPricePerNight > 0) {
-      params.set("max_price", String(Math.floor(args.maxPricePerNight)));
+      baseParams.max_price = String(Math.floor(args.maxPricePerNight));
     }
+    if (args.vacationRentals) baseParams.vacation_rentals = "true";
 
     try {
-      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
-      const json: any = await res.json();
-      if (json?.error) return { available: false, reason: json.error, options: [] };
-      const props: any[] = Array.isArray(json?.properties) ? json.properties : [];
-      const options: StayOption[] = props.slice(0, 24).map((p) => {
+      // Paginate (up to 3 pages) to collect ~50 properties per search.
+      const collected: any[] = [];
+      let nextToken: string | undefined;
+      let firstError: string | undefined;
+      for (let page = 0; page < 3 && collected.length < 50; page++) {
+        const params = new URLSearchParams(baseParams);
+        if (nextToken) params.set("next_page_token", nextToken);
+        const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+        const json: any = await res.json();
+        if (json?.error) {
+          firstError = json.error;
+          break;
+        }
+        const props: any[] = Array.isArray(json?.properties) ? json.properties : [];
+        collected.push(...props);
+        nextToken = json?.serpapi_pagination?.next_page_token;
+        if (!nextToken) break;
+      }
+      if (collected.length === 0) {
+        return { available: false, reason: firstError ?? "No results", options: [] };
+      }
+      const options: StayOption[] = collected.slice(0, 50).map((p) => {
         const img =
           p?.images?.[0]?.original_image ?? p?.images?.[0]?.thumbnail ?? undefined;
         const coords = p?.gps_coordinates ?? {};
