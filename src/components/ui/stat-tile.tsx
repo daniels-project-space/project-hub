@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MiniChart } from "@/components/ui/mini-chart";
 
@@ -28,6 +29,7 @@ export function StatTile({
   tone = "default",
   chart,
   onClick,
+  onHide,
   className,
 }: {
   label: string;
@@ -40,6 +42,13 @@ export function StatTile({
   chart?: number[];
   /** When provided, the tile becomes an interactive button (click-to-drill). */
   onClick?: () => void;
+  /**
+   * When provided, a small EyeOff hide control appears in the top-right corner
+   * (revealed on group-hover). Clicking it calls onHide and stops propagation so
+   * it never triggers the tile's onClick/drill. Display-only — hiding a tile does
+   * not change any underlying value or total.
+   */
+  onHide?: () => void;
   className?: string;
 }) {
   const interactive = typeof onClick === "function";
@@ -51,7 +60,7 @@ export function StatTile({
         ? { type: "button" as const, onClick, "aria-label": label }
         : {})}
       className={cn(
-        "relative overflow-hidden rounded-lg border border-rule-soft/60 px-3 py-2.5 text-left w-full",
+        "group relative overflow-hidden rounded-lg border border-rule-soft/60 px-3 py-2.5 text-left w-full",
         interactive &&
           "cursor-pointer transition-colors hover:border-brass/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/60",
         className,
@@ -61,6 +70,30 @@ export function StatTile({
           "linear-gradient(160deg, oklch(0.21 0.006 245 / 0.6), oklch(0.18 0.006 245 / 0.5))",
       }}
     >
+      {/* Per-tile hide control — tiny, top-right, low-opacity, reveals on hover.
+          stopPropagation so it never triggers the tile's onClick/drill. */}
+      {onHide && (
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={`Hide ${label}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onHide();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.stopPropagation();
+              e.preventDefault();
+              onHide();
+            }
+          }}
+          className="absolute right-1 top-1 z-10 cursor-pointer rounded p-0.5 text-paper-faint opacity-0 transition-opacity hover:text-paper focus:opacity-100 focus:outline-none group-hover:opacity-60"
+        >
+          <EyeOff className="h-3 w-3" />
+        </span>
+      )}
       {/* faint sparkline ghost behind the number */}
       {chart && chart.length > 1 && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-9 opacity-40">

@@ -89,6 +89,13 @@ const CATEGORY_LABEL: Record<DisplayCategory, string> = {
   inventory: "Inventory",
 };
 
+// Restore-chip label for any hideable tile key: the DISPLAY_CATEGORIES use
+// CATEGORY_LABEL (so "property" → "AI Income"), plus the appended "expenses" tile.
+function tileLabel(cat: string): string {
+  if (cat === "expenses") return "Expenses";
+  return CATEGORY_LABEL[cat as DisplayCategory] ?? cat;
+}
+
 const RANGES = ["1W", "1M", "3M", "1Y"] as const;
 type Range = (typeof RANGES)[number];
 
@@ -191,8 +198,21 @@ export function WealthWidget() {
   // Start `false` for a deterministic SSR/first paint (no hydration mismatch),
   // then sync to the setting ONCE after settings resolve. The in-widget eye
   // toggle is a local override that wins after the user touches it.
-  const { get } = useSettings();
+  const { get, set } = useSettings();
   const blurDefault = get("blurAmountsDefault", false) as boolean;
+
+  // Per-tile HIDE set (display-only). Persisted under `wealthHiddenTiles` via
+  // useSettings (Convex + localStorage). Hidden category keys remove only the
+  // TILE — the category still feeds byCategory/total, so net worth is unchanged.
+  const hiddenTiles = get<string[]>("wealthHiddenTiles", []);
+  const hideTile = (cat: string) =>
+    set("wealthHiddenTiles", [...new Set([...hiddenTiles, cat])]);
+  const showTile = (cat: string) =>
+    set(
+      "wealthHiddenTiles",
+      hiddenTiles.filter((c) => c !== cat),
+    );
+  const showAll = () => set("wealthHiddenTiles", []);
   const [hidden, setHidden] = useState(false);
   const seededBlur = useRef(false);
   useEffect(() => {
@@ -421,6 +441,10 @@ export function WealthWidget() {
                 synthetic "margin" tile is shown only when margin equity exists. */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
               {DISPLAY_CATEGORIES.map((cat) => {
+                // Display-only filter: skip the TILE if hidden. The category
+                // still sums into byCategory/total above, so net worth is
+                // unaffected — only this tile is removed from the grid.
+                if (hiddenTiles.includes(cat)) return null;
                 const bucket = byCategory[cat];
                 // Phase 19: Binance is its OWN tile, broken out of the Crypto
                 // category total. The Binance SPOT value lives inside the crypto
@@ -457,6 +481,7 @@ export function WealthWidget() {
                       tone={CATEGORY_TONE[cat]}
                       value={gbp(binanceCombined, hidden)}
                       chart={series.data}
+                      onHide={() => hideTile(cat)}
                       badge={
                         <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
                       }
@@ -506,6 +531,7 @@ export function WealthWidget() {
                     value={gbp(val, hidden)}
                     chart={series.data}
                     onClick={() => openDrill(cat)}
+                    onHide={() => hideTile(cat)}
                     badge={
                       <DeltaBadge delta={series.delta} deltaPct={series.deltaPct} />
                     }
@@ -556,12 +582,14 @@ export function WealthWidget() {
                   tiles. Accrued expenses are DEDUCTED from net worth server-side
                   (getWealth folds them into the total via netCashflowGbp), so the
                   figures come straight from the already-fetched `wealth` query. */}
-              {wealth?.expensesMonthlyGbp !== undefined && (
+              {wealth?.expensesMonthlyGbp !== undefined &&
+                !hiddenTiles.includes("expenses") && (
                 <StatTile
                   key="expenses"
                   label="Expenses"
                   tone="rose"
                   value={gbp(wealth.expensesMonthlyGbp, hidden)}
+                  onHide={() => hideTile("expenses")}
                   sub={
                     <span className="flex flex-col gap-0.5">
                       <span className="tabular-nums text-paper-dim">
@@ -581,6 +609,36 @@ export function WealthWidget() {
                 />
               )}
             </div>
+
+            {/* Restore / undo row — persistent. Shown only when something is
+                hidden. Each chip restores one tile; "Show all" clears the set.
+                This is the recovery path even when ALL tiles are hidden. */}
+            {hiddenTiles.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
+                  Hidden:
+                </span>
+                {hiddenTiles.map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => showTile(cat)}
+                    aria-label={`Restore ${tileLabel(cat)}`}
+                    className="inline-flex items-center gap-1 rounded bg-ink-3/60 px-2 py-0.5 font-mono text-[10px] text-paper-dim transition-colors hover:text-paper"
+                  >
+                    {tileLabel(cat)}
+                    <Plus className="h-3 w-3" />
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={showAll}
+                  className="ml-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint hover:text-paper"
+                >
+                  Show all
+                </button>
+              </div>
+            )}
 
             {/* Phase 16: RENTAL REVENUE tile (rental-manager-v2, NET, this month). */}
             <RentalRevenueTile rental={rental} hidden={hidden} usdPerGbp={usdPerGbp} />
