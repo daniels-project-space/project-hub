@@ -734,6 +734,8 @@ type StayOption = {
   lng?: number;
   link: string;
   googleLink?: string;
+  /** SerpApi token to resolve the exact per-OTA booking link on demand. */
+  propertyToken?: string;
 };
 
 /** Booking.com search deep-link with free-cancellation filter pre-applied. */
@@ -806,6 +808,8 @@ export const searchStays = action({
           lng: finiteOrUndef(coords?.longitude),
           link: bookingDeepLink(p?.name ?? args.query, args.checkIn, args.checkOut, adults),
           googleLink: typeof p?.link === "string" ? p.link : undefined,
+          propertyToken:
+            typeof p?.property_token === "string" ? p.property_token : undefined,
         };
       });
       return { available: true, options };
@@ -815,6 +819,66 @@ export const searchStays = action({
         reason: `Hotel search error: ${e instanceof Error ? e.message : String(e)}`,
         options: [],
       };
+    }
+  },
+});
+
+// Resolve the EXACT booking link for one hotel (called on click, not per result,
+// to spare quota). Returns the Booking.com property link when available, else the
+// hotel's own site / first OTA link. Falls back to null so the caller can use the
+// Booking.com search deep-link.
+export const resolveStayLink = action({
+  args: {
+    propertyToken: v.string(),
+    query: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ url: string | null; source: string | null }> => {
+    const key = await getSecret(ctx, SECRET.serpapi);
+    if (!key) return { url: null, source: null };
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
+    const params = new URLSearchParams({
+      engine: "google_hotels",
+      q: args.query,
+      check_in_date: args.checkIn,
+      check_out_date: args.checkOut,
+      adults: String(adults),
+      currency: GBP,
+      gl: "uk",
+      hl: "en",
+      property_token: args.propertyToken,
+      api_key: key,
+    });
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.error) return { url: null, source: null };
+      const all: any[] = [
+        ...(Array.isArray(json?.featured_prices) ? json.featured_prices : []),
+        ...(Array.isArray(json?.prices) ? json.prices : []),
+      ];
+      const linkOf = (x: any): string | undefined =>
+        (typeof x?.link === "string" && x.link) ||
+        (Array.isArray(x?.rooms) && typeof x.rooms[0]?.link === "string"
+          ? x.rooms[0].link
+          : undefined);
+      // Prefer Booking.com, else any source with a link, else the hotel's own page.
+      const booking = all.find(
+        (x) => /booking\.com/i.test(String(x?.source ?? "")) && linkOf(x),
+      );
+      const anyPriced = all.find((x) => linkOf(x));
+      const pick = booking ?? anyPriced;
+      const url =
+        (pick && linkOf(pick)) ??
+        (typeof json?.link === "string" ? json.link : null);
+      return { url: url ?? null, source: pick?.source ?? null };
+    } catch {
+      return { url: null, source: null };
     }
   },
 });

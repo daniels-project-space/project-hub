@@ -44,6 +44,7 @@ type StayOption = {
   lng?: number;
   link: string;
   googleLink?: string;
+  propertyToken?: string;
 };
 
 type FlightOption = {
@@ -177,6 +178,7 @@ function StaysSearch({
   budgetGbp?: number;
 }) {
   const search = useAction(api.travelActions.searchStays);
+  const resolveLink = useAction(api.travelActions.resolveStayLink);
   const saveStay = useMutation(api.tripExtras.saveStay);
   const removeStay = useMutation(api.tripExtras.removeStay);
   const stays = useQuery(
@@ -227,7 +229,24 @@ function StaysSearch({
     }
   };
 
-  const save = (o: StayOption) => {
+  // Resolve the exact per-hotel booking link (Booking.com etc.) on demand.
+  const resolveFor = async (o: StayOption): Promise<string | null> => {
+    if (!o.propertyToken) return null;
+    try {
+      const r = await resolveLink({
+        propertyToken: o.propertyToken,
+        query: q.trim(),
+        checkIn: ci,
+        checkOut: co,
+        adults,
+      });
+      return r.url ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const save = (o: StayOption, link: string) => {
     if (!tripId) return;
     void saveStay({
       tripId,
@@ -235,7 +254,7 @@ function StaysSearch({
       provider: o.provider ?? "Booking.com",
       priceGbp: o.priceGbp,
       image: o.image,
-      link: o.link,
+      link,
       freeCancellation: o.freeCancellation ?? true,
       lat: o.lat,
       lng: o.lng,
@@ -293,7 +312,8 @@ function StaysSearch({
               o={o}
               nights={nightsBetween(ci, co)}
               canSave={!!tripId}
-              onSave={() => save(o)}
+              onResolve={resolveFor}
+              onSave={(link) => save(o, link)}
             />
           ))}
         </div>
@@ -351,15 +371,54 @@ function StayCard({
   o,
   nights,
   canSave,
+  onResolve,
   onSave,
 }: {
   o: StayOption;
   nights: number;
   canSave: boolean;
-  onSave: () => void;
+  /** Resolve the exact booking link (null → use the search deep-link). */
+  onResolve: (o: StayOption) => Promise<string | null>;
+  onSave: (link: string) => void;
 }) {
   const periodTotal =
     typeof o.priceGbp === "number" && nights > 0 ? o.priceGbp * nights : undefined;
+  // Cache the resolved direct link so we only hit SerpApi once per card.
+  const [resolved, setResolved] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const ensureLink = async (): Promise<string> => {
+    if (resolved) return resolved;
+    setLoading(true);
+    try {
+      const u = (await onResolve(o)) ?? o.link;
+      setResolved(u);
+      return u;
+    } finally {
+      setLoading(false);
+    }
+  };
+  const book = async () => {
+    // Open the tab synchronously (inside the click gesture) so popup blockers
+    // don't kill it, then point it at the resolved link once it returns.
+    const w = window.open("about:blank", "_blank");
+    const u = await ensureLink();
+    if (w) {
+      try {
+        w.opener = null;
+      } catch {
+        /* ignore */
+      }
+      w.location.href = u;
+    } else {
+      window.open(u, "_blank", "noopener,noreferrer");
+    }
+  };
+  const save = async () => {
+    const u = await ensureLink();
+    onSave(u);
+  };
+
   return (
     <div className="overflow-hidden rounded-lg border border-rule-soft/40 bg-ink-2/30">
       {o.image && (
@@ -397,18 +456,24 @@ function StayCard({
           <CheckCircle2 className="h-2.5 w-2.5" /> Free cancellation
         </span>
         <div className="flex items-center gap-2 pt-0.5">
-          <a
-            href={o.link}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-brass hover:bg-brass/20 transition-colors"
-          >
-            Book on Booking.com <ExternalLink className="h-2.5 w-2.5" />
-          </a>
           <button
             type="button"
-            onClick={onSave}
-            disabled={!canSave}
+            onClick={() => void book()}
+            disabled={loading}
+            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-60"
+          >
+            {loading ? (
+              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+            ) : (
+              <>
+                Book on Booking.com <ExternalLink className="h-2.5 w-2.5" />
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!canSave || loading}
             aria-label="save to trip"
             className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.1em] text-paper-faint hover:text-paper hover:border-brass/50 transition-colors disabled:opacity-40"
           >
