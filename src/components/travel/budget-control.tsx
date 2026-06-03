@@ -14,6 +14,11 @@
 import { useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
 
+// Budget slider range — total cap (GBP) used as the search ceiling in every mode.
+const BUDGET_MIN = 50;
+const BUDGET_MAX = 6000;
+const BUDGET_STEP = 50;
+
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -46,20 +51,18 @@ export function BudgetControl({
   defaultBudget?: number;
 }) {
   const on = (budgetGbp ?? 0) > 0;
-  const [draft, setDraft] = useState<string>(on ? String(budgetGbp) : "");
-  // Keep the input in sync when the trip's budget changes elsewhere.
+  // Live slider position (updates on every drag tick for instant feedback);
+  // the value is committed to the trip on release to avoid write spam.
+  const [slider, setSlider] = useState<number>(
+    Math.min(BUDGET_MAX, budgetGbp && budgetGbp > 0 ? budgetGbp : defaultBudget),
+  );
   useEffect(() => {
-    setDraft(on ? String(budgetGbp) : "");
+    if (on) setSlider(Math.min(BUDGET_MAX, budgetGbp as number));
   }, [budgetGbp, on]);
 
-  const over = on && total > (budgetGbp ?? 0);
-  const pct =
-    on && budgetGbp ? Math.min(100, (total / budgetGbp) * 100) : 0;
-
-  const commit = (raw: string) => {
-    const n = Number(raw);
-    onSetBudget(Number.isFinite(n) && n > 0 ? n : 0);
-  };
+  const shown = on ? slider : 0;
+  const over = on && shown > 0 && total > shown;
+  const pct = on && shown > 0 ? Math.min(100, (total / shown) * 100) : 0;
 
   return (
     <div className="space-y-1.5 rounded-lg border border-rule-soft/40 bg-ink-2/20 px-2.5 py-2">
@@ -70,7 +73,9 @@ export function BudgetControl({
           aria-checked={on}
           aria-label="toggle budget"
           onClick={() =>
-            onSetBudget(on ? 0 : budgetGbp && budgetGbp > 0 ? budgetGbp : defaultBudget)
+            onSetBudget(
+              on ? 0 : Math.min(BUDGET_MAX, budgetGbp && budgetGbp > 0 ? budgetGbp : defaultBudget),
+            )
           }
           className="flex items-center gap-1.5"
         >
@@ -91,24 +96,30 @@ export function BudgetControl({
         </button>
 
         {on && (
-          <div className="flex items-center gap-0.5 text-[12px] text-paper">
-            <span className="text-paper-faint">£</span>
-            <input
-              type="number"
-              min={0}
-              inputMode="numeric"
-              aria-label="budget amount"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={(e) => commit(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              }}
-              className="w-20 rounded border border-rule-soft/50 bg-ink-2/40 px-1.5 py-0.5 text-right tabular-nums text-paper outline-none focus:border-brass/50"
-            />
-          </div>
+          <span className="text-[13px] font-semibold tabular-nums text-brass">
+            {gbp(shown)}
+            {shown >= BUDGET_MAX ? "+" : ""}
+          </span>
         )}
       </div>
+
+      {/* Draggable budget slider — the total cap searched in every mode. */}
+      {on && (
+        <input
+          type="range"
+          min={BUDGET_MIN}
+          max={BUDGET_MAX}
+          step={BUDGET_STEP}
+          value={Math.min(BUDGET_MAX, Math.max(BUDGET_MIN, slider))}
+          aria-label="budget amount"
+          onChange={(e) => setSlider(Number(e.target.value))}
+          onMouseUp={() => onSetBudget(slider)}
+          onTouchEnd={() => onSetBudget(slider)}
+          onKeyUp={() => onSetBudget(slider)}
+          style={{ accentColor: "var(--color-brass)" }}
+          className="h-1.5 w-full cursor-pointer"
+        />
+      )}
 
       <div className="flex items-center justify-between text-[11px]">
         <span className="text-paper-faint">
@@ -116,7 +127,7 @@ export function BudgetControl({
         </span>
         <span className={`tabular-nums ${over ? "text-rose-400" : "text-paper"}`}>
           {gbp(total)}
-          {on ? ` / ${gbp(budgetGbp ?? 0)}` : ""}
+          {on ? ` / ${gbp(shown)}` : ""}
         </span>
       </div>
 
@@ -132,7 +143,7 @@ export function BudgetControl({
       )}
       {over && (
         <p className="text-[10px] text-rose-400">
-          Over budget by {gbp(total - (budgetGbp ?? 0))}
+          Over budget by {gbp(total - shown)}
         </p>
       )}
     </div>
