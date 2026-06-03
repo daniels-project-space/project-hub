@@ -11,13 +11,27 @@
  * total; Find passes it as a max-price filter to the hotel/flight search.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Wallet } from "lucide-react";
 
 // Budget slider range — total cap (GBP) used as the search ceiling in every mode.
 const BUDGET_MIN = 50;
 const BUDGET_MAX = 6000;
 const BUDGET_STEP = 50;
+
+// Custom range styling: a thin rounded track that fills (accent) up to a big
+// accent thumb. The fill reads `--pct` (set inline) so it tracks the value live.
+const SLIDER_CSS = `
+.budget-slider{-webkit-appearance:none;appearance:none;width:100%;height:20px;background:transparent;cursor:pointer;}
+.budget-slider:focus{outline:none;}
+.budget-slider::-webkit-slider-runnable-track{height:8px;border-radius:9999px;background:linear-gradient(to right,var(--color-brass) var(--pct,0%),rgba(245,239,227,0.12) var(--pct,0%));}
+.budget-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;margin-top:-6px;border-radius:9999px;background:var(--color-brass);border:2px solid #0d1018;box-shadow:0 0 0 4px color-mix(in srgb,var(--color-brass) 30%,transparent),0 2px 6px rgba(0,0,0,.55);transition:transform .12s ease;}
+.budget-slider::-webkit-slider-thumb:hover{transform:scale(1.12);}
+.budget-slider:active::-webkit-slider-thumb{transform:scale(1.2);}
+.budget-slider::-moz-range-track{height:8px;border-radius:9999px;background:rgba(245,239,227,0.12);}
+.budget-slider::-moz-range-progress{height:8px;border-radius:9999px;background:var(--color-brass);}
+.budget-slider::-moz-range-thumb{width:20px;height:20px;border:2px solid #0d1018;border-radius:9999px;background:var(--color-brass);box-shadow:0 0 0 4px color-mix(in srgb,var(--color-brass) 30%,transparent),0 2px 6px rgba(0,0,0,.55);}
+`;
 
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", {
@@ -63,6 +77,9 @@ export function BudgetControl({
   const shown = on ? slider : 0;
   const over = on && shown > 0 && total > shown;
   const pct = on && shown > 0 ? Math.min(100, (total / shown) * 100) : 0;
+  // Slider fill % (thumb position along the 50–6000 track).
+  const sliderVal = Math.min(BUDGET_MAX, Math.max(BUDGET_MIN, slider));
+  const fillPct = ((sliderVal - BUDGET_MIN) / (BUDGET_MAX - BUDGET_MIN)) * 100;
 
   return (
     <div className="space-y-1.5 rounded-lg border border-rule-soft/40 bg-ink-2/20 px-2.5 py-2">
@@ -105,20 +122,23 @@ export function BudgetControl({
 
       {/* Draggable budget slider — the total cap searched in every mode. */}
       {on && (
-        <input
-          type="range"
-          min={BUDGET_MIN}
-          max={BUDGET_MAX}
-          step={BUDGET_STEP}
-          value={Math.min(BUDGET_MAX, Math.max(BUDGET_MIN, slider))}
-          aria-label="budget amount"
-          onChange={(e) => setSlider(Number(e.target.value))}
-          onMouseUp={() => onSetBudget(slider)}
-          onTouchEnd={() => onSetBudget(slider)}
-          onKeyUp={() => onSetBudget(slider)}
-          style={{ accentColor: "var(--color-brass)" }}
-          className="h-1.5 w-full cursor-pointer"
-        />
+        <>
+          <style>{SLIDER_CSS}</style>
+          <input
+            type="range"
+            min={BUDGET_MIN}
+            max={BUDGET_MAX}
+            step={BUDGET_STEP}
+            value={sliderVal}
+            aria-label="budget amount"
+            onChange={(e) => setSlider(Number(e.target.value))}
+            onMouseUp={() => onSetBudget(slider)}
+            onTouchEnd={() => onSetBudget(slider)}
+            onKeyUp={() => onSetBudget(slider)}
+            style={{ "--pct": `${fillPct}%` } as unknown as CSSProperties}
+            className="budget-slider w-full"
+          />
+        </>
       )}
 
       <div className="flex items-center justify-between text-[11px]">
