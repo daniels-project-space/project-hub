@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Plane, X, Loader2 } from "lucide-react";
 import { searchAirports, type Airport } from "@/lib/travel/airports";
 
@@ -30,7 +31,27 @@ export function AirportField({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(0);
+  const [rect, setRect] = useState<DOMRect | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const dropRef = useRef<HTMLUListElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Track the input's viewport position so the portal dropdown sits under it
+  // (and follows scroll/resize). Rendered in a portal to escape the widget's
+  // overflow clipping.
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      if (inputRef.current) setRect(inputRef.current.getBoundingClientRect());
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [open, results.length]);
 
   // Debounced search.
   useEffect(() => {
@@ -55,11 +76,12 @@ export function AirportField({
     };
   }, [q]);
 
-  // Close on outside click.
+  // Close on outside click (ignore clicks inside the input box OR the portal).
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node))
-        setOpen(false);
+      const t = e.target as Node;
+      if (boxRef.current?.contains(t) || dropRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
@@ -112,6 +134,7 @@ export function AirportField({
   return (
     <div ref={boxRef} className="relative">
       <input
+        ref={inputRef}
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={onKey}
@@ -123,9 +146,29 @@ export function AirportField({
       {loading && (
         <Loader2 className="absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 animate-spin text-paper-faint" />
       )}
-      {open && results.length > 0 && (
-        <ul className="absolute z-40 mt-1 max-h-60 w-[min(20rem,80vw)] overflow-auto rounded-lg border border-rule-soft/60 bg-ink-2 shadow-xl">
-          {results.map((a, i) => (
+      {open &&
+        results.length > 0 &&
+        rect &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <ul
+            ref={dropRef}
+            style={{
+              position: "fixed",
+              top: rect.bottom + 4,
+              left: rect.left,
+              width: Math.max(rect.width, 240),
+              maxHeight: Math.min(
+                288,
+                (typeof window !== "undefined" ? window.innerHeight : 800) -
+                  rect.bottom -
+                  16,
+              ),
+              zIndex: 100,
+            }}
+            className="overflow-auto rounded-lg border border-rule-soft/60 bg-ink-2 shadow-2xl"
+          >
+            {results.map((a, i) => (
             <li key={`${a.iata}-${i}`}>
               <button
                 type="button"
@@ -144,9 +187,10 @@ export function AirportField({
                 </span>
               </button>
             </li>
-          ))}
-        </ul>
-      )}
+            ))}
+          </ul>,
+          document.body,
+        )}
     </div>
   );
 }

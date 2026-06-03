@@ -193,7 +193,7 @@ function StaysSearch({
   const [q, setQ] = useState(destCity ? `${destCity} hotel` : "");
   const [ci, setCi] = useState(startDate ?? "");
   const [co, setCo] = useState(endDate ?? "");
-  const [adults, setAdults] = useState(2);
+  const [adults, setAdults] = useState(1);
   const [stayType, setStayType] = useState<"hotels" | "rentals">("hotels");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
