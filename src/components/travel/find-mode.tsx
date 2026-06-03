@@ -27,10 +27,14 @@ import {
   Trash2,
   Plus,
   CheckCircle2,
+  ArrowLeftRight,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id, Doc } from "../../../convex/_generated/dataModel";
 import { BudgetControl, nightsBetween } from "@/components/travel/budget-control";
+import { AirportField } from "@/components/travel/airport-field";
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 type StayOption = {
   name: string;
@@ -320,6 +324,7 @@ function StaysSearch({
           type="date"
           aria-label="check-in"
           value={ci}
+          min={todayISO()}
           onChange={(e) => setCi(e.target.value)}
           className={`${inputCls} [color-scheme:dark]`}
         />
@@ -327,6 +332,7 @@ function StaysSearch({
           type="date"
           aria-label="check-out"
           value={co}
+          min={ci || todayISO()}
           onChange={(e) => setCo(e.target.value)}
           className={`${inputCls} [color-scheme:dark]`}
         />
@@ -566,10 +572,19 @@ function FlightsSearch({
   ) as Doc<"tripFlights">[] | undefined;
 
   const [from, setFrom] = useState("");
+  const [fromLabel, setFromLabel] = useState("");
   const [to, setTo] = useState("");
+  const [toLabel, setToLabel] = useState("");
   const [outbound, setOutbound] = useState(startDate ?? "");
   const [ret, setRet] = useState(endDate ?? "");
   const [adults, setAdults] = useState(1);
+
+  const swap = () => {
+    setFrom(to);
+    setTo(from);
+    setFromLabel(toLabel);
+    setToLabel(fromLabel);
+  };
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [results, setResults] = useState<FlightOption[]>([]);
@@ -624,23 +639,45 @@ function FlightsSearch({
 
   return (
     <div className="space-y-3">
+      <div className="flex items-center gap-1.5">
+        <div className="flex-1">
+          <AirportField
+            value={from}
+            label={fromLabel}
+            onChange={(iata, l) => {
+              setFrom(iata);
+              setFromLabel(l);
+            }}
+            placeholder="From — city or airport"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={swap}
+          aria-label="swap origin and destination"
+          title="Swap"
+          className="shrink-0 rounded-md border border-rule-soft/50 p-1.5 text-paper-faint hover:text-brass hover:border-brass/50 transition-colors"
+        >
+          <ArrowLeftRight className="h-3.5 w-3.5" />
+        </button>
+        <div className="flex-1">
+          <AirportField
+            value={to}
+            label={toLabel}
+            onChange={(iata, l) => {
+              setTo(iata);
+              setToLabel(l);
+            }}
+            placeholder="To — city or airport"
+          />
+        </div>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          placeholder="From (e.g. LHR)"
-          className={`${inputCls} w-28`}
-        />
-        <input
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          placeholder="To (e.g. DPS)"
-          className={`${inputCls} w-28`}
-        />
         <input
           type="date"
           aria-label="outbound date"
           value={outbound}
+          min={todayISO()}
           onChange={(e) => setOutbound(e.target.value)}
           className={`${inputCls} [color-scheme:dark]`}
         />
@@ -648,6 +685,7 @@ function FlightsSearch({
           type="date"
           aria-label="return date (optional)"
           value={ret}
+          min={outbound || todayISO()}
           onChange={(e) => setRet(e.target.value)}
           className={`${inputCls} [color-scheme:dark]`}
         />

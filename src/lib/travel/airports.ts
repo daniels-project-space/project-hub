@@ -69,6 +69,50 @@ export async function findAirport(iataOrCity: string): Promise<Airport | null> {
   return city?.[0] ?? null;
 }
 
+/**
+ * Type-ahead search over the dataset by IATA / city / country / airport name.
+ * Ranked: exact IATA, then city/country prefix, then any substring. Only airports
+ * with a real 3-letter IATA code are returned (flight search needs codes).
+ */
+export async function searchAirports(
+  query: string,
+  limit = 8,
+): Promise<Airport[]> {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  let idx: AirportIndex;
+  try {
+    idx = await loadIndex();
+  } catch {
+    return [];
+  }
+  const scored: Array<{ a: Airport; score: number }> = [];
+  for (const a of idx.all) {
+    if (!a.iata || a.iata.length !== 3) continue;
+    const iata = a.iata.toLowerCase();
+    const city = a.city.toLowerCase();
+    const country = a.country.toLowerCase();
+    const name = a.name.toLowerCase();
+    let score = -1;
+    if (iata === q) score = 0;
+    else if (city === q) score = 1;
+    else if (city.startsWith(q)) score = 2;
+    else if (country.startsWith(q)) score = 3;
+    else if (
+      city.includes(q) ||
+      country.includes(q) ||
+      name.includes(q) ||
+      iata.includes(q)
+    )
+      score = 4;
+    if (score >= 0) scored.push({ a, score });
+  }
+  scored.sort(
+    (x, y) => x.score - y.score || x.a.city.localeCompare(y.a.city),
+  );
+  return scored.slice(0, limit).map((s) => s.a);
+}
+
 /** All airports in a city (or the single IATA match). Empty array on miss. */
 export async function findAirports(iataOrCity: string): Promise<Airport[]> {
   const q = iataOrCity.trim();
