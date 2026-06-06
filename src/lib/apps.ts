@@ -48,6 +48,16 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
+    slug: "db-cinema-v2",
+    name: "Db Cinema Rentals",
+    short: "DB",
+    description: "Standalone film-gear rental storefront. Browse, book, pay.",
+    status: "live",
+    vercelUrl: "https://db-cinema-v2.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/db-cinema-v2",
+    category: "ops",
+  },
+  {
     slug: "app-factory",
     name: "App Factory",
     short: "AF",
