@@ -114,11 +114,13 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
-    slug: "finance-engine",
-    name: "Finance Engine",
+    slug: "finance-engine-v2",
+    name: "Finance Engine v2",
     short: "FE",
-    description: "Net worth + portfolio.",
-    status: "wip",
+    description: "Self-improving crypto strategy lab — gauntlet-validated, paper-incubated champions.",
+    status: "live",
+    vercelUrl: "https://finance-engine-v2-cyan.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/finance-engine-v2",
     category: "ops",
   },
   {

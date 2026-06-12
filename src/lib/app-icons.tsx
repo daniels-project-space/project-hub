@@ -75,7 +75,7 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
     </svg>
   ),
-  "finance-engine": (
+  "finance-engine-v2": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
     </svg>
