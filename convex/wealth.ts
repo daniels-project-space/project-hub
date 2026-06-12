@@ -483,6 +483,58 @@ export const _setRentalRevenue = internalMutation({
   },
 });
 
+// Latest cached AI music income (music-house / DistroKid) → singleton per
+// source. Also upserts the "Music · DistroKid" AUTO asset under category
+// `property` (displayed "AI Income") so the REAL bank balance rolls into the
+// AI Income tile, its chart, and total net worth through the normal asset
+// pipeline. The estimate (estUsd) is display-only — never counted in net worth.
+export const _setAiIncome = internalMutation({
+  args: {
+    source: v.string(),
+    streamsTotal: v.number(),
+    balanceUsd: v.number(),
+    estUsd: v.number(),
+    balanceGbp: v.number(),
+    historyJson: v.string(),
+  },
+  handler: async (ctx, args) => {
+    assertFinite("balanceGbp", args.balanceGbp);
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("aiIncome")
+      .withIndex("by_source", (q) => q.eq("source", args.source))
+      .first();
+    const doc = { ...args, fetchedAt: now };
+    if (existing) {
+      await ctx.db.patch(existing._id, doc);
+    } else {
+      await ctx.db.insert("aiIncome", doc);
+    }
+
+    // Auto asset: real DistroKid balance → AI Income category → net worth.
+    const assets = await ctx.db.query("assets").collect();
+    const asset = assets.find((a) => a.externalRef === "distrokid-music");
+    if (asset) {
+      await ctx.db.patch(asset._id, {
+        lastValueGBP: args.balanceGbp,
+        lastPricedAt: now,
+      });
+    } else {
+      await ctx.db.insert("assets", {
+        category: "property",
+        label: "Music · DistroKid",
+        source: "auto",
+        currency: "GBP",
+        externalRef: "distrokid-music",
+        lastValueGBP: args.balanceGbp,
+        lastPricedAt: now,
+      });
+    }
+    await recomputeLiveDoc(ctx);
+    return { streamsTotal: args.streamsTotal, balanceGbp: args.balanceGbp };
+  },
+});
+
 // Record one net-worth snapshot from whatever last-known values exist.
 // Phase 16: margin net equity rolls in as a synthetic "margin" category so the
 // daily history reflects it exactly like the live total.
@@ -940,6 +992,36 @@ export const getRentalRevenue = query({
           fetchedAt: row.fetchedAt,
         }
       : null;
+  },
+});
+
+/**
+ * getAiIncome — cached music-house/DistroKid streams + money (first AI income).
+ * Returns null until the first poll populates the cache doc. `history` is the
+ * parsed every-2-days time series for the widget graph.
+ */
+export const getAiIncome = query({
+  args: {},
+  handler: async (ctx) => {
+    const row = await ctx.db
+      .query("aiIncome")
+      .withIndex("by_source", (q) => q.eq("source", "music-house"))
+      .first();
+    if (!row) return null;
+    let history: { fetchedAt: number; streamsTotal: number; balance: number }[] = [];
+    try {
+      history = JSON.parse(row.historyJson);
+    } catch {
+      history = [];
+    }
+    return {
+      streamsTotal: row.streamsTotal,
+      balanceUsd: row.balanceUsd,
+      estUsd: row.estUsd,
+      balanceGbp: row.balanceGbp,
+      history,
+      fetchedAt: row.fetchedAt,
+    };
   },
 });
 

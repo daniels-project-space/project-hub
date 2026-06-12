@@ -12,6 +12,7 @@ import { IdeaWidget } from "./widgets/idea-widget";
 import { ChannelIdeaWidget } from "./widgets/channel-idea-widget";
 import { RemoteWorkHubWidget } from "./widgets/remote-work-hub-widget";
 import { TravelWidget } from "./widgets/travel-widget";
+import { MusicWidget } from "./widgets/music-widget";
 import { WidgetSlot } from "./widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -35,6 +36,7 @@ const REGISTRY: Record<string, ComponentType> = {
   channelIdea: ChannelIdeaWidget,
   remoteWorkHub: RemoteWorkHubWidget,
   travel: TravelWidget,
+  music: MusicWidget,
 };
 
 // Canonical ordered list of every registered widget type. Consumed by the

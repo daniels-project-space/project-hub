@@ -41,7 +41,13 @@ const SECRET = {
   // Phase 16 — rental-manager-v2 Convex URL. NEVER hardcoded (dev deployment;
   // URL can change). Service `convex`, keyName NEXT_PUBLIC_CONVEX_URL_RMV2.
   rmv2ConvexUrl: { service: "convex", keyName: "NEXT_PUBLIC_CONVEX_URL_RMV2" },
+  // AI music income — music-house Convex URL (dev deployment IS prod there).
+  musicHouseConvexUrl: { service: "convex", keyName: "NEXT_PUBLIC_CONVEX_URL_MUSIC_HOUSE" },
 } as const;
+
+// Blended per-stream payout estimate (USD) shown until DistroKid's bank reports
+// real money (~2-3 month store lag). Display-only — never enters net worth.
+const USD_PER_STREAM = 0.0035;
 
 const COINGECKO_IDS: Record<string, string> = {
   BTC: "bitcoin",
@@ -484,6 +490,94 @@ export const pollRentalRevenueCron = internalAction({
       await ctx.runAction(api.wealthActions.pollRentalRevenue, {});
     } catch (e) {
       console.warn("wealth.pollRentalRevenueCron failed", e);
+    }
+  },
+});
+
+/**
+ * pollMusicIncome — server-side poll of music-house's Convex
+ * `distributorAnalytics:latest` + `:history` (DistroKid streams + REAL bank
+ * balance; music-house refreshes its own data every 2 days via Trigger). First
+ * AI income wired into net worth: the cache mutation also maintains the
+ * "Music · DistroKid" auto asset under category `property` (= "AI Income").
+ * URL from vault (`convex/NEXT_PUBLIC_CONVEX_URL_MUSIC_HOUSE`) — never
+ * hardcoded. Read-only against music-house. Failed fetch keeps the cache.
+ */
+export const pollMusicIncome = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    streamsTotal: number | null;
+    balanceUsd: number | null;
+    balanceGbp: number | null;
+    error?: string;
+  }> => {
+    const url = await getSecret(ctx, SECRET.musicHouseConvexUrl);
+    if (!url) {
+      return {
+        streamsTotal: null,
+        balanceUsd: null,
+        balanceGbp: null,
+        error:
+          "music-house convex url missing in vault (convex/NEXT_PUBLIC_CONVEX_URL_MUSIC_HOUSE)",
+      };
+    }
+    const base = url.replace(/\/$/, "");
+    const q = (path: string, args: Record<string, unknown>) =>
+      safeJson(`${base}/api/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, args, format: "json" }),
+      });
+
+    const latest = await q("distributorAnalytics:latest", { distributor: "distrokid" });
+    const snap = latest?.status === "success" ? latest.value : null;
+    if (!snap || typeof snap.streamsTotal !== "number") {
+      return {
+        streamsTotal: null,
+        balanceUsd: null,
+        balanceGbp: null,
+        error: "music-house returned no analytics snapshot (kept cache)",
+      };
+    }
+
+    const hist = await q("distributorAnalytics:history", { distributor: "distrokid" });
+    const history: unknown[] = hist?.status === "success" && Array.isArray(hist.value) ? hist.value : [];
+
+    const balanceUsd = typeof snap.balance === "number" ? snap.balance : 0;
+    const fx = await fxToGBP(snap.currency || "USD");
+    if (fx === null) {
+      return {
+        streamsTotal: snap.streamsTotal,
+        balanceUsd,
+        balanceGbp: null,
+        error: `FX for ${snap.currency || "USD"} unavailable (kept cache)`,
+      };
+    }
+    const balanceGbp = balanceUsd * fx;
+    const estUsd = snap.streamsTotal * USD_PER_STREAM;
+
+    await ctx.runMutation(internal.wealth._setAiIncome, {
+      source: "music-house",
+      streamsTotal: snap.streamsTotal,
+      balanceUsd,
+      estUsd,
+      balanceGbp,
+      historyJson: JSON.stringify(history.slice(-180)),
+    });
+    return { streamsTotal: snap.streamsTotal, balanceUsd, balanceGbp };
+  },
+});
+
+/** Internal cron alias for pollMusicIncome (cronJobs require internal refs). */
+export const pollMusicIncomeCron = internalAction({
+  args: {},
+  handler: async (ctx): Promise<void> => {
+    try {
+      await ctx.runAction(api.wealthActions.pollMusicIncome, {});
+    } catch (e) {
+      console.warn("wealth.pollMusicIncomeCron failed", e);
     }
   },
 });

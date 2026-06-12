@@ -233,6 +233,23 @@ export default defineSchema({
     fetchedAt: v.number(),
   }).index("by_source", ["source"]),
 
+  // AI music income cache — server-side poll of music-house's Convex
+  // `distributorAnalytics:latest` + `:history` (DistroKid streams + real bank
+  // balance, pulled there every 2 days). Singleton per `source`. The music-house
+  // Convex URL comes from the vault (`convex/NEXT_PUBLIC_CONVEX_URL_MUSIC_HOUSE`),
+  // never hardcoded. `historyJson` = [{fetchedAt, streamsTotal, balance}] for the
+  // widget graph. The poll also upserts the "Music · DistroKid" auto asset
+  // (category `property` = AI Income) so the REAL balance rolls into net worth.
+  aiIncome: defineTable({
+    source: v.string(), // "music-house"
+    streamsTotal: v.number(),
+    balanceUsd: v.number(), // real DistroKid bank balance
+    estUsd: v.number(), // streamsTotal × blended $/stream estimate
+    balanceGbp: v.number(), // balanceUsd converted at poll time
+    historyJson: v.string(),
+    fetchedAt: v.number(),
+  }).index("by_source", ["source"]),
+
   // --- Travel widget (Wave 1A — backend data layer only) ---
   // Relational itinerary model ported from v1's SQLite schema (trips →
   // trip_days → trip_items). New tables, no migration. All planning/enrichment

@@ -11,6 +11,7 @@ import {
   Tv,
   Briefcase,
   Plane,
+  Music,
 } from "lucide-react";
 
 // Display metadata for the Add-widget picker (label + icon per widget type).
@@ -27,4 +28,5 @@ export const WIDGET_META: Record<string, { label: string; Icon: LucideIcon }> = 
   channelIdea: { label: "Channel Idea", Icon: Tv },
   remoteWorkHub: { label: "Remote Work Hub", Icon: Briefcase },
   travel: { label: "Travel", Icon: Plane },
+  music: { label: "AI Music Income", Icon: Music },
 };

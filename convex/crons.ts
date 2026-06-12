@@ -65,4 +65,15 @@ crons.interval(
   internal.wealthActions.pollRentalRevenueCron,
 );
 
+// AI music income poll. Mirrors music-house's DistroKid analytics (streams +
+// real bank balance + every-2-days history) into the aiIncome cache doc AND
+// the "Music · DistroKid" auto asset (category property = "AI Income") so it
+// rolls into total net worth. Source data only changes every 2 days (Trigger
+// schedule on the music-house side) — 6h keeps the hub at most hours behind.
+crons.interval(
+  "ai-music-income-poll",
+  { hours: 6 },
+  internal.wealthActions.pollMusicIncomeCron,
+);
+
 export default crons;
