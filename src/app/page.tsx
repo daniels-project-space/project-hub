@@ -16,7 +16,7 @@ export default function HomePage() {
 
       <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-8">
         {/* Carousel is the top content now (hero text removed). */}
-        <AppsRow />
+        <AppsRow editMode={editMode} />
 
         <CommandCenter />
 
