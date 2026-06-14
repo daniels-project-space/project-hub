@@ -168,6 +168,17 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
 
+  {
+    slug: "dropship-ai",
+    name: "Dropship AI",
+    short: "DS",
+    description: "Autonomous AI dropshipping control plane — multi-tenant Shopify+CJ stores, organic-first content engine, human-gated approval queue.",
+    status: "live",
+    vercelUrl: "https://dropship-ai-cyan.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/dropship-ai",
+    category: "ops",
+  },
+
   // Idea / not yet started
   {
     slug: "factory-2",

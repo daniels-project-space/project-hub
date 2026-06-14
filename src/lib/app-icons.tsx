@@ -120,6 +120,15 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M10 9l6 3-6 3z" fill="currentColor" stroke="none" />
     </svg>
   ),
+  "dropship-ai": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <path d="M5 8h14l-1.5 9H6.5L5 8z" />
+      <path d="M3 5h18" />
+      <circle cx="9" cy="20" r="1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="20" r="1" fill="currentColor" stroke="none" />
+      <path d="M9 12h6M11 15h2" />
+    </svg>
+  ),
 };
 
 const fallback = (
