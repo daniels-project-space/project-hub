@@ -47,7 +47,7 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { BOOKING_PROVIDERS } from "@/lib/travel/booking-links";
 import { geocodePlace } from "@/lib/travel/geocode";
-import { findAirport } from "@/lib/travel/airports";
+import { AirportField } from "@/components/travel/airport-field";
 import { Sheet } from "@/components/ui/sheet";
 import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
 
@@ -125,14 +125,6 @@ function dormLikely(o: StayOption): boolean {
   );
 }
 
-// Provider search deep-link for a SPECIFIC property (query = property name +
-// trip dates) — chips on the card land you on that provider already searched.
-function providerLinkFor(sourceLabel: string, propertyName: string, checkIn?: string, checkOut?: string, adults?: number): string | null {
-  const pm = PROVIDER_MATCH.find((m) => m.test.test(sourceLabel));
-  if (!pm) return null;
-  const bp = BOOKING_PROVIDERS.find((b) => b.key === pm.key);
-  return bp ? bp.url({ city: propertyName, checkIn, checkOut, adults }) : null;
-}
 
 type ResolvedOffer = {
   source: string;
@@ -267,7 +259,6 @@ function StayCard({
 }) {
   const nightly = otaPrice ?? o.priceGbp;
   const dorm = dormLikely(o);
-  const offerChips = (o.offers ?? []).filter((x) => typeof x.priceGbp === "number").slice(0, 3);
   return (
     <div
       className={cn(
@@ -330,24 +321,33 @@ function StayCard({
             </span>
           )}
         </p>
-        {/* prices at other providers — right on the card */}
-        {offerChips.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {offerChips.map((c) => {
-              const href = providerLinkFor(c.source, o.name, checkIn, checkOut, adults);
-              const label = `${c.source.replace(/\.co(m|\.uk).*$/i, "")} ${gbp(c.priceGbp!)}`;
-              return href ? (
-                <a key={c.source} href={href} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-3/50 px-1.5 py-px font-mono text-[9px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
-                  {label}
-                </a>
-              ) : (
-                <span key={c.source} className="rounded-full border border-rule-soft/50 bg-ink-3/50 px-1.5 py-px font-mono text-[9px] text-paper-dim">
-                  {label}
-                </span>
-              );
-            })}
-          </div>
-        )}
+        {/* ALL providers for THIS place — price shown where Google knows it,
+            every chip deep-links to that provider searched for this property. */}
+        <div className="flex flex-wrap gap-1">
+          {PROVIDER_MATCH.map((pm) => {
+            const priced = (o.offers ?? []).find((x) => pm.test.test(x.source) && typeof x.priceGbp === "number");
+            const bp = BOOKING_PROVIDERS.find((b) => b.key === pm.key);
+            if (!bp) return null;
+            const href = bp.url({ city: o.name, checkIn, checkOut, adults });
+            return (
+              <a
+                key={pm.key}
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className={cn(
+                  "rounded-full border px-1.5 py-px font-mono text-[9px] transition-colors",
+                  priced
+                    ? "border-brass/40 bg-brass/[0.08] text-brass hover:bg-brass/20"
+                    : "border-rule-soft/50 bg-ink-3/50 text-paper-dim hover:border-brass/50 hover:text-brass",
+                )}
+              >
+                {pm.label}
+                {priced ? ` ${gbp(priced.priceGbp!)}` : ""}
+              </a>
+            );
+          })}
+        </div>
         <div className="flex items-center gap-1.5 pt-0.5">
           <a
             href={o.link}
@@ -355,7 +355,7 @@ function StayCard({
             rel="noreferrer"
             className="flex flex-1 items-center justify-center gap-1 rounded-md border border-paper-faint/30 bg-ink-3/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-paper hover:border-brass/50 hover:text-brass transition-colors"
           >
-            open <ExternalLink className="h-2.5 w-2.5" />
+            open · booking <ExternalLink className="h-2.5 w-2.5" />
           </a>
           <button
             type="button"
@@ -480,33 +480,29 @@ function TransferTile({
   adults: number;
 }) {
   const searchFlights = useAction(api.travelActions.searchFlights);
-  const [from, setFrom] = useState(defaultFrom);
-  const [to, setTo] = useState(defaultTo);
+  // IATA-controlled: the AirportField dropdown matches free text to real
+  // airports (multiple suggestions), so "Bali" resolves to DPS · Denpasar.
+  const [fromIata, setFromIata] = useState("");
+  const [fromLabel, setFromLabel] = useState(defaultFrom);
+  const [toIata, setToIata] = useState("");
+  const [toLabel, setToLabel] = useState(defaultTo);
   const [hits, setHits] = useState<FlightHit[] | null>(null);
-  const [iatas, setIatas] = useState<{ from: string; to: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const run = async () => {
-    if (!from.trim() || !to.trim() || !date || busy) return;
+    if (!fromIata || !toIata || !date || busy) return;
     setBusy(true);
     setErr(null);
     try {
-      const [a, b] = await Promise.all([findAirport(from.trim()), findAirport(to.trim())]);
-      if (!a || !b) {
-        setErr(`no airport found for "${!a ? from : to}"`);
-        setHits(null);
-        return;
-      }
-      setIatas({ from: a.iata, to: b.iata });
       const res = await searchFlights({
-        origin: a.iata,
-        destination: b.iata,
+        origin: fromIata,
+        destination: toIata,
         outboundDate: date,
         adults,
       });
       if (!res.available) setErr(res.reason ?? "no flights returned");
-      setHits((res.options ?? []).slice(0, 3) as FlightHit[]);
+      setHits((res.options ?? []).slice(0, 5) as FlightHit[]);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally {
@@ -514,10 +510,14 @@ function TransferTile({
     }
   };
 
-  const skyscanner =
-    iatas && date
-      ? `https://www.skyscanner.net/transport/flights/${iatas.from.toLowerCase()}/${iatas.to.toLowerCase()}/${date.replace(/-/g, "").slice(2)}/`
-      : `https://www.skyscanner.net/`;
+  const yymmdd = date ? date.replace(/-/g, "").slice(2) : "";
+  const ready = fromIata && toIata;
+  const skyscanner = ready && date
+    ? `https://www.skyscanner.net/transport/flights/${fromIata.toLowerCase()}/${toIata.toLowerCase()}/${yymmdd}/`
+    : "https://www.skyscanner.net/";
+  const tripcom = ready && date
+    ? `https://uk.trip.com/flights/showfarefirst?dcity=${fromIata}&acity=${toIata}&ddate=${date}&triptype=ow&class=y&quantity=${adults}`
+    : "https://uk.trip.com/flights/";
 
   return (
     <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
@@ -525,18 +525,43 @@ function TransferTile({
         <TrainFront className="h-3 w-3" /> Transfer · plane / train / bus / taxi
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input value={from} onChange={(ev) => setFrom(ev.target.value)} placeholder="From (city)" className="min-w-[110px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+        <div className="min-w-[170px] flex-1">
+          <AirportField
+            value={fromIata}
+            label={fromIata ? fromLabel : undefined}
+            placeholder={defaultFrom ? `From (e.g. ${defaultFrom})` : "From (city or airport)"}
+            onChange={(iata, label) => {
+              setFromIata(iata);
+              setFromLabel(label);
+            }}
+          />
+        </div>
         <span className="text-paper-faint">→</span>
-        <input value={to} onChange={(ev) => setTo(ev.target.value)} placeholder="To (city)" className="min-w-[110px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+        <div className="min-w-[170px] flex-1">
+          <AirportField
+            value={toIata}
+            label={toIata ? toLabel : undefined}
+            placeholder={defaultTo ? `To (e.g. ${defaultTo})` : "To (city or airport)"}
+            onChange={(iata, label) => {
+              setToIata(iata);
+              setToLabel(label);
+            }}
+          />
+        </div>
         <button
           type="button"
-          disabled={busy || !date}
+          disabled={busy || !date || !ready}
           onClick={() => void run()}
           className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
         >
           {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plane className="h-3 w-3" />} best prices
         </button>
       </div>
+      {!ready && (
+        <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">
+          type a city or airport and pick from the dropdown (both ends) to search real fares
+        </p>
+      )}
       {err && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{err}</p>}
       {hits && hits.length > 0 && (
         <ul className="mt-2 divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
@@ -560,10 +585,14 @@ function TransferTile({
           ))}
         </ul>
       )}
+      {hits && hits.length === 0 && !err && (
+        <p className="mt-2 font-mono text-[10px] text-paper-faint">No fares returned for that day — try the provider links below.</p>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <a href={skyscanner} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Skyscanner</a>
-        <a href={`https://www.omio.co.uk/search?departure=${encodeURIComponent(from)}&arrival=${encodeURIComponent(to)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Omio (train · bus)</a>
-        <a href={`https://www.rome2rio.com/s/${encodeURIComponent(from)}/${encodeURIComponent(to)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Rome2rio (taxi · all modes)</a>
+        <a href={tripcom} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Trip.com flights</a>
+        <a href={`https://www.omio.co.uk/search?departure=${encodeURIComponent(fromLabel || defaultFrom)}&arrival=${encodeURIComponent(toLabel || defaultTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Omio (train · bus)</a>
+        <a href={`https://www.rome2rio.com/s/${encodeURIComponent(fromLabel || defaultFrom || "London")}/${encodeURIComponent(toLabel || defaultTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Rome2rio (taxi · all modes)</a>
       </div>
     </div>
   );
