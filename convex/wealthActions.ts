@@ -127,19 +127,43 @@ async function gbpToUsd(): Promise<number | null> {
   return typeof rate === "number" ? rate : null;
 }
 
-// CoinGecko: GBP price per unit for symbols. No key required.
+// CoinGecko: GBP price per unit for symbols. No key required. Symbols outside
+// the static COINGECKO_IDS map (long-tail alts — MORPHO, ATH, PRIME, …) are
+// resolved live via /search with an exact-symbol match (2026-07-03: the live
+// Coinbase feed surfaced alts the map never knew, which showed as valueless
+// rows). A handful of extra search calls per hourly refresh is nothing.
+async function coingeckoResolveId(sym: string): Promise<string | null> {
+  const j = await safeJson(
+    `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(sym)}`,
+  );
+  const hit = (j?.coins ?? []).find(
+    (c: any) => (c?.symbol ?? "").toUpperCase() === sym.toUpperCase(),
+  );
+  return hit?.id ?? null;
+}
+
 async function coingeckoGBP(symbols: string[]): Promise<Record<string, number>> {
-  const ids = symbols.map((s) => COINGECKO_IDS[s.toUpperCase()]).filter(Boolean);
+  const idBySym: Record<string, string> = {};
+  for (const s of symbols) {
+    const sym = s.toUpperCase();
+    const staticId = COINGECKO_IDS[sym];
+    if (staticId) {
+      idBySym[sym] = staticId;
+    } else {
+      const dynamic = await coingeckoResolveId(sym);
+      if (dynamic) idBySym[sym] = dynamic;
+    }
+  }
+  const ids = Object.values(idBySym);
   if (ids.length === 0) return {};
   const j = await safeJson(
     `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=gbp`,
   );
   if (!j) return {};
   const out: Record<string, number> = {};
-  for (const sym of symbols) {
-    const id = COINGECKO_IDS[sym.toUpperCase()];
-    const gbp = id ? j[id]?.gbp : undefined;
-    if (typeof gbp === "number") out[sym.toUpperCase()] = gbp;
+  for (const sym of Object.keys(idBySym)) {
+    const gbp = j[idBySym[sym]]?.gbp;
+    if (typeof gbp === "number") out[sym] = gbp;
   }
   return out;
 }
