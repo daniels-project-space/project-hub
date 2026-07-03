@@ -46,7 +46,7 @@ import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { BOOKING_PROVIDERS } from "@/lib/travel/booking-links";
-import { geocodePlace } from "@/lib/travel/geocode";
+import { geocodePlace, searchPlaces, type GeoPlace } from "@/lib/travel/geocode";
 import { AirportField } from "@/components/travel/airport-field";
 import { Sheet } from "@/components/ui/sheet";
 import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
@@ -232,6 +232,114 @@ function YearBand({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── modern date field: dark-scheme native picker in a styled shell ──────────
+function DateField({
+  value,
+  min,
+  onChange,
+  className,
+}: {
+  value: string;
+  min?: string;
+  onChange: (v: string) => void;
+  className?: string;
+}) {
+  return (
+    <label
+      className={cn(
+        "group flex items-center gap-1.5 rounded-lg border border-rule-soft/60 bg-ink-3/60 px-2.5 py-1.5 transition-colors focus-within:border-brass/60 hover:border-rule-soft",
+        className,
+      )}
+    >
+      <CalendarRange className="h-3.5 w-3.5 text-paper-faint transition-colors group-focus-within:text-brass" />
+      <input
+        type="date"
+        value={value}
+        min={min}
+        onChange={(ev) => onChange(ev.target.value)}
+        className="bg-transparent font-mono text-[11px] text-paper outline-none [color-scheme:dark]"
+      />
+    </label>
+  );
+}
+
+// ── place autocomplete: as-you-type results for ANY destination ─────────────
+function PlaceField({
+  placeholder,
+  selected,
+  onSelect,
+}: {
+  placeholder: string;
+  selected: GeoPlace | null;
+  onSelect: (p: GeoPlace | null) => void;
+}) {
+  const [q, setQ] = useState(selected?.name ?? "");
+  const [results, setResults] = useState<GeoPlace[]>([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const query = async (text: string) => {
+    setQ(text);
+    onSelect(null); // typing invalidates the previous pick
+    if (text.trim().length < 2) {
+      setResults([]);
+      setOpen(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      const hits = await searchPlaces(text.trim(), 6);
+      setResults(hits);
+      setOpen(hits.length > 0);
+    } catch {
+      setResults([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="relative min-w-[170px] flex-1">
+      <div className="group flex items-center gap-1.5 rounded-lg border border-rule-soft/60 bg-ink-3/60 px-2.5 py-1.5 transition-colors focus-within:border-brass/60">
+        <Search className="h-3 w-3 shrink-0 text-paper-faint transition-colors group-focus-within:text-brass" />
+        <input
+          value={q}
+          onChange={(ev) => void query(ev.target.value)}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder={placeholder}
+          className="w-full bg-transparent text-[12px] text-paper outline-none placeholder:text-paper-faint/60"
+        />
+        {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-paper-faint" />}
+        {selected && <span className="shrink-0 rounded bg-emerald-soft/15 px-1 font-mono text-[8px] uppercase text-emerald-soft">set</span>}
+      </div>
+      {open && (
+        <ul className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-lg border border-rule-soft/70 bg-ink-2 shadow-2xl">
+          {results.map((r, i) => (
+            <li key={`${r.name}-${r.lat}-${i}`}>
+              <button
+                type="button"
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => {
+                  onSelect(r);
+                  setQ(r.name);
+                  setOpen(false);
+                }}
+                className="flex w-full items-baseline gap-2 px-3 py-2 text-left hover:bg-brass/10 transition-colors"
+              >
+                <span className="text-[12px] text-paper">{r.name}</span>
+                <span className="font-mono text-[10px] text-paper-faint">
+                  {[r.admin1, r.country].filter(Boolean).join(" · ")}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -542,9 +650,11 @@ function TransferTile({
   const [fromLabel, setFromLabel] = useState("");
   const [toIata, setToIata] = useState("");
   const [toLabel, setToLabel] = useState("");
-  // ground ends (free-text places)
-  const [fromPlace, setFromPlace] = useState(defaultFrom);
-  const [toPlace, setToPlace] = useState(defaultTo);
+  // ground ends (place autocomplete; coords come with the pick)
+  const [fromGeo, setFromGeo] = useState<GeoPlace | null>(null);
+  const [toGeo, setToGeo] = useState<GeoPlace | null>(null);
+  const fromPlace = fromGeo?.name ?? defaultFrom;
+  const toPlace = toGeo?.name ?? defaultTo;
   const [hits, setHits] = useState<FlightHit[] | null>(null);
   const [route, setRoute] = useState<{ durationText?: string; distanceText?: string; distanceKm?: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -564,11 +674,15 @@ function TransferTile({
   };
 
   const runGround = async () => {
-    if (!fromPlace.trim() || !toPlace.trim() || busy) return;
+    if (busy) return;
     setBusy(true); setErr(null); setHits(null);
     try {
-      const [a, b] = await Promise.all([geocodePlace(fromPlace.trim()), geocodePlace(toPlace.trim())]);
-      if (!a || !b) { setErr(`could not locate "${!a ? fromPlace : toPlace}"`); setRoute(null); return; }
+      // Picked places carry coords; fall back to geocoding the defaults.
+      const [a, b] = await Promise.all([
+        fromGeo ?? (fromPlace.trim() ? geocodePlace(fromPlace.trim()) : null),
+        toGeo ?? (toPlace.trim() ? geocodePlace(toPlace.trim()) : null),
+      ]);
+      if (!a || !b) { setErr(`could not locate "${!a ? (fromPlace || "origin") : (toPlace || "destination")}"`); setRoute(null); return; }
       const res: any = await routeLeg({
         fromLat: a.lat, fromLng: a.lng, toLat: b.lat, toLng: b.lng,
         mode: tmode === "taxi" ? "car" : "train",
@@ -644,15 +758,15 @@ function TransferTile({
           </>
         ) : (
           <>
-            <input value={fromPlace} onChange={(ev) => setFromPlace(ev.target.value)} placeholder="From (any place)" className="min-w-[160px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+            <PlaceField placeholder={defaultFrom ? `From (e.g. ${defaultFrom})` : "From (any place)"} selected={fromGeo} onSelect={setFromGeo} />
             <span className="text-paper-faint">→</span>
-            <input value={toPlace} onChange={(ev) => setToPlace(ev.target.value)} placeholder="To (any place)" className="min-w-[160px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+            <PlaceField placeholder={defaultTo ? `To (e.g. ${defaultTo})` : "To (any place)"} selected={toGeo} onSelect={setToGeo} />
           </>
         )}
-        <input type="date" value={date} onChange={(ev) => setDate(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
+        <DateField value={date} onChange={setDate} />
         <button
           type="button"
-          disabled={busy || (tmode === "plane" ? !planeReady : !fromPlace.trim() || !toPlace.trim())}
+          disabled={busy || (tmode === "plane" ? !planeReady : !(fromGeo || fromPlace.trim()) || !(toGeo || toPlace.trim()))}
           onClick={() => void (tmode === "plane" ? runPlane() : runGround())}
           className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
         >
@@ -1004,8 +1118,14 @@ export function TripsOverview({
             placeholder="Destination city…"
             className="min-w-[140px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50"
           />
-          <input type="date" value={newStart} onChange={(ev) => setNewStart(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none" />
-          <input type="date" value={newEnd} onChange={(ev) => setNewEnd(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none" />
+          <DateField
+            value={newStart}
+            onChange={(v) => {
+              setNewStart(v);
+              if (!newEnd || newEnd < v) setNewEnd(addDays(v, 7));
+            }}
+          />
+          <DateField value={newEnd} min={newStart} onChange={setNewEnd} />
           <button
             type="button"
             disabled={!newCity.trim() || creating}
@@ -1043,9 +1163,28 @@ export function TripsOverview({
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <input type="date" value={trip.startDate ?? ""} onChange={(ev) => void updateTrip({ tripId, patch: { startDate: ev.target.value } })} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
+              <DateField
+                value={trip.startDate ?? ""}
+                onChange={(v) => {
+                  // SMART DATES: the end follows the start. Keep the trip's
+                  // current duration when both ends exist; default a week when
+                  // the end is missing or would precede the new start.
+                  const patch: { startDate: string; endDate?: string } = { startDate: v };
+                  const oldS = parseISO(trip.startDate);
+                  const oldE = parseISO(trip.endDate);
+                  if (!trip.endDate || (oldE && oldE.getTime() < new Date(`${v}T00:00:00Z`).getTime())) {
+                    const durDays = oldS && oldE ? Math.max(1, Math.round((oldE.getTime() - oldS.getTime()) / 86_400_000)) : 7;
+                    patch.endDate = addDays(v, durDays);
+                  }
+                  void updateTrip({ tripId, patch });
+                }}
+              />
               <span className="text-paper-faint">→</span>
-              <input type="date" value={trip.endDate ?? ""} onChange={(ev) => void updateTrip({ tripId, patch: { endDate: ev.target.value } })} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
+              <DateField
+                value={trip.endDate ?? ""}
+                min={trip.startDate}
+                onChange={(v) => void updateTrip({ tripId, patch: { endDate: v } })}
+              />
               <div className="flex items-center gap-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1">
                 <Users className="h-3 w-3 text-paper-faint" />
                 <button type="button" onClick={() => void updateTrip({ tripId, patch: { travelers: Math.max(1, travelers - 1) } })} className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper">−</button>
@@ -1392,12 +1531,12 @@ export function TripsOverview({
                           type="date"
                           defaultValue={r.sortDate || undefined}
                           onChange={(ev) => void setLocked({ stayId: r.stayId!, locked: true, checkIn: ev.target.value })}
-                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none"
+                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none [color-scheme:dark]"
                         />
                         <input
                           type="date"
                           onChange={(ev) => void setLocked({ stayId: r.stayId!, locked: true, checkOut: ev.target.value })}
-                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none"
+                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none [color-scheme:dark]"
                         />
                       </span>
                     )}
