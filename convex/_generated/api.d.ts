@@ -15,6 +15,7 @@ import type * as events from "../events.js";
 import type * as expenses from "../expenses.js";
 import type * as huntActions from "../huntActions.js";
 import type * as hunts from "../hunts.js";
+import type * as ideas from "../ideas.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
 import type * as secrets from "../secrets.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   expenses: typeof expenses;
   huntActions: typeof huntActions;
   hunts: typeof hunts;
+  ideas: typeof ideas;
   notes: typeof notes;
   projects: typeof projects;
   secrets: typeof secrets;

@@ -8,7 +8,6 @@ import { WidgetSlot } from "../widget-slot";
 type ProjectTile = { slug: string; name: string; description: string; repo: string };
 
 const RWH_BASE = "https://remote-work-hub-sepia.vercel.app";
-const POLL_MS = 60_000;
 
 function shortFromName(name: string): string {
   const parts = name.split(/\s+/).filter(Boolean);
@@ -22,9 +21,13 @@ export function RemoteWorkHubWidget() {
   const [projects, setProjects] = useState<ProjectTile[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
+  // Poll-diet 2026-07-03: the project list only changes when remote-work-hub
+  // redeploys, so the old 60s interval re-fetched an immutable list all day.
+  // One fetch per mount, with a retry on failure + refresh when the tab regains
+  // focus (covers "deploy happened while this tab sat open").
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    async function load(retryOnFail = true) {
       try {
         const r = await fetch(`${RWH_BASE}/api/projects`, { cache: "no-store" });
         if (!r.ok) throw new Error(`hub /api/projects ${r.status}`);
@@ -34,14 +37,24 @@ export function RemoteWorkHubWidget() {
           setLoadErr(null);
         }
       } catch (e: unknown) {
-        if (!cancelled) setLoadErr(e instanceof Error ? e.message : String(e));
+        if (!cancelled) {
+          setLoadErr(e instanceof Error ? e.message : String(e));
+          if (retryOnFail) {
+            setTimeout(() => {
+              if (!cancelled) load(false); // ONE delayed retry — not a poll loop
+            }, 15_000);
+          }
+        }
       }
     }
     load();
-    const id = setInterval(load, POLL_MS);
+    const onFocus = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onFocus);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      document.removeEventListener("visibilitychange", onFocus);
     };
   }, []);
 

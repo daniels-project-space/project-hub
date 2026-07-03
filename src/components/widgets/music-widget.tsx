@@ -44,8 +44,44 @@ export function MusicWidget() {
         <div className="p-4">
           <EmptyState
             title="Awaiting first poll"
-            hint="music-house · DistroKid · polls every 6h"
+            hint="music-house · DistroKid · polls every 12h"
           />
+        </div>
+      </WidgetSlot>
+    );
+  }
+
+  // Feed staleness: the poll runs every 12h, so anything older than ~26h means
+  // the cron (or music-house's own 2-day pull) died — say so instead of quietly
+  // presenting old numbers as current.
+  const feedStale = Date.now() - ai.fetchedAt > 26 * 60 * 60 * 1000;
+
+  // DistroKid genuinely reports zero until stores pay out (~2-3 months behind).
+  // A flat all-zero chart reads as "widget broken" — render the honest state
+  // instead. The feed itself is alive (fetchedAt is fresh).
+  const allZero =
+    ai.streamsTotal === 0 &&
+    ai.balanceUsd === 0 &&
+    ai.history.every((h) => h.streamsTotal === 0 && h.balance === 0);
+  if (allZero) {
+    return (
+      <WidgetSlot
+        size="small"
+        label="AI Music Income"
+        status={feedStale ? "feed stale" : `upd ${ago(ai.fetchedAt)}`}
+      >
+        <div className="p-4 space-y-2">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint flex items-center gap-1.5">
+            <Music className="w-3 h-3" /> DistroKid
+          </p>
+          <p className="font-display italic text-[15px] leading-snug text-paper-dim">
+            No earnings reported yet.
+          </p>
+          <p className="font-mono text-[10px] text-paper-faint leading-relaxed">
+            Stores report streams ~2–3 months behind release. The feed is
+            connected and checks twice a day — numbers appear here the moment
+            DistroKid shows any.
+          </p>
         </div>
       </WidgetSlot>
     );
@@ -60,7 +96,7 @@ export function MusicWidget() {
     <WidgetSlot
       size="small"
       label="AI Music Income"
-      status={`upd ${ago(ai.fetchedAt)}`}
+      status={feedStale ? "feed stale" : `upd ${ago(ai.fetchedAt)}`}
     >
       <div className="p-4 space-y-3">
         <div className="flex items-end justify-between">

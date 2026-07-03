@@ -250,6 +250,23 @@ export default defineSchema({
     fetchedAt: v.number(),
   }).index("by_source", ["source"]),
 
+  // Daily generated ideas (2026-07-03). ONE row per UTC day, written by the
+  // daily-ideas cron (single cheap OpenRouter/DeepSeek call generating BOTH
+  // cards). Powers the previously-static "Idea of the Day" and "Channel Idea"
+  // widgets. Flat fields (no nested objects) keep the validator simple.
+  dailyIdeas: defineTable({
+    day: v.string(), // UTC YYYY-MM-DD
+    ideaText: v.string(),
+    ideaBenefit: v.optional(v.string()),
+    channelLogline: v.string(),
+    channelHook: v.optional(v.string()),
+    channelMonetization: v.optional(v.string()),
+    channelNiche: v.optional(v.string()),
+    channelFormat: v.optional(v.string()),
+    generatedAt: v.number(),
+    model: v.optional(v.string()),
+  }).index("by_day", ["day"]),
+
   // --- Travel widget (Wave 1A — backend data layer only) ---
   // Relational itinerary model ported from v1's SQLite schema (trips →
   // trip_days → trip_items). New tables, no migration. All planning/enrichment

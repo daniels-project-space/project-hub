@@ -106,6 +106,21 @@ async function fxToGBP(from: string): Promise<number | null> {
  * GBP→USD rate (USD per 1 GBP) from Frankfurter/ECB. Used for dual-currency
  * display; persisted into `fxRates` and written onto live/daily snapshots.
  */
+/**
+ * yahooQuote — keyless delayed quote via Yahoo's v8 chart endpoint (the v7
+ * quote API needs a crumb/cookie; v8 chart doesn't, but rejects UA-less
+ * requests). Returns the regular-market price in the LISTING currency (the
+ * caller converts via the asset's own `currency` field), or null on any miss.
+ */
+async function yahooQuote(symbol: string): Promise<number | null> {
+  const j = await safeJson(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`,
+    { headers: { "User-Agent": "Mozilla/5.0 (project-hub wealth refresh)" } },
+  );
+  const px = j?.chart?.result?.[0]?.meta?.regularMarketPrice;
+  return typeof px === "number" && px > 0 ? px : null;
+}
+
 async function gbpToUsd(): Promise<number | null> {
   const j = await safeJson("https://api.frankfurter.app/latest?from=GBP&to=USD");
   const rate = j?.rates?.USD;
@@ -306,7 +321,15 @@ export const refreshPrices = action({
     let goldGbpPerOz: number | null = null;
     {
       const gp = await safeJson("https://data-asg.goldprice.org/dbXRates/USD");
-      const usdPerOz = gp?.items?.[0]?.xauPrice;
+      let usdPerOz: number | null =
+        typeof gp?.items?.[0]?.xauPrice === "number" ? gp.items[0].xauPrice : null;
+      if (usdPerOz === null) {
+        // goldprice.org started 403ing Convex's egress IP (found 2026-07-03,
+        // gold had been silently frozen ~1 month). COMEX front-month futures
+        // via the keyless Yahoo helper track spot within ~0.5% — plenty for a
+        // net-worth tile.
+        usdPerOz = await yahooQuote("GC=F");
+      }
       const usdToGbp = await fxToGBP("USD");
       if (typeof usdPerOz === "number" && usdToGbp !== null) {
         goldGbpPerOz = usdPerOz * usdToGbp;
@@ -327,13 +350,22 @@ export const refreshPrices = action({
           const qty = a.quantity ?? 0;
           const sym = (a.externalRef || a.label || "").toUpperCase();
           let quoteGBP: number | null = null;
+          let px: number | null = null;
           if (finnhubKey && sym) {
             const j = await safeJson(
               `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${finnhubKey}`,
             );
-            const px = j?.c; // current price (assume USD)
+            if (typeof j?.c === "number" && j.c > 0) px = j.c; // current price (assume USD)
+          }
+          if (px === null && sym) {
+            // Keyless fallback (2026-07-03): the vault has never held a finnhub
+            // key, so stocks froze at their manual values. Yahoo's v8 chart
+            // endpoint serves delayed quotes keyless (needs a UA header).
+            px = await yahooQuote(sym);
+          }
+          if (px !== null) {
             const fx = await fxToGBP(a.currency || "USD");
-            if (typeof px === "number" && px > 0 && fx !== null) {
+            if (fx !== null) {
               quoteGBP = px * fx;
               await ctx.runMutation(internal.wealth._writePrice, {
                 symbol: sym,
@@ -351,7 +383,7 @@ export const refreshPrices = action({
             updated++;
           } else {
             errors.push(
-              `stocks/${a.label}: no live quote (need finnhub key + symbol in externalRef) — kept previous`,
+              `stocks/${a.label}: no live quote (finnhub + yahoo both empty for "${sym}") — kept previous`,
             );
           }
         } else if (a.category === "gold") {
@@ -658,8 +690,18 @@ export const refreshLive = internalAction({
     } catch (e) {
       console.warn("wealth.refreshLive: FX persist failed", e);
     }
-    return await ctx.runMutation(internal.wealth._recordLive, {
+    const live = await ctx.runMutation(internal.wealth._recordLive, {
       usdPerGbp: usdPerGbp ?? undefined,
     });
+    // Price alerts piggyback on the refresh (poll-diet 2026-07-03): the alert
+    // check reads the prices this action just wrote, so a separate faster cron
+    // could never see anything this one doesn't. Best-effort — an alert failure
+    // never breaks the price refresh.
+    try {
+      await ctx.runMutation(internal.alerts.checkAlerts, {});
+    } catch (e) {
+      console.warn("wealth.refreshLive: alert check failed", e);
+    }
+    return live;
   },
 });

@@ -1,32 +1,28 @@
 "use client";
 
+import { useQuery } from "convex/react";
 import { Lightbulb } from "lucide-react";
+import { api } from "../../../convex/_generated/api";
 import { WidgetSlot } from "../widget-slot";
 
 // ---------------------------------------------------------------------------
-// Idea of the Day — display-parity port of v1 #hub-idea card.
+// Idea of the Day — LIVE since 2026-07-03. Backed by convex/ideas.ts: one
+// cheap DeepSeek call per day (05:30 UTC cron) writes a dailyIdeas doc that
+// this widget and channel-idea-widget.tsx both read. Was a static
+// "generation is paused" placeholder before. Visuals preserved from the v1
+// port (purple #c084fc accent, 💡, italic body, green benefit).
 //
-// v1 backed this with an LLM/cron pipeline (server.js idea generation + the
-// home_todos_v1 "adopt" flow). That generation pipeline is DEFERRED — see
-// build-logs/phase13-phaseC.md. This is a static-for-now display component that
-// matches the v1 look (purple #c084fc accent, 💡, italic body, green benefit).
-// When the pipeline lands, swap `IDEA` for a Convex query result of the same shape.
+// Rigidity: a dead feed is VISIBLE — no doc → explicit empty state; doc older
+// than 48h → "stale" badge instead of silently presenting old data as fresh.
 // ---------------------------------------------------------------------------
 
-interface Idea {
-  text: string;
-  benefit?: string;
-}
-
-// Placeholder content (no staleness concern — generation pipeline deferred).
-const IDEA: Idea | null = {
-  text: "Idea generation is paused — wire the daily idea pipeline to light this up.",
-  benefit: "Ships ranked product/feature ideas each morning, one tap to add to tasks.",
-};
-
 const PURPLE = "rgb(192,132,252)";
+const STALE_MS = 48 * 60 * 60 * 1000;
 
 export function IdeaWidget() {
+  const doc = useQuery(api.ideas.latest);
+  const stale = !!doc && Date.now() - doc.generatedAt > STALE_MS;
+
   return (
     <WidgetSlot size="medium" label="Idea of the Day">
       <div className="p-2">
@@ -55,25 +51,34 @@ export function IdeaWidget() {
             >
               Idea of the Day
             </span>
+            {stale && (
+              <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.16em] text-amber">
+                stale
+              </span>
+            )}
           </div>
 
-          {IDEA ? (
+          {doc === undefined ? (
+            <p className="font-display italic text-[15px] text-paper-faint">Loading…</p>
+          ) : doc === null ? (
+            <p className="font-display italic text-[15px] text-paper-faint">
+              No idea yet — the daily generator runs 05:30 UTC.
+            </p>
+          ) : (
             <>
               <p className="font-display italic text-[15px] leading-snug text-paper-dim">
-                {IDEA.text}
+                {doc.ideaText}
               </p>
-              {IDEA.benefit && (
+              {doc.ideaBenefit && (
                 <p className="mt-1.5 font-mono text-[11px] leading-snug text-emerald-soft/85">
-                  {IDEA.benefit}
+                  {doc.ideaBenefit}
                 </p>
               )}
             </>
-          ) : (
-            <p className="font-display italic text-[15px] text-paper-faint">Generating…</p>
           )}
 
           <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint/70">
-            generation pipeline deferred
+            {doc ? `generated ${doc.day} · deepseek · 1 call/day` : "daily · deepseek · 1 call/day"}
           </p>
         </div>
       </div>

@@ -18,11 +18,14 @@
  *
  * SECRETS (read server-side from the vault `secrets` table via the existing
  * internal.wealth.readSecret internalQuery — same path wealthActions uses):
- *   - service "anthropic", keyName "ANTHROPIC_API_KEY"  (LLM)
- *   - service "serpapi",   keyName "SERPAPI_KEY"         (web search; scope "aria")
- * Both confirmed present in the project-hub Convex vault (2026-06-01 audit).
- * If a key is absent the hunt still records a graceful "no signal" result and
- * bumps `runs` — it never crashes the cron or fakes a positive.
+ *   - service "openrouter", keyName "OPENROUTER_API_KEY" (LLM — DeepSeek)
+ *   - service "serpapi",    keyName "SERPAPI_KEY"        (web search; scope "aria")
+ * 2026-07-03: switched off the vault's ANTHROPIC_API_KEY — that org has ZERO
+ * credits (every call 400s), so hunts would have silently failed on first use.
+ * DeepSeek via OpenRouter is the house standard for cheap JSON evals (same
+ * setup as rental-manager-v2). If a key is absent the hunt still records a
+ * graceful "no signal" result and bumps `runs` — it never crashes the cron or
+ * fakes a positive.
  *
  * TRIGGER.DEV NOTE (Phase E): the plan named Trigger.dev/Mastra as the executor.
  * The project has NO trigger.config / trigger dir / @trigger.dev dep installed,
@@ -36,7 +39,10 @@ import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 
-const ANTHROPIC_MODEL = "claude-3-5-haiku-latest"; // cheap; aria default was haiku
+// deepseek-v4-flash, pinned to trusted providers — SiliconFlow's fp8 quant corrupts
+// JSON output (see rental-manager-v2 DeepSeek quirks).
+const OPENROUTER_MODEL = "deepseek/deepseek-v4-flash";
+const OPENROUTER_PROVIDERS = { only: ["deepseek", "alibaba"] };
 const RESULT_MAX = 500; // aria capped last_result at 500 chars
 
 async function getSecret(
@@ -81,7 +87,7 @@ async function webSignal(query: string, apiKey: string): Promise<string> {
   return lines.join("\n").slice(0, 4000) || "(no search results)";
 }
 
-/** Anthropic Messages API → {found, summary}. found=true ends the hunt. */
+/** OpenRouter (DeepSeek) chat completion → {found, summary}. found=true ends the hunt. */
 async function llmEvaluate(
   query: string,
   criteria: string | undefined,
@@ -100,22 +106,24 @@ async function llmEvaluate(
     `\nWEB RESULTS:\n${evidence}\n\n` +
     `Is the goal met right now? Return JSON only.`;
 
-  const j = await safeJson("https://api.anthropic.com/v1/messages", {
+  const j = await safeJson("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
+      authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
+      model: OPENROUTER_MODEL,
+      provider: OPENROUTER_PROVIDERS,
       max_tokens: 300,
-      system: sys,
-      messages: [{ role: "user", content: userMsg }],
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: userMsg },
+      ],
     }),
   });
 
-  const text: string = j?.content?.[0]?.text ?? "";
+  const text: string = j?.choices?.[0]?.message?.content ?? "";
   if (!text) return { found: false, summary: "LLM returned no content." };
   try {
     const m = text.match(/\{[\s\S]*\}/);
@@ -142,7 +150,7 @@ export const runHunt = internalAction({
     if (!hunt || !hunt.active) return { skipped: true };
 
     const serpKey = await getSecret(ctx, "serpapi", "SERPAPI_KEY");
-    const llmKey = await getSecret(ctx, "anthropic", "ANTHROPIC_API_KEY");
+    const llmKey = await getSecret(ctx, "openrouter", "OPENROUTER_API_KEY");
 
     let result: { found: boolean; summary: string };
     if (!serpKey || !llmKey) {
@@ -150,7 +158,7 @@ export const runHunt = internalAction({
         found: false,
         summary:
           "No check run: missing " +
-          [!serpKey && "SERPAPI_KEY", !llmKey && "ANTHROPIC_API_KEY"]
+          [!serpKey && "SERPAPI_KEY", !llmKey && "OPENROUTER_API_KEY"]
             .filter(Boolean)
             .join(" + ") +
           " in vault.",
