@@ -348,6 +348,16 @@ export const refreshPrices = action({
       try {
         if (a.category === "stocks") {
           const qty = a.quantity ?? 0;
+          // MANUAL-LUMP GUARD (2026-07-03, learned the hard way on gold): every
+          // current asset is a quantity-less lump ("Stocks (IBKR)", "Gold"), and
+          // qty(0) × price would OVERWRITE the manual value with £0 the moment a
+          // quote succeeds. Auto-reprice ONLY assets that carry a real quantity.
+          if (qty <= 0) {
+            errors.push(
+              `stocks/${a.label}: manual lump (no quantity) — kept manual value; add quantity+ticker to auto-price`,
+            );
+            continue;
+          }
           const sym = (a.externalRef || a.label || "").toUpperCase();
           let quoteGBP: number | null = null;
           let px: number | null = null;
@@ -388,16 +398,32 @@ export const refreshPrices = action({
           }
         } else if (a.category === "gold") {
           const qty = a.quantity ?? 0; // troy oz
-          if (goldGbpPerOz !== null) {
+          // Same manual-lump guard as stocks: the "Gold" asset has NO quantity,
+          // so qty × spot wrote £0 over its £23,787 manual value on 2026-07-03
+          // (the first refreshPrices after the Yahoo GC=F fallback made spot
+          // available again). Reprice only real-quantity holdings.
+          if (qty > 0 && goldGbpPerOz !== null) {
             await ctx.runMutation(internal.wealth._setAssetValue, {
               id: a._id,
               valueGBP: qty * goldGbpPerOz,
               pricedAt: now,
             });
             updated++;
+          } else if (qty <= 0) {
+            errors.push(
+              `gold/${a.label}: manual lump (no quantity) — kept manual value; add quantity (oz) to auto-price`,
+            );
           }
         } else if (a.category === "cash") {
-          const bal = a.balanceNative ?? 0;
+          if (a.balanceNative == null) {
+            // Manual-lump guard (see stocks/gold): no native balance recorded →
+            // bal(0) × fx would zero a manually-entered GBP value.
+            errors.push(
+              `cash/${a.label}: manual lump (no native balance) — kept manual value`,
+            );
+            continue;
+          }
+          const bal = a.balanceNative;
           const fx = await fxToGBP(a.currency || GBP);
           if (fx !== null) {
             await ctx.runMutation(internal.wealth._setAssetValue, {

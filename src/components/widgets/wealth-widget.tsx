@@ -392,13 +392,15 @@ export function WealthWidget() {
               className="relative overflow-hidden cursor-pointer"
               onClick={() => setHistoryOpen(true)}
             >
-              {/* sparkline ghost behind the number */}
+              {/* sparkline ghost behind the number. opacity 50→90 + taller
+                  (2026-07-03): at 50% the dark line was near-invisible on
+                  phones — read as "chart missing". */}
               {spark.data.length > 1 && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 opacity-50">
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 opacity-90">
                   <MiniChart
                     data={spark.data}
                     width={640}
-                    height={80}
+                    height={96}
                     className="w-full h-full"
                     strokeColor={up ? "var(--color-emerald-soft)" : "var(--color-rose-soft)"}
                     endDot
