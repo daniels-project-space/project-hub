@@ -656,6 +656,10 @@ type RouteResult =
       mode: string;
       durationText: string;
       distanceText: string;
+      /** Raw metres — the client derives taxi estimates from this. */
+      distanceMeters?: number;
+      /** REAL transit fare when Google Directions knows it (e.g. "£3.20"). */
+      fareText?: string;
       polyline: string;
     };
 
@@ -703,6 +707,10 @@ export const routeLeg = action({
         mode: args.mode,
         durationText: leg.duration?.text ?? "",
         distanceText: leg.distance?.text ?? "",
+        distanceMeters:
+          typeof leg.distance?.value === "number" ? leg.distance.value : undefined,
+        // Transit routes often carry a REAL fare (route.fare) — pass it through.
+        fareText: typeof route.fare?.text === "string" ? route.fare.text : undefined,
         polyline: route.overview_polyline?.points ?? "",
       };
     } catch (e) {
@@ -1168,6 +1176,8 @@ export const searchFlights = action({
       arrival_id: args.destination.trim().toUpperCase(),
       outbound_date: args.outboundDate,
       type: args.returnDate ? "1" : "2", // 1 = round trip, 2 = one way
+      sort_by: "2", // cheapest first
+      deep_search: "true", // full Google Flights pricing (shallow runs read high)
       currency: GBP,
       gl: "uk",
       hl: "en",

@@ -656,7 +656,7 @@ function TransferTile({
   const fromPlace = fromGeo?.name ?? defaultFrom;
   const toPlace = toGeo?.name ?? defaultTo;
   const [hits, setHits] = useState<FlightHit[] | null>(null);
-  const [route, setRoute] = useState<{ durationText?: string; distanceText?: string; distanceKm?: number } | null>(null);
+  const [route, setRoute] = useState<{ durationText?: string; distanceText?: string; distanceKm?: number; fareText?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [added, setAdded] = useState<string | null>(null);
@@ -689,7 +689,7 @@ function TransferTile({
       });
       if (!res?.available) { setErr(res?.reason ?? "no route returned"); setRoute(null); return; }
       const km = typeof res.distanceMeters === "number" ? res.distanceMeters / 1000 : undefined;
-      setRoute({ durationText: res.durationText, distanceText: res.distanceText, distanceKm: km });
+      setRoute({ durationText: res.durationText, distanceText: res.distanceText, distanceKm: km, fareText: res.fareText });
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally { setBusy(false); }
@@ -811,26 +811,60 @@ function TransferTile({
         </ul>
       )}
 
-      {/* ground route result */}
+      {/* ground route result: real fare when Google knows it + provider rows */}
       {tmode !== "plane" && route && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rule-soft/50 px-3 py-2">
-          <TrainFront className="h-3 w-3 text-brass" />
-          <span className="font-mono text-[11px] text-paper">
-            {fromPlace} → {toPlace}
-          </span>
-          <span className="font-mono text-[10px] text-paper-faint">
-            {[route.durationText, route.distanceText].filter(Boolean).join(" · ")}
-            {tmode === "taxi" && taxiEst ? ` · taxi ~${gbp(taxiEst)} (rough est)` : ""}
-          </span>
-          <span className="flex-1" />
-          <button
-            type="button"
-            disabled={added === "g" || !tripId}
-            onClick={() => void addToTrip({ from: fromPlace, to: toPlace, carrier: tmode === "taxi" ? "Taxi / Car" : "Train / Bus", depart: date || undefined, priceGbp: tmode === "taxi" && taxiEst ? taxiEst : undefined, bookLink: `https://www.rome2rio.com/s/${encodeURIComponent(fromPlace)}/${encodeURIComponent(toPlace)}`, key: "g" })}
-            className="flex items-center gap-1 rounded-md border border-emerald-soft/40 bg-emerald-soft/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-soft hover:bg-emerald-soft/20 disabled:opacity-50 transition-colors"
-          >
-            <Plus className="h-2.5 w-2.5" /> {added === "g" ? "added" : "add to trip"}
-          </button>
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rule-soft/50 px-3 py-2">
+            <TrainFront className="h-3 w-3 text-brass" />
+            <span className="font-mono text-[11px] text-paper">
+              {fromPlace} → {toPlace}
+            </span>
+            <span className="font-mono text-[10px] text-paper-faint">
+              {[route.durationText, route.distanceText].filter(Boolean).join(" · ")}
+            </span>
+            {route.fareText && (
+              <span className="font-mono text-[12px] font-bold tabular-nums text-brass">fare {route.fareText}</span>
+            )}
+            {tmode === "taxi" && taxiEst && (
+              <span className="font-mono text-[11px] tabular-nums text-brass">taxi ~{gbp(taxiEst)} <span className="text-[9px] font-normal text-paper-faint">rough est</span></span>
+            )}
+            <span className="flex-1" />
+            <button
+              type="button"
+              disabled={added === "g" || !tripId}
+              onClick={() => void addToTrip({ from: fromPlace, to: toPlace, carrier: tmode === "taxi" ? "Taxi / Car" : "Train / Bus", depart: date || undefined, priceGbp: tmode === "taxi" && taxiEst ? taxiEst : undefined, bookLink: `https://www.rome2rio.com/s/${encodeURIComponent(fromPlace)}/${encodeURIComponent(toPlace)}`, key: "g" })}
+              className="flex items-center gap-1 rounded-md border border-emerald-soft/40 bg-emerald-soft/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-soft hover:bg-emerald-soft/20 disabled:opacity-50 transition-colors"
+            >
+              <Plus className="h-2.5 w-2.5" /> {added === "g" ? "added" : "add to trip"}
+            </button>
+          </div>
+          {/* book it: providers with the route prefilled */}
+          <ul className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
+            {(tmode === "taxi"
+              ? [
+                  fromGeo && toGeo
+                    ? { name: "Uber", note: "live fare estimate for this exact route", href: `https://m.uber.com/ul/?action=setPickup&pickup[latitude]=${fromGeo.lat}&pickup[longitude]=${fromGeo.lng}&pickup[nickname]=${encodeURIComponent(fromGeo.name)}&dropoff[latitude]=${toGeo.lat}&dropoff[longitude]=${toGeo.lng}&dropoff[nickname]=${encodeURIComponent(toGeo.name)}` }
+                    : null,
+                  { name: "Rome2rio", note: "taxi + all modes, priced", href: `https://www.rome2rio.com/s/${encodeURIComponent(fromPlace)}/${encodeURIComponent(toPlace)}` },
+                ]
+              : [
+                  { name: "12Go", note: "SE-Asia trains, buses + ferries, bookable", href: `https://12go.asia/en/travel/${encodeURIComponent(fromPlace.toLowerCase().replace(/\s+/g, "-"))}/${encodeURIComponent(toPlace.toLowerCase().replace(/\s+/g, "-"))}${date ? `?date=${date}&people=${adults}` : ""}` },
+                  { name: "Omio", note: "EU trains + buses, prices compared", href: `https://www.omio.co.uk/search?departure=${encodeURIComponent(fromPlace)}&arrival=${encodeURIComponent(toPlace)}` },
+                  { name: "Trainline", note: "rail fares", href: "https://www.thetrainline.com/" },
+                  { name: "Rome2rio", note: "every mode, priced", href: `https://www.rome2rio.com/s/${encodeURIComponent(fromPlace)}/${encodeURIComponent(toPlace)}` },
+                ]
+            )
+              .filter(Boolean)
+              .map((pv) => (
+                <li key={pv!.name} className="flex items-center gap-2 px-3 py-2">
+                  <span className="min-w-[76px] font-mono text-[11px] font-bold text-paper">{pv!.name}</span>
+                  <span className="flex-1 font-mono text-[10px] text-paper-faint">{pv!.note}</span>
+                  <a href={pv!.href} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors">
+                    open <ExternalLink className="h-2.5 w-2.5" />
+                  </a>
+                </li>
+              ))}
+          </ul>
         </div>
       )}
 
