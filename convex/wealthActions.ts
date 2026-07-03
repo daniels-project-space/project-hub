@@ -155,8 +155,14 @@ function coinbaseJwt(
     const host = "api.coinbase.com";
     const uri = `${method} ${host}${path}`;
     const now = Math.floor(Date.now() / 1000);
+    // CDP issues TWO key flavours. ECDSA keys ship as a PEM ("-----BEGIN EC
+    // PRIVATE KEY-----", alg ES256). Ed25519 keys ship as a bare base64 secret
+    // (64 bytes = seed||pubkey, alg EdDSA) — which is what the vault holds
+    // (2026-07-03: the old ES256-only path failed DECODER::unsupported on it,
+    // silently freezing ALL Coinbase auto-pricing for weeks).
+    const isPem = apiSecret.includes("BEGIN");
     const header = {
-      alg: "ES256",
+      alg: isPem ? "ES256" : "EdDSA",
       kid: apiKey,
       nonce: crypto.randomBytes(16).toString("hex"),
       typ: "JWT",
@@ -164,14 +170,25 @@ function coinbaseJwt(
     const payload = { iss: "cdp", sub: apiKey, nbf: now, exp: now + 120, uri };
     const b64 = (o: any) => Buffer.from(JSON.stringify(o)).toString("base64url");
     const signingInput = `${b64(header)}.${b64(payload)}`;
-    const key = apiSecret.replace(/\\n/g, "\n"); // CDP EC private key PEM
-    const sign = crypto.createSign("SHA256");
-    sign.update(signingInput);
-    sign.end();
-    const der = sign.sign({ key, dsaEncoding: "ieee-p1363" });
-    return `${signingInput}.${der.toString("base64url")}`;
+    if (isPem) {
+      const key = apiSecret.replace(/\\n/g, "\n"); // CDP EC private key PEM
+      const sign = crypto.createSign("SHA256");
+      sign.update(signingInput);
+      sign.end();
+      const der = sign.sign({ key, dsaEncoding: "ieee-p1363" });
+      return `${signingInput}.${der.toString("base64url")}`;
+    }
+    const raw = Buffer.from(apiSecret, "base64");
+    const seed = raw.subarray(0, 32); // 64-byte secrets are seed||pubkey
+    const pkcs8 = Buffer.concat([
+      Buffer.from("302e020100300506032b657004220420", "hex"), // PKCS8 Ed25519 prefix
+      seed,
+    ]);
+    const pk = crypto.createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+    const sig = crypto.sign(null, Buffer.from(signingInput), pk);
+    return `${signingInput}.${sig.toString("base64url")}`;
   } catch (e) {
-    console.warn("wealth: coinbase JWT sign failed (key may not be CDP EC PEM)", e);
+    console.warn("wealth: coinbase JWT sign failed (unrecognized key format)", e);
     return null;
   }
 }
@@ -296,6 +313,28 @@ export const refreshCrypto = action({
         });
         if (valueGBP !== undefined) updated++;
         else errors.push(`price missing for ${sym} (${tag}) (kept previous value)`);
+      }
+    }
+
+    // Retire the manual "Coinbase" LUMP once real per-symbol balances flow
+    // (2026-07-03). The lump was hand-entered while the auto-fetch was broken
+    // (ES256-only JWT vs Ed25519 key); leaving it alongside the auto rows
+    // would double-count the whole exchange. Only fires when this very run
+    // actually priced live Coinbase balances.
+    if (Object.keys(byExchange.coinbase).length > 0 && updated > 0) {
+      const all: any[] = await ctx.runQuery(internal.wealth._allAssets, {});
+      const lump = all.find(
+        (a) =>
+          a.category === "crypto" &&
+          a.source === "manual" &&
+          !a.externalRef &&
+          (a.label ?? "").trim().toLowerCase() === "coinbase",
+      );
+      if (lump) {
+        await ctx.runMutation(api.wealth.removeAsset, { id: lump._id });
+        errors.push(
+          `retired manual "Coinbase" lump (£${Math.round(lump.lastValueGBP ?? 0)}) — replaced by live per-symbol balances`,
+        );
       }
     }
     return { updated, errors };
