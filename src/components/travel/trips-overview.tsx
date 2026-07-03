@@ -236,6 +236,40 @@ function YearBand({
   );
 }
 
+// ── collapsible section: one visual unit per concern (simplified nav) ──────
+function Section({
+  title,
+  count,
+  children,
+  defaultOpen = true,
+  action,
+}: {
+  title: string;
+  count?: number | string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  action?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/20">
+      <div className="flex items-center justify-between px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-paper-dim hover:text-paper transition-colors"
+        >
+          {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          {title}
+          {count !== undefined && <span className="text-paper-faint/60">· {count}</span>}
+        </button>
+        {action}
+      </div>
+      {open && <div className="px-3 pb-3">{children}</div>}
+    </div>
+  );
+}
+
 // ── stay card ───────────────────────────────────────────────────────────────
 function StayCard({
   o,
@@ -247,6 +281,7 @@ function StayCard({
   onDetails,
   locking,
   expanded,
+  fluid = false,
 }: {
   o: StayOption;
   otaPrice?: number;
@@ -257,13 +292,16 @@ function StayCard({
   onDetails: (o: StayOption) => void;
   locking: boolean;
   expanded: boolean;
+  /** Grid mode (fullscreen browser) — fill the cell instead of rail width. */
+  fluid?: boolean;
 }) {
   const nightly = otaPrice ?? o.priceGbp;
   const dorm = dormLikely(o);
   return (
     <div
       className={cn(
-        "w-[232px] shrink-0 snap-start overflow-hidden rounded-xl border bg-ink-2/40 transition-colors",
+        "shrink-0 snap-start overflow-hidden rounded-xl border bg-ink-2/40 transition-colors",
+        fluid ? "w-full" : "w-[232px]",
         expanded ? "border-brass/60" : "border-rule-soft/60 hover:border-rule-soft",
       )}
     >
@@ -322,6 +360,16 @@ function StayCard({
             </span>
           )}
         </p>
+        {/* perks straight from the search payload — visible without the sheet */}
+        {(o.amenities ?? []).length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {(o.amenities ?? []).slice(0, 3).map((a) => (
+              <span key={a} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
         {/* ALL providers for THIS place — price shown where Google knows it,
             every chip deep-links to that provider searched for this property. */}
         <div className="flex flex-wrap gap-1">
@@ -509,7 +557,7 @@ function TransferTile({
     try {
       const res = await searchFlights({ origin: fromIata, destination: toIata, outboundDate: date, adults });
       if (!res.available) setErr(res.reason ?? "no flights returned");
-      setHits((res.options ?? []).slice(0, 5) as FlightHit[]);
+      setHits((res.options ?? []).slice(0, 16) as FlightHit[]);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally { setBusy(false); }
@@ -621,7 +669,7 @@ function TransferTile({
 
       {/* flight results */}
       {tmode === "plane" && hits && hits.length > 0 && (
-        <ul className="mt-2 divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
+        <ul className="mt-2 max-h-72 divide-y divide-rule-soft/30 overflow-y-auto rounded-lg border border-rule-soft/50">
           {hits.map((h, i) => {
             const key = `f${i}`;
             return (
@@ -720,6 +768,7 @@ export function TripsOverview({
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newCity, setNewCity] = useState("");
   const [newStart, setNewStart] = useState("");
@@ -1098,6 +1147,21 @@ export function TripsOverview({
           )}
 
           {/* ── provider carousels ─────────────────────────────────────────── */}
+          {results && results.length > 0 && (
+            <Section
+              title="Stays"
+              count={results.length}
+              action={
+                <button
+                  type="button"
+                  onClick={() => setBrowseOpen(true)}
+                  className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 transition-colors"
+                >
+                  <Maximize2 className="h-3 w-3" /> browse fullscreen
+                </button>
+              }
+            >
+              <div className="space-y-3">
           {carousels.map((rail) => (
             <div key={rail.key}>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
@@ -1127,6 +1191,9 @@ export function TripsOverview({
               </div>
             </div>
           ))}
+              </div>
+            </Section>
+          )}
 
           {/* ── property detail sheet: gallery + map + provider comparison ─── */}
           <Sheet
@@ -1239,8 +1306,8 @@ export function TripsOverview({
 
           {/* ── trip timeline + transfers ──────────────────────────────────── */}
           {trip.startDate && trip.endDate && (
-            <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
-              <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">Trip timeline</p>
+            <Section title="Trip timeline">
+              <div className="px-1">
               <BookingTimeline
                 start={trip.startDate}
                 end={trip.endDate}
@@ -1274,7 +1341,8 @@ export function TripsOverview({
                   plan multi-stop transfers →
                 </Link>
               </div>
-            </div>
+              </div>
+            </Section>
           )}
 
           {/* ── dedicated transfer tile (real prices) ──────────────────────── */}
@@ -1318,6 +1386,21 @@ export function TripsOverview({
                       <p className="font-mono text-[10px] text-paper-faint">{[r.when, r.sub].filter(Boolean).join(" · ") || "—"}</p>
                     </div>
                     {typeof r.priceGbp === "number" && <span className="font-mono text-[12px] tabular-nums text-paper-dim">{gbp(r.priceGbp)}</span>}
+                    {r.stayId && r.locked && (
+                      <span className="hidden items-center gap-1 sm:flex">
+                        <input
+                          type="date"
+                          defaultValue={r.sortDate || undefined}
+                          onChange={(ev) => void setLocked({ stayId: r.stayId!, locked: true, checkIn: ev.target.value })}
+                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none"
+                        />
+                        <input
+                          type="date"
+                          onChange={(ev) => void setLocked({ stayId: r.stayId!, locked: true, checkOut: ev.target.value })}
+                          className="rounded border border-rule-soft/60 bg-ink-3/60 px-1 py-0.5 font-mono text-[10px] text-paper focus:outline-none"
+                        />
+                      </span>
+                    )}
                     {r.stayId && (
                       <button type="button" onClick={() => void setLocked({ stayId: r.stayId!, locked: !r.locked })} className="text-paper-faint hover:text-amber transition-colors" aria-label={r.locked ? "unlock stay" : "lock stay"}>
                         {r.locked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
@@ -1342,6 +1425,45 @@ export function TripsOverview({
           </Link>
         </>
       )}
+
+      {/* ── fullscreen stay browser: grid of everything found ────────────── */}
+      <Sheet
+        open={browseOpen}
+        onClose={() => setBrowseOpen(false)}
+        title={`Stays · ${city} · ${results?.length ?? 0} found`}
+        className="w-[96vw] max-w-[1280px] max-h-[92dvh]"
+      >
+        <div className="space-y-5 p-4">
+          {carousels.map((rail) => (
+            <div key={`fs-${rail.key}`}>
+              <p className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-brass/85">
+                {rail.label}
+                <span className="text-paper-faint/60">· {rail.items.length}</span>
+              </p>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                {rail.items.map(({ o, otaPrice }, i) => (
+                  <StayCard
+                    key={`fs-${rail.key}-${i}-${o.name}`}
+                    o={o}
+                    otaPrice={otaPrice}
+                    fluid
+                    checkIn={trip?.startDate}
+                    checkOut={effCheckOut}
+                    adults={travelers}
+                    locking={lockingName === o.name}
+                    expanded={offersFor?.name === o.name}
+                    onDetails={(opt) => void openOffers(opt)}
+                    onLock={(opt) => void lockIn(opt, rail.key !== "best" ? rail.label : undefined, otaPrice)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+          {(!results || results.length === 0) && (
+            <p className="py-8 text-center text-[12px] text-paper-faint">Load live prices first, then browse everything here.</p>
+          )}
+        </div>
+      </Sheet>
 
       {/* ── globe overlay: where you are, when ───────────────────────────── */}
       <Sheet open={globeOpen} onClose={() => setGlobeOpen(false)} title="Trips · where & when">

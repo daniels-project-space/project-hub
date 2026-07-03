@@ -822,7 +822,7 @@ export const searchStays = action({
       const collected: any[] = [];
       let nextToken: string | undefined;
       let firstError: string | undefined;
-      for (let page = 0; page < 3 && collected.length < 50; page++) {
+      for (let page = 0; page < 5 && collected.length < 100; page++) {
         const params = new URLSearchParams(baseParams);
         if (nextToken) params.set("next_page_token", nextToken);
         const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
@@ -839,7 +839,7 @@ export const searchStays = action({
       if (collected.length === 0) {
         return { available: false, reason: firstError ?? "No results", options: [] };
       }
-      const options: StayOption[] = collected.slice(0, 50).map((p) => {
+      const options: StayOption[] = collected.slice(0, 100).map((p) => {
         const img =
           p?.images?.[0]?.original_image ?? p?.images?.[0]?.thumbnail ?? undefined;
         const thumb =
