@@ -736,6 +736,10 @@ type StayOption = {
   googleLink?: string;
   /** SerpApi token to resolve the exact per-OTA booking link on demand. */
   propertyToken?: string;
+  /** Top amenities ("Free Wi-Fi", "Breakfast", …) for the card perks row. */
+  amenities?: string[];
+  /** Per-OTA offers from Google Hotels — powers the per-provider carousels. */
+  offers?: { source: string; priceGbp?: number }[];
 };
 
 const BROWSER_UA =
@@ -848,6 +852,18 @@ export const searchStays = action({
           googleLink: typeof p?.link === "string" ? p.link : undefined,
           propertyToken:
             typeof p?.property_token === "string" ? p.property_token : undefined,
+          amenities: Array.isArray(p?.amenities)
+            ? p.amenities.filter((a: unknown) => typeof a === "string").slice(0, 4)
+            : undefined,
+          offers: Array.isArray(p?.prices)
+            ? p.prices
+                .map((o: any) => ({
+                  source: typeof o?.source === "string" ? o.source : "",
+                  priceGbp: finiteOrUndef(o?.rate_per_night?.extracted_lowest),
+                }))
+                .filter((o: any) => o.source)
+                .slice(0, 8)
+            : undefined,
         };
       });
       return { available: true, options };

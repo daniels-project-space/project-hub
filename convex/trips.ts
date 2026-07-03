@@ -29,6 +29,7 @@ const tripPatchValidator = v.object({
   destCountryCode: v.optional(v.string()),
   status: v.optional(v.string()),
   active: v.optional(v.boolean()),
+  travelers: v.optional(v.number()), // permanent per-trip search preference
   // v3 multi-mode (Stage 0) — so Stage 1 can persist these via trips.update.
   mode: v.optional(v.string()), // "planner" | "deal" | "trip"
   categories: v.optional(v.array(v.string())),

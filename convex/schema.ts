@@ -287,6 +287,9 @@ export default defineSchema({
     destCountryCode: v.optional(v.string()), // ISO-3166 alpha-2 for info-rail lookups
     status: v.optional(v.string()), // "planning" | "booked" | "done" ...
     active: v.optional(v.boolean()),
+    // Permanent search preferences (2026-07-03): traveler count every stay /
+    // flight search for this trip uses. Dates already live on the trip.
+    travelers: v.optional(v.number()),
     // --- v3 multi-mode (Stage 0, additive/backward-compatible) ---
     mode: v.optional(v.string()), // "planner" | "deal" | "trip" — drives widget mode (Stage 1)
     categories: v.optional(v.array(v.string())), // enabled activity kinds (constrains planTrip)
@@ -405,6 +408,10 @@ export default defineSchema({
     checkIn: v.optional(v.string()), // ISO YYYY-MM-DD
     checkOut: v.optional(v.string()),
     saved: v.optional(v.boolean()),
+    // LOCKED IN (2026-07-03): this stay is THE booking for its checkIn..checkOut
+    // period — the trips-overview timeline renders it as a committed block and
+    // only transport remains to be filled around it.
+    locked: v.optional(v.boolean()),
     createdAt: v.number(),
   }).index("by_trip", ["tripId"]),
 });

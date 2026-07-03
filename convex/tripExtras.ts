@@ -262,6 +262,24 @@ export const removeFlight = mutation({
 // ===========================================================================
 
 /** All stays for a trip, newest first (by createdAt). Reactive. */
+/** Lock/unlock a stay as THE booking for its period (2026-07-03). The
+ *  trips-overview timeline treats locked stays as committed blocks. */
+export const setStayLocked = mutation({
+  args: {
+    stayId: v.id("tripStays"),
+    locked: v.boolean(),
+    checkIn: v.optional(v.string()),
+    checkOut: v.optional(v.string()),
+  },
+  handler: async (ctx, { stayId, locked, checkIn, checkOut }) => {
+    const patch: Record<string, unknown> = { locked, saved: true };
+    if (checkIn !== undefined) patch.checkIn = checkIn;
+    if (checkOut !== undefined) patch.checkOut = checkOut;
+    await ctx.db.patch(stayId, patch);
+    return stayId;
+  },
+});
+
 export const listStays = query({
   args: { tripId: v.id("trips") },
   handler: async (ctx, { tripId }): Promise<Doc<"tripStays">[]> => {
@@ -290,6 +308,7 @@ export const saveStay = mutation({
     checkIn: v.optional(v.string()),
     checkOut: v.optional(v.string()),
     saved: v.optional(v.boolean()),
+    locked: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<Id<"tripStays">> => {
     assertFinite("priceGbp", args.priceGbp);
