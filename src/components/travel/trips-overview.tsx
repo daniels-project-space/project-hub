@@ -3,22 +3,25 @@
 /**
  * TripsOverview — the streamlined, visual default view of the Travel widget.
  *
- * v2 (2026-07-03, per Daniel): live prices wired in.
- *   - Permanent per-trip preferences: travelers + dates (persisted on the trip;
- *     every search uses them).
- *   - "Load live prices" runs ONE Google-Hotels search (SerpAPI — real prices,
- *     perks, free-cancellation flags, per-OTA offers) shaped by the trip
- *     budget, then renders a CAROUSEL PER PROVIDER (his five cashback portals
- *     first, then everything else): image, £/night + total, rating, perks,
- *     free-cancel badge, hyperlink, and a LOCK IN button.
- *   - Locking a stay saves it as THE booking for its period; the timeline
- *     shows locked stays as committed blocks so only transport is left —
- *     flight markers with times, plus real transport links (Google Flights /
- *     Rome2rio) for the gaps.
+ * v3 (2026-07-03, per Daniel — "less stiff"):
+ *  - YEAR BAND: all trips on a 12-month strip with a you-are-here marker;
+ *    click a span to switch trips. Inline "+ trip" (city+dates+budget,
+ *    geocoded client-side so the globe knows where it is).
+ *  - GLOBE overlay: MapLibre globe (existing TripGlobe, dynamically loaded)
+ *    plotting every trip by date — where you are, when.
+ *  - Dynamic BUDGET slider (persisted; live ≤£/nt derives from nights).
+ *  - Live prices (SerpAPI Google Hotels): "Best price" rail + carousel per
+ *    cashback portal (now incl. Hotels.com). Cards expand into an OFFERS
+ *    panel via resolveStayOffers: per-provider DIRECT links to the exact
+ *    property page with dates/guests prefilled (the "auto-fill and open it
+ *    for me" ask — no Browserbase needed), each labeled with its provider and
+ *    carrying that rate's own perks + free-cancellation flag.
+ *  - Lock-in stays, booking timeline with symbols/times, transfers chain.
  */
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import {
   Plane,
   BedDouble,
@@ -33,30 +36,41 @@ import {
   Loader2,
   Search,
   TrainFront,
+  Globe2,
+  Plus,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { BOOKING_PROVIDERS } from "@/lib/travel/booking-links";
+import { geocodePlace } from "@/lib/travel/geocode";
+import { Sheet } from "@/components/ui/sheet";
+import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
+
+// MapLibre dereferences window — load the globe only when the overlay opens.
+const TripGlobe = dynamic(
+  () => import("@/components/travel/trip-globe").then((m) => m.TripGlobe),
+  { ssr: false, loading: () => <p className="p-6 text-[12px] text-paper-faint">Loading globe…</p> },
+);
 
 const gbp = (n: number) =>
-  new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP",
-    maximumFractionDigits: 0,
-  }).format(n);
+  new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 }).format(n);
 
 function parseISO(d?: string): Date | null {
   if (!d) return null;
   const t = new Date(`${d}T00:00:00Z`);
   return Number.isNaN(t.getTime()) ? null : t;
 }
-
 function fmtShort(d?: string): string {
   const t = parseISO(d);
-  if (!t) return "";
-  return t.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  return t ? t.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }) : "";
+}
+function addDays(iso: string, n: number): string {
+  const d = parseISO(iso)!;
+  return new Date(d.getTime() + n * 86_400_000).toISOString().slice(0, 10);
 }
 
 function phase(start?: string, end?: string): { label: string; tone: "amber" | "emerald" | "faint" } {
@@ -82,7 +96,6 @@ const BADGE_TONE: Record<string, string> = {
   faint: "border-rule-soft/50 bg-ink-2/40 text-paper-faint",
 };
 
-// ── live search result shape (mirror travelActions.StayOption) ─────────────
 type StayOption = {
   name: string;
   provider?: string;
@@ -98,52 +111,129 @@ type StayOption = {
   offers?: { source: string; priceGbp?: number }[];
 };
 
-// Map an OTA source string from Google Hotels onto one of the cashback
-// providers (loose contains-match: "Booking.com", "Expedia.co.uk", …).
+type ResolvedOffer = {
+  source: string;
+  link?: string;
+  priceGbp?: number;
+  totalGbp?: number;
+  freeCancellation?: boolean;
+  perks: string[];
+};
+
+// Cashback portals ↔ Google Hotels offer sources (loose contains-match).
 const PROVIDER_MATCH: { key: string; label: string; test: RegExp }[] = [
   { key: "booking", label: "Booking.com", test: /booking\.com/i },
   { key: "expedia", label: "Expedia", test: /expedia/i },
+  { key: "hotels", label: "Hotels.com", test: /hotels\.com/i },
   { key: "trivago", label: "Trivago", test: /trivago/i },
   { key: "lastminute", label: "lastminute", test: /lastminute/i },
   { key: "trip", label: "Trip.com", test: /trip\.com/i },
 ];
 
-function CashbackChips({ city, checkIn, checkOut, adults }: { city: string; checkIn?: string; checkOut?: string; adults?: number }) {
+type TripLite = {
+  _id: Id<"trips">;
+  title: string;
+  startDate?: string;
+  endDate?: string;
+  budgetGbp?: number;
+  originCity?: string;
+  destCity?: string;
+  destLat?: number;
+  destLng?: number;
+  destCountryCode?: string;
+  travelers?: number;
+  active?: boolean;
+};
+
+// ── YEAR BAND: every trip on a 12-month strip ───────────────────────────────
+function YearBand({
+  trips,
+  selectedId,
+  onSelect,
+}: {
+  trips: TripLite[];
+  selectedId: Id<"trips"> | null;
+  onSelect: (id: Id<"trips">) => void;
+}) {
+  const year = new Date().getUTCFullYear();
+  const y0 = Date.UTC(year, 0, 1);
+  const y1 = Date.UTC(year + 1, 0, 1);
+  const span = y1 - y0;
+  const pctOf = (t: number) => Math.min(100, Math.max(0, ((t - y0) / span) * 100));
+  const nowPct = pctOf(Date.now());
+  const dated = trips.filter((t) => parseISO(t.startDate) && parseISO(t.endDate));
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-emerald-soft/80">
-        <PiggyBank className="w-3 h-3" /> cashback
-      </span>
-      {BOOKING_PROVIDERS.map((p) => (
-        <a
-          key={p.key}
-          href={p.url({ city, checkIn, checkOut, adults })}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors"
-        >
-          {p.label}
-        </a>
-      ))}
+    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-3 pb-2 pt-2.5">
+      <div className="mb-1 flex items-center justify-between">
+        <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">{year} · trips</p>
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint/60">
+          {dated.length} scheduled
+        </p>
+      </div>
+      <div className="relative h-10">
+        {/* month grid */}
+        {Array.from({ length: 12 }, (_, m) => (
+          <div key={m} className="absolute top-0 h-full border-l border-rule-soft/25" style={{ left: `${(m / 12) * 100}%` }}>
+            <span className="absolute -left-px top-6 font-mono text-[8px] uppercase text-paper-faint/50">
+              {new Date(Date.UTC(year, m, 1)).toLocaleDateString("en-GB", { month: "narrow", timeZone: "UTC" })}
+            </span>
+          </div>
+        ))}
+        {/* today marker */}
+        {nowPct > 0 && nowPct < 100 && (
+          <div className="absolute top-0 h-6 w-px bg-amber" style={{ left: `${nowPct}%` }}>
+            <span className="absolute -top-0.5 left-1 font-mono text-[8px] uppercase tracking-[0.1em] text-amber">now</span>
+          </div>
+        )}
+        {/* trip spans */}
+        {dated.map((t) => {
+          const a = pctOf(parseISO(t.startDate)!.getTime());
+          const b = pctOf(parseISO(t.endDate)!.getTime());
+          const on = t._id === selectedId;
+          return (
+            <button
+              key={t._id}
+              type="button"
+              onClick={() => onSelect(t._id)}
+              title={`${t.destCity ?? t.title} · ${fmtShort(t.startDate)}–${fmtShort(t.endDate)}`}
+              className={cn(
+                "absolute top-2.5 h-2.5 rounded-full transition-colors",
+                on ? "bg-brass" : "bg-brass/40 hover:bg-brass/70",
+              )}
+              style={{ left: `${a}%`, width: `${Math.max(1.2, b - a)}%` }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ── stay result card (inside provider carousels) ────────────────────────────
+// ── stay card ───────────────────────────────────────────────────────────────
 function StayCard({
   o,
   otaPrice,
   onLock,
+  onDetails,
   locking,
+  expanded,
 }: {
   o: StayOption;
   otaPrice?: number;
   onLock: (o: StayOption) => void;
+  onDetails: (o: StayOption) => void;
   locking: boolean;
+  expanded: boolean;
 }) {
   const nightly = otaPrice ?? o.priceGbp;
   return (
-    <div className="w-[218px] shrink-0 snap-start overflow-hidden rounded-xl border border-rule-soft/60 bg-ink-2/40">
+    <div
+      className={cn(
+        "w-[218px] shrink-0 snap-start overflow-hidden rounded-xl border bg-ink-2/40 transition-colors",
+        expanded ? "border-brass/60" : "border-rule-soft/60",
+      )}
+    >
       {o.image ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={o.image} alt="" className="h-24 w-full object-cover" loading="lazy" />
@@ -162,12 +252,10 @@ function StayCard({
             </span>
           )}
         </div>
-        <p className="font-mono text-[13px] font-bold tabular-nums text-paper leading-none">
+        <p className="font-mono text-[13px] font-bold tabular-nums leading-none text-paper">
           {typeof nightly === "number" ? `${gbp(nightly)}/nt` : "price on site"}
           {typeof o.totalGbp === "number" && (
-            <span className="ml-1.5 font-normal text-[10px] text-paper-faint">
-              {gbp(o.totalGbp)} total
-            </span>
+            <span className="ml-1.5 text-[10px] font-normal text-paper-faint">{gbp(o.totalGbp)} total</span>
           )}
         </p>
         <div className="flex min-h-[16px] flex-wrap gap-1">
@@ -177,23 +265,19 @@ function StayCard({
             </span>
           )}
           {(o.amenities ?? []).slice(0, 2).map((a) => (
-            <span
-              key={a}
-              className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint"
-            >
+            <span key={a} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">
               {a}
             </span>
           ))}
         </div>
         <div className="flex items-center justify-between pt-0.5">
-          <a
-            href={o.link}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={() => onDetails(o)}
             className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-faint hover:text-brass transition-colors"
           >
-            open <ExternalLink className="h-2.5 w-2.5" />
-          </a>
+            offers {expanded ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}
+          </button>
           <button
             type="button"
             disabled={locking}
@@ -208,9 +292,7 @@ function StayCard({
   );
 }
 
-// ── visual booking timeline ─────────────────────────────────────────────────
-// One cell per trip day; locked stays paint emerald spans (bed symbol), flights
-// drop brass plane markers at their departure day. Uncovered days read as gaps.
+// ── booking timeline ────────────────────────────────────────────────────────
 function BookingTimeline({
   start,
   end,
@@ -258,41 +340,22 @@ function BookingTimeline({
     }
   }
   const pct = (i: number) => `${(i / days) * 100}%`;
-
   return (
     <div>
       <div className="relative mt-1 h-9">
-        {/* base track */}
         <div className="absolute inset-x-0 top-4 h-1.5 rounded-full bg-ink-3/70" />
-        {/* stay spans */}
         {spans.map((sp, i) => (
-          <div
-            key={i}
-            className="absolute top-[13px] flex h-2 items-center rounded-full bg-emerald-soft/60"
-            style={{ left: pct(sp.from), width: `calc(${pct(sp.to - sp.from)} )` }}
-            title={sp.name}
-          />
+          <div key={i} className="absolute top-[13px] h-2 rounded-full bg-emerald-soft/60" style={{ left: pct(sp.from), width: pct(sp.to - sp.from) }} title={sp.name} />
         ))}
-        {/* stay symbols */}
         {spans.map((sp, i) => (
-          <BedDouble
-            key={`b${i}`}
-            className="absolute top-0 h-3 w-3 text-emerald-soft"
-            style={{ left: `calc(${pct((sp.from + sp.to) / 2)} - 6px)` }}
-          />
+          <BedDouble key={`b${i}`} className="absolute top-0 h-3 w-3 text-emerald-soft" style={{ left: `calc(${pct((sp.from + sp.to) / 2)} - 6px)` }} />
         ))}
-        {/* flight markers */}
         {marks.map((m, i) => (
           <div key={i} className="absolute top-[7px]" style={{ left: `calc(${pct(m.i)} - 6px)` }} title={m.title}>
             <Plane className="h-3 w-3 text-brass" />
-            {m.time && (
-              <span className="absolute left-1/2 top-4 -translate-x-1/2 font-mono text-[8px] text-paper-faint">
-                {m.time}
-              </span>
-            )}
+            {m.time && <span className="absolute left-1/2 top-4 -translate-x-1/2 font-mono text-[8px] text-paper-faint">{m.time}</span>}
           </div>
         ))}
-        {/* endpoint dates */}
         <span className="absolute left-0 top-6 font-mono text-[9px] text-paper-faint">{fmtShort(start)}</span>
         <span className="absolute right-0 top-6 font-mono text-[9px] text-paper-faint">{fmtShort(end)}</span>
       </div>
@@ -305,51 +368,55 @@ function BookingTimeline({
   );
 }
 
-function addDays(iso: string, n: number): string {
-  const d = parseISO(iso)!;
-  return new Date(d.getTime() + n * 86_400_000).toISOString().slice(0, 10);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 export function TripsOverview({
   tripId,
   trip,
+  trips,
+  onSelectTrip,
 }: {
   tripId: Id<"trips"> | null;
-  trip: {
-    title: string;
-    startDate?: string;
-    endDate?: string;
-    budgetGbp?: number;
-    originCity?: string;
-    destCity?: string;
-    destCountryCode?: string;
-    travelers?: number;
-  } | null;
+  trip: TripLite | null;
+  trips: TripLite[];
+  onSelectTrip: (id: Id<"trips">) => void;
 }) {
   const flights = useQuery(api.tripExtras.listFlights, tripId ? { tripId } : "skip");
   const stays = useQuery(api.tripExtras.listStays, tripId ? { tripId } : "skip");
+  const legs = useQuery(api.tripExtras.listLegs, tripId ? { tripId } : "skip") as
+    | { _id: string; city: string; transportMode?: string; routeDurationText?: string; routeDistanceText?: string }[]
+    | undefined;
   const updateTrip = useMutation(api.trips.update);
+  const createTrip = useMutation(api.trips.create);
   const saveStay = useMutation(api.tripExtras.saveStay);
   const setLocked = useMutation(api.tripExtras.setStayLocked);
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
+  const resolveOffers = useAction(api.travelActions.resolveStayOffers);
 
   const [results, setResults] = useState<StayOption[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [lockingName, setLockingName] = useState<string | null>(null);
+  const [globeOpen, setGlobeOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newCity, setNewCity] = useState("");
+  const [newStart, setNewStart] = useState("");
+  const [newEnd, setNewEnd] = useState("");
+  const [creating, setCreating] = useState(false);
+  // offers panel: which property + its resolved offers
+  const [offersFor, setOffersFor] = useState<StayOption | null>(null);
+  const [offersData, setOffersData] = useState<ResolvedOffer[] | null>(null);
+  const [offersLoading, setOffersLoading] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
 
   const city = trip?.destCity || trip?.title || "";
   const travelers = trip?.travelers && trip.travelers > 0 ? trip.travelers : 2;
   const s = parseISO(trip?.startDate);
   const e = parseISO(trip?.endDate);
   const nights = s && e ? Math.max(0, Math.round((e.getTime() - s.getTime()) / 86_400_000)) : null;
-  const perNightBudget =
-    trip?.budgetGbp && nights ? Math.max(20, Math.floor(trip.budgetGbp / nights)) : undefined;
+  const budget = budgetDraft ?? trip?.budgetGbp ?? 0;
+  const perNightBudget = budget && nights ? Math.max(20, Math.floor(budget / nights)) : undefined;
 
-  // Group results per cashback provider (property listed when that OTA prices
-  // it). Anything unmatched lands in "Best price" so no result is hidden.
   const carousels = useMemo(() => {
     if (!results) return [];
     const byProvider = PROVIDER_MATCH.map((pm) => ({
@@ -361,41 +428,56 @@ export function TripsOverview({
         })
         .filter(Boolean) as { o: StayOption; otaPrice?: number }[],
     })).filter((c) => c.items.length > 0);
-    const rails: { key: string; label: string; items: { o: StayOption; otaPrice?: number }[] }[] = [
-      {
-        key: "best",
-        label: "Best price",
-        items: results.slice(0, 16).map((o) => ({ o, otaPrice: undefined })),
-      },
+    return [
+      { key: "best", label: "Best price", items: results.slice(0, 16).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
       ...byProvider.map((c) => ({
         key: c.key,
         label: c.label,
         items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 12),
       })),
     ];
-    return rails;
   }, [results]);
 
-  if (!tripId || !trip) {
-    return (
-      <p className="py-6 text-center text-[12px] text-paper-faint">
-        No trip selected — create one from the prompt above.
-      </p>
-    );
-  }
-
-  const ph = phase(trip.startDate, trip.endDate);
-  const canSearch = !!city && !!trip.startDate && !!trip.endDate;
+  // globe data: all trips with coords, chronological arcs, focus = current/next
+  const globeData = useMemo(() => {
+    const dated = trips
+      .filter((t) => typeof t.destLat === "number" && typeof t.destLng === "number")
+      .sort((a, b) => (a.startDate ?? "9999").localeCompare(b.startDate ?? "9999"));
+    const points: GlobePoint[] = dated.map((t) => ({
+      id: t._id,
+      lat: t.destLat!,
+      lng: t.destLng!,
+      kind: "leg",
+      label: `${t.destCity ?? t.title}${t.startDate ? ` · ${fmtShort(t.startDate)}–${fmtShort(t.endDate)}` : ""}`,
+    }));
+    const arcs: GlobeArc[] = [];
+    for (let i = 1; i < dated.length; i++) {
+      arcs.push({
+        startLat: dated[i - 1].destLat!,
+        startLng: dated[i - 1].destLng!,
+        endLat: dated[i].destLat!,
+        endLng: dated[i].destLng!,
+        kind: "flight",
+      });
+    }
+    const focusTrip = dated.find((t) => {
+      const st = parseISO(t.startDate);
+      const en = parseISO(t.endDate);
+      return st && en && Date.now() <= en.getTime() + 86_400_000;
+    });
+    return { points, arcs, focus: focusTrip ? { lat: focusTrip.destLat!, lng: focusTrip.destLng! } : null };
+  }, [trips]);
 
   const runSearch = async () => {
-    if (!canSearch || searching) return;
+    if (!city || !trip?.startDate || !trip?.endDate || searching) return;
     setSearching(true);
     setSearchErr(null);
+    setOffersFor(null);
     try {
       const res = await search({
         query: `${city} hotels`,
-        checkIn: trip.startDate!,
-        checkOut: trip.endDate!,
+        checkIn: trip.startDate,
+        checkOut: trip.endDate,
         adults: travelers,
         maxPricePerNight: perNightBudget,
       });
@@ -408,7 +490,33 @@ export function TripsOverview({
     }
   };
 
+  const openOffers = async (o: StayOption) => {
+    if (offersFor?.name === o.name) {
+      setOffersFor(null);
+      return;
+    }
+    setOffersFor(o);
+    setOffersData(null);
+    if (!o.propertyToken || !trip?.startDate || !trip?.endDate) return;
+    setOffersLoading(true);
+    try {
+      const res = await resolveOffers({
+        propertyToken: o.propertyToken,
+        query: `${city} hotels`,
+        checkIn: trip.startDate,
+        checkOut: trip.endDate,
+        adults: travelers,
+      });
+      setOffersData(res.offers as ResolvedOffer[]);
+    } catch {
+      setOffersData([]);
+    } finally {
+      setOffersLoading(false);
+    }
+  };
+
   const lockIn = async (o: StayOption, otaSource?: string, otaPrice?: number) => {
+    if (!tripId) return;
     setLockingName(o.name);
     try {
       await saveStay({
@@ -419,8 +527,8 @@ export function TripsOverview({
         image: o.image,
         link: o.link,
         freeCancellation: o.freeCancellation,
-        checkIn: trip.startDate,
-        checkOut: trip.endDate,
+        checkIn: trip?.startDate,
+        checkOut: trip?.endDate,
         saved: true,
         locked: true,
       });
@@ -429,7 +537,30 @@ export function TripsOverview({
     }
   };
 
-  // bookings (saved stays + flights, chronological)
+  const addTrip = async () => {
+    if (!newCity.trim() || creating) return;
+    setCreating(true);
+    try {
+      const geo = await geocodePlace(newCity.trim()).catch(() => null);
+      const id = await createTrip({
+        title: newCity.trim(),
+        destCity: geo?.name ?? newCity.trim(),
+        destLat: geo?.lat,
+        destLng: geo?.lng,
+        destCountryCode: geo?.countryCode,
+        startDate: newStart || undefined,
+        endDate: newEnd || undefined,
+      });
+      setAdding(false);
+      setNewCity("");
+      setNewStart("");
+      setNewEnd("");
+      onSelectTrip(id);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const savedStays = (stays ?? []).filter((st) => st.saved !== false);
   const bookingRows = [
     ...(flights ?? []).map((f) => {
@@ -451,8 +582,7 @@ export function TripsOverview({
       key: `s-${st._id}`,
       kind: "stay" as const,
       title: st.name,
-      when:
-        st.checkIn && st.checkOut ? `${fmtShort(st.checkIn)} – ${fmtShort(st.checkOut)}` : fmtShort(st.checkIn),
+      when: st.checkIn && st.checkOut ? `${fmtShort(st.checkIn)} – ${fmtShort(st.checkOut)}` : fmtShort(st.checkIn),
       sortDate: st.checkIn ?? "",
       priceGbp: st.priceGbp,
       link: st.link,
@@ -461,274 +591,336 @@ export function TripsOverview({
     })),
   ].sort((a, b) => (a.sortDate || "9999").localeCompare(b.sortDate || "9999"));
 
+  const ph = trip ? phase(trip.startDate, trip.endDate) : null;
+  const canSearch = !!city && !!trip?.startDate && !!trip?.endDate;
+
   return (
     <div className="space-y-3">
-      {/* ── hero + permanent preferences ──────────────────────────────────── */}
-      <div
-        className="relative overflow-hidden rounded-xl border border-rule-soft/60 px-4 py-4"
-        style={{
-          background:
-            "linear-gradient(150deg, oklch(0.24 0.02 75 / 0.55), oklch(0.17 0.008 245 / 0.75) 55%)",
-        }}
-      >
-        <div
-          className="absolute inset-x-0 top-0 h-px opacity-40"
-          style={{
-            background:
-              "linear-gradient(90deg, transparent, var(--color-brass) 35%, var(--color-brass) 65%, transparent)",
-          }}
-        />
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-              Next trip{trip.destCountryCode ? ` · ${trip.destCountryCode.toUpperCase()}` : ""}
-            </p>
-            <h3 className="mt-0.5 font-display italic font-light text-[30px] leading-none text-paper truncate">
-              {city}
-            </h3>
-          </div>
-          <span
-            className={cn(
-              "shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em]",
-              BADGE_TONE[ph.tone],
-            )}
-          >
-            <CalendarRange className="mr-1 inline h-3 w-3 -translate-y-px" />
-            {ph.label}
-          </span>
-        </div>
-
-        {/* permanent search preferences: dates + travelers (persisted) */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+      {/* ── year band + add trip + globe ──────────────────────────────────── */}
+      <YearBand trips={trips} selectedId={tripId} onSelect={onSelectTrip} />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setAdding((a) => !a)}
+          className="flex items-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
+        >
+          <Plus className="h-3 w-3" /> trip
+        </button>
+        <button
+          type="button"
+          onClick={() => setGlobeOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
+        >
+          <Globe2 className="h-3 w-3" /> globe
+        </button>
+      </div>
+      {adding && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brass/30 bg-ink-2/40 px-3 py-2.5">
           <input
-            type="date"
-            value={trip.startDate ?? ""}
-            onChange={(ev) => void updateTrip({ tripId, patch: { startDate: ev.target.value } })}
-            className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50"
+            type="text"
+            value={newCity}
+            onChange={(ev) => setNewCity(ev.target.value)}
+            placeholder="Destination city…"
+            className="min-w-[140px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50"
           />
-          <span className="text-paper-faint">→</span>
-          <input
-            type="date"
-            value={trip.endDate ?? ""}
-            onChange={(ev) => void updateTrip({ tripId, patch: { endDate: ev.target.value } })}
-            className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50"
-          />
-          <div className="flex items-center gap-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1">
-            <Users className="h-3 w-3 text-paper-faint" />
-            <button
-              type="button"
-              onClick={() => void updateTrip({ tripId, patch: { travelers: Math.max(1, travelers - 1) } })}
-              className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper"
-            >
-              −
-            </button>
-            <span className="font-mono text-[11px] tabular-nums text-paper">{travelers}</span>
-            <button
-              type="button"
-              onClick={() => void updateTrip({ tripId, patch: { travelers: Math.min(9, travelers + 1) } })}
-              className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper"
-            >
-              +
-            </button>
-          </div>
-          {typeof trip.budgetGbp === "number" && trip.budgetGbp > 0 && (
-            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint">
-              budget <span className="text-brass tabular-nums">{gbp(trip.budgetGbp)}</span>
-              {perNightBudget ? ` · ≤${gbp(perNightBudget)}/nt` : ""}
-            </span>
-          )}
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <CashbackChips city={city} checkIn={trip.startDate} checkOut={trip.endDate} adults={travelers} />
+          <input type="date" value={newStart} onChange={(ev) => setNewStart(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none" />
+          <input type="date" value={newEnd} onChange={(ev) => setNewEnd(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none" />
           <button
             type="button"
-            disabled={!canSearch || searching}
-            onClick={runSearch}
-            className="flex items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!newCity.trim() || creating}
+            onClick={() => void addTrip()}
+            className="rounded-md border border-brass/40 bg-brass/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
           >
-            {searching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-            {results ? "refresh prices" : "load live prices"}
+            {creating ? "adding…" : "add"}
           </button>
-        </div>
-        {!canSearch && (
-          <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">
-            set both dates to enable live prices
-          </p>
-        )}
-        {searchErr && (
-          <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{searchErr}</p>
-        )}
-      </div>
-
-      {/* ── provider carousels ────────────────────────────────────────────── */}
-      {carousels.map((rail) => (
-        <div key={rail.key}>
-          <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-            {rail.label}
-            <span className="text-paper-faint/50">· {rail.items.length}</span>
-            {rail.key !== "best" && (
-              <span className="flex items-center gap-1 text-emerald-soft/70">
-                <PiggyBank className="h-2.5 w-2.5" /> cashback
-              </span>
-            )}
-          </p>
-          <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-            {rail.items.map(({ o, otaPrice }, i) => (
-              <StayCard
-                key={`${rail.key}-${i}-${o.name}`}
-                o={o}
-                otaPrice={otaPrice}
-                locking={lockingName === o.name}
-                onLock={(opt) =>
-                  void lockIn(
-                    opt,
-                    rail.key !== "best" ? rail.label : undefined,
-                    otaPrice,
-                  )
-                }
-              />
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {/* ── visual timeline (locked stays + flights + gaps) ───────────────── */}
-      {trip.startDate && trip.endDate && (
-        <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
-          <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-            Trip timeline
-          </p>
-          <BookingTimeline
-            start={trip.startDate}
-            end={trip.endDate}
-            stays={savedStays.filter((st) => st.locked === true)}
-            flights={(flights ?? []).map((f) => {
-              const seg0 = f.segments[0];
-              const dep = seg0?.depart ?? "";
-              return {
-                title: seg0 ? `${seg0.from} → ${f.segments[f.segments.length - 1].to}` : "Flight",
-                depart: dep,
-                time: /\d{2}:\d{2}/.test(dep) ? dep.match(/\d{2}:\d{2}/)![0] : undefined,
-              };
-            })}
-          />
-          {/* real transport links for what's left */}
-          {trip.originCity && (
-            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-              <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
-                <TrainFront className="h-3 w-3" /> transport
-              </span>
-              <a
-                href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`flights from ${trip.originCity} to ${city} on ${trip.startDate}`)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors"
-              >
-                Google Flights
-              </a>
-              <a
-                href={`https://www.rome2rio.com/s/${encodeURIComponent(trip.originCity)}/${encodeURIComponent(city)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors"
-              >
-                Rome2rio (all modes + prices)
-              </a>
-            </div>
-          )}
         </div>
       )}
 
-      {/* ── bookings list ─────────────────────────────────────────────────── */}
-      <div>
-        <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-          Bookings · {flights === undefined || stays === undefined ? "…" : bookingRows.length}
-        </p>
-        {flights === undefined || stays === undefined ? (
-          <p className="py-3 text-[12px] text-paper-faint">Loading bookings…</p>
-        ) : bookingRows.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-rule-soft/60 px-3 py-3">
-            <p className="text-[12px] text-paper-faint">
-              Nothing locked in yet — load live prices above and lock a stay, or
-              search flights in <span className="text-paper-dim">Find</span>.
-            </p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-rule-soft/30 overflow-hidden rounded-lg border border-rule-soft/50">
-            {bookingRows.map((r) => (
-              <li key={r.key} className="flex items-center gap-3 bg-ink-2/30 px-3 py-2.5">
-                <span
-                  className={cn(
-                    "grid h-7 w-7 shrink-0 place-items-center rounded-md border",
-                    r.kind === "flight"
-                      ? "border-brass/30 bg-brass/[0.08] text-brass"
-                      : "border-emerald-soft/30 bg-emerald-soft/[0.08] text-emerald-soft",
-                  )}
-                >
-                  {r.kind === "flight" ? <Plane className="h-3.5 w-3.5" /> : <BedDouble className="h-3.5 w-3.5" />}
+      {!trip || !tripId ? (
+        <p className="py-6 text-center text-[12px] text-paper-faint">No trip selected — add one above.</p>
+      ) : (
+        <>
+          {/* ── hero + preferences + dynamic budget ─────────────────────────── */}
+          <div
+            className="relative overflow-hidden rounded-xl border border-rule-soft/60 px-4 py-4"
+            style={{ background: "linear-gradient(150deg, oklch(0.24 0.02 75 / 0.55), oklch(0.17 0.008 245 / 0.75) 55%)" }}
+          >
+            <div className="absolute inset-x-0 top-0 h-px opacity-40" style={{ background: "linear-gradient(90deg, transparent, var(--color-brass) 35%, var(--color-brass) 65%, transparent)" }} />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                  Next trip{trip.destCountryCode ? ` · ${trip.destCountryCode.toUpperCase()}` : ""}
+                </p>
+                <h3 className="mt-0.5 truncate font-display italic font-light text-[30px] leading-none text-paper">{city}</h3>
+              </div>
+              {ph && (
+                <span className={cn("shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em]", BADGE_TONE[ph.tone])}>
+                  <CalendarRange className="mr-1 inline h-3 w-3 -translate-y-px" />
+                  {ph.label}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <p className="flex items-center gap-1.5 truncate text-[13px] text-paper">
-                    {r.title}
-                    {r.locked && (
-                      <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-amber">
-                        <Lock className="h-2 w-2" /> locked
-                      </span>
-                    )}
-                  </p>
-                  <p className="font-mono text-[10px] text-paper-faint">{r.when || "—"}</p>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <input type="date" value={trip.startDate ?? ""} onChange={(ev) => void updateTrip({ tripId, patch: { startDate: ev.target.value } })} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
+              <span className="text-paper-faint">→</span>
+              <input type="date" value={trip.endDate ?? ""} onChange={(ev) => void updateTrip({ tripId, patch: { endDate: ev.target.value } })} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
+              <div className="flex items-center gap-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1">
+                <Users className="h-3 w-3 text-paper-faint" />
+                <button type="button" onClick={() => void updateTrip({ tripId, patch: { travelers: Math.max(1, travelers - 1) } })} className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper">−</button>
+                <span className="font-mono text-[11px] tabular-nums text-paper">{travelers}</span>
+                <button type="button" onClick={() => void updateTrip({ tripId, patch: { travelers: Math.min(9, travelers + 1) } })} className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper">+</button>
+              </div>
+            </div>
+
+            {/* dynamic budget slider */}
+            <div className="mt-3 flex items-center gap-3">
+              <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">budget</span>
+              <input
+                type="range"
+                min={100}
+                max={8000}
+                step={50}
+                value={budget || 100}
+                onChange={(ev) => setBudgetDraft(Number(ev.target.value))}
+                onMouseUp={() => budgetDraft != null && void updateTrip({ tripId, patch: { budgetGbp: budgetDraft } })}
+                onTouchEnd={() => budgetDraft != null && void updateTrip({ tripId, patch: { budgetGbp: budgetDraft } })}
+                className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-ink-3 accent-[var(--color-brass)]"
+              />
+              <span className="font-mono text-[12px] font-bold tabular-nums text-brass">{gbp(budget || 0)}</span>
+              {perNightBudget && <span className="font-mono text-[10px] text-paper-faint">≤{gbp(perNightBudget)}/nt</span>}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-emerald-soft/80">
+                  <PiggyBank className="h-3 w-3" /> cashback
+                </span>
+                {BOOKING_PROVIDERS.map((p) => (
+                  <a key={p.key} href={p.url({ city, checkIn: trip.startDate, checkOut: trip.endDate, adults: travelers })} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                    {p.label}
+                  </a>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={!canSearch || searching}
+                onClick={() => void runSearch()}
+                className="flex items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {searching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                {results ? "refresh prices" : "load live prices"}
+              </button>
+            </div>
+            {!canSearch && <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">set both dates to enable live prices</p>}
+            {searchErr && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{searchErr}</p>}
+          </div>
+
+          {/* ── provider carousels ─────────────────────────────────────────── */}
+          {carousels.map((rail) => (
+            <div key={rail.key}>
+              <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                {rail.label}
+                <span className="text-paper-faint/50">· {rail.items.length}</span>
+                {rail.key !== "best" && (
+                  <span className="flex items-center gap-1 text-emerald-soft/70">
+                    <PiggyBank className="h-2.5 w-2.5" /> cashback
+                  </span>
+                )}
+              </p>
+              <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
+                {rail.items.map(({ o, otaPrice }, i) => (
+                  <StayCard
+                    key={`${rail.key}-${i}-${o.name}`}
+                    o={o}
+                    otaPrice={otaPrice}
+                    locking={lockingName === o.name}
+                    expanded={offersFor?.name === o.name}
+                    onDetails={(opt) => void openOffers(opt)}
+                    onLock={(opt) => void lockIn(opt, rail.key !== "best" ? rail.label : undefined, otaPrice)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* ── offers panel: WHO each link goes to + that rate's perks ─────── */}
+          {offersFor && (
+            <div className="rounded-xl border border-brass/40 bg-ink-2/40 px-4 py-3">
+              <div className="flex items-center justify-between">
+                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-brass">
+                  offers · {offersFor.name}
+                </p>
+                <button type="button" onClick={() => setOffersFor(null)} className="font-mono text-[11px] text-paper-faint hover:text-paper">×</button>
+              </div>
+              {offersLoading ? (
+                <p className="flex items-center gap-2 py-3 text-[12px] text-paper-faint">
+                  <Loader2 className="h-3 w-3 animate-spin" /> resolving exact provider pages (dates + guests prefilled)…
+                </p>
+              ) : !offersData || offersData.length === 0 ? (
+                <p className="py-3 text-[12px] text-paper-faint">
+                  No direct offers returned — use the cashback chips above (search lands prefilled).
+                </p>
+              ) : (
+                <ul className="mt-2 divide-y divide-rule-soft/30">
+                  {offersData.map((of, i) => (
+                    <li key={i} className="flex flex-wrap items-center gap-2 py-2">
+                      <span className="min-w-[110px] font-mono text-[11px] font-bold text-paper">{of.source}</span>
+                      {typeof of.priceGbp === "number" && (
+                        <span className="font-mono text-[12px] tabular-nums text-brass">{gbp(of.priceGbp)}/nt</span>
+                      )}
+                      {of.freeCancellation && (
+                        <span className="rounded-full border border-emerald-soft/40 bg-emerald-soft/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-emerald-soft">free cancel</span>
+                      )}
+                      {of.perks.slice(0, 3).map((p) => (
+                        <span key={p} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">{p}</span>
+                      ))}
+                      <span className="flex-1" />
+                      {of.link ? (
+                        <a href={of.link} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors">
+                          open at {of.source.split(".")[0]} <ExternalLink className="h-2.5 w-2.5" />
+                        </a>
+                      ) : (
+                        <span className="font-mono text-[9px] uppercase text-paper-faint/60">no direct link</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* ── trip timeline + transfers ──────────────────────────────────── */}
+          {trip.startDate && trip.endDate && (
+            <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
+              <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">Trip timeline</p>
+              <BookingTimeline
+                start={trip.startDate}
+                end={trip.endDate}
+                stays={savedStays.filter((st) => st.locked === true)}
+                flights={(flights ?? []).map((f) => {
+                  const seg0 = f.segments[0];
+                  const dep = seg0?.depart ?? "";
+                  return {
+                    title: seg0 ? `${seg0.from} → ${f.segments[f.segments.length - 1].to}` : "Flight",
+                    depart: dep,
+                    time: /\d{2}:\d{2}/.test(dep) ? dep.match(/\d{2}:\d{2}/)![0] : undefined,
+                  };
+                })}
+              />
+              {(legs ?? []).length > 0 && (
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
+                    <TrainFront className="h-3 w-3" /> transfers
+                  </span>
+                  {(legs ?? []).map((l, i) => (
+                    <span key={l._id} className="font-mono text-[10px] text-paper-dim">
+                      {i > 0 && <span className="text-paper-faint/50"> → </span>}
+                      {l.city}
+                      {l.routeDurationText && <span className="text-paper-faint"> ({l.transportMode ?? "route"} · {l.routeDurationText})</span>}
+                    </span>
+                  ))}
                 </div>
-                {typeof r.priceGbp === "number" && (
-                  <span className="font-mono text-[12px] tabular-nums text-paper-dim">{gbp(r.priceGbp)}</span>
-                )}
-                {r.stayId && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      r.locked
-                        ? void setLocked({ stayId: r.stayId!, locked: false })
-                        : void setLocked({ stayId: r.stayId!, locked: true })
-                    }
-                    className="text-paper-faint hover:text-amber transition-colors"
-                    aria-label={r.locked ? "unlock stay" : "lock stay"}
-                  >
-                    {r.locked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
-                  </button>
-                )}
-                {r.stayId && !r.locked && (
-                  <button
-                    type="button"
-                    onClick={() => void removeStay({ stayId: r.stayId! })}
-                    className="font-mono text-[11px] text-paper-faint/50 hover:text-rose-soft transition-colors"
-                    aria-label="remove stay"
-                  >
-                    ×
-                  </button>
-                )}
-                {r.link && (
-                  <a
-                    href={r.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-paper-faint hover:text-brass transition-colors"
-                    aria-label={`open ${r.title}`}
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
+              )}
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
+                  <TrainFront className="h-3 w-3" /> transport
+                </span>
+                {trip.originCity && (
+                  <a href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`flights from ${trip.originCity} to ${city} on ${trip.startDate}`)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                    Google Flights
                   </a>
                 )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+                {trip.originCity && (
+                  <a href={`https://www.rome2rio.com/s/${encodeURIComponent(trip.originCity)}/${encodeURIComponent(city)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                    Rome2rio (all modes + prices)
+                  </a>
+                )}
+                <Link href={`/travel/${tripId}`} className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                  plan transfers →
+                </Link>
+              </div>
+            </div>
+          )}
 
-      <Link
-        href={`/travel/${tripId}`}
-        className="flex items-center justify-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/30 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
-      >
+          {/* ── bookings ───────────────────────────────────────────────────── */}
+          <div>
+            <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+              Bookings · {flights === undefined || stays === undefined ? "…" : bookingRows.length}
+            </p>
+            {flights === undefined || stays === undefined ? (
+              <p className="py-3 text-[12px] text-paper-faint">Loading bookings…</p>
+            ) : bookingRows.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-rule-soft/60 px-3 py-3">
+                <p className="text-[12px] text-paper-faint">
+                  Nothing locked in yet — load live prices above and lock a stay, or search flights in <span className="text-paper-dim">Find</span>.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-rule-soft/30 overflow-hidden rounded-lg border border-rule-soft/50">
+                {bookingRows.map((r) => (
+                  <li key={r.key} className="flex items-center gap-3 bg-ink-2/30 px-3 py-2.5">
+                    <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md border", r.kind === "flight" ? "border-brass/30 bg-brass/[0.08] text-brass" : "border-emerald-soft/30 bg-emerald-soft/[0.08] text-emerald-soft")}>
+                      {r.kind === "flight" ? <Plane className="h-3.5 w-3.5" /> : <BedDouble className="h-3.5 w-3.5" />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-1.5 truncate text-[13px] text-paper">
+                        {r.title}
+                        {r.locked && (
+                          <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-amber">
+                            <Lock className="h-2 w-2" /> locked
+                          </span>
+                        )}
+                      </p>
+                      <p className="font-mono text-[10px] text-paper-faint">{r.when || "—"}</p>
+                    </div>
+                    {typeof r.priceGbp === "number" && <span className="font-mono text-[12px] tabular-nums text-paper-dim">{gbp(r.priceGbp)}</span>}
+                    {r.stayId && (
+                      <button type="button" onClick={() => void setLocked({ stayId: r.stayId!, locked: !r.locked })} className="text-paper-faint hover:text-amber transition-colors" aria-label={r.locked ? "unlock stay" : "lock stay"}>
+                        {r.locked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                      </button>
+                    )}
+                    {r.stayId && !r.locked && (
+                      <button type="button" onClick={() => void removeStay({ stayId: r.stayId! })} className="font-mono text-[11px] text-paper-faint/50 hover:text-rose-soft transition-colors" aria-label="remove stay">×</button>
+                    )}
+                    {r.link && (
+                      <a href={r.link} target="_blank" rel="noreferrer" className="text-paper-faint hover:text-brass transition-colors" aria-label={`open ${r.title}`}>
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <Link href={`/travel/${tripId}`} className="flex items-center justify-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/30 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors">
         <Maximize2 className="h-3 w-3" /> open full planner
-      </Link>
+          </Link>
+        </>
+      )}
+
+      {/* ── globe overlay: where you are, when ───────────────────────────── */}
+      <Sheet open={globeOpen} onClose={() => setGlobeOpen(false)} title="Trips · where & when">
+        <div className="h-[420px] w-full">
+          {globeData.points.length === 0 ? (
+            <p className="p-6 text-center text-[12px] text-paper-faint">
+              No trips with coordinates yet — new trips added here are geocoded automatically.
+            </p>
+          ) : (
+            <TripGlobe
+              points={globeData.points}
+              arcs={globeData.arcs}
+              focus={globeData.focus}
+              onPointClick={(id) => {
+                onSelectTrip(id as Id<"trips">);
+                setGlobeOpen(false);
+              }}
+              className="h-full w-full rounded-xl overflow-hidden"
+            />
+          )}
+        </div>
+      </Sheet>
     </div>
   );
 }

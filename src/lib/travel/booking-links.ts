@@ -56,6 +56,15 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `https://www.lastminute.com/hotels/${enc(city.toLowerCase().replace(/\s+/g, "-"))}.html`,
   },
   {
+    key: "hotels",
+    label: "Hotels.com",
+    url: ({ city, checkIn, checkOut, adults }) =>
+      `https://www.hotels.com/Hotel-Search?destination=${enc(city)}` +
+      (checkIn ? `&startDate=${checkIn}` : "") +
+      (checkOut ? `&endDate=${checkOut}` : "") +
+      `&adults=${adults ?? 2}`,
+  },
+  {
     key: "trip",
     label: "Trip.com",
     url: ({ city, checkIn, checkOut, adults }) =>

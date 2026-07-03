@@ -788,7 +788,12 @@ export function TravelWidget() {
         {/* ── TRIPS overview (streamlined default: next trip + bookings +
             cashback booking chips) ── */}
         {mode === "trips" && (
-          <TripsOverview tripId={selectedId} trip={selectedTrip} />
+          <TripsOverview
+            tripId={selectedId}
+            trip={selectedTrip}
+            trips={trips ?? []}
+            onSelectTrip={(id) => setOverride(id)}
+          />
         )}
 
         {/* ── FIND / DEAL mode (hotels via Booking.com + flights) ── */}

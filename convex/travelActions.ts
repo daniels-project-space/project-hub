@@ -877,6 +877,98 @@ export const searchStays = action({
   },
 });
 
+/**
+ * resolveStayOffers (2026-07-03) — the "auto-fill my search on the provider's
+ * site" feature, WITHOUT Browserbase: SerpAPI's property-detail call returns,
+ * per OTA, a DIRECT link to that exact property with the dates/guests already
+ * applied, plus the rate's own perks (free breakfast / Wi-Fi / …) and its
+ * free-cancellation flag. One credit per click, called on demand only.
+ */
+export const resolveStayOffers = action({
+  args: {
+    propertyToken: v.string(),
+    query: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    available: boolean;
+    reason?: string;
+    amenities: string[];
+    offers: {
+      source: string;
+      link?: string;
+      priceGbp?: number;
+      totalGbp?: number;
+      freeCancellation?: boolean;
+      perks: string[];
+    }[];
+  }> => {
+    const key = await getSecret(ctx, SECRET.serpapi);
+    if (!key) return { available: false, reason: "SERPAPI_KEY absent", amenities: [], offers: [] };
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
+    const params = new URLSearchParams({
+      engine: "google_hotels",
+      q: args.query,
+      check_in_date: args.checkIn,
+      check_out_date: args.checkOut,
+      adults: String(adults),
+      currency: GBP,
+      gl: "uk",
+      hl: "en",
+      property_token: args.propertyToken,
+      api_key: key,
+    });
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.error) return { available: false, reason: String(json.error), amenities: [], offers: [] };
+      const amenities: string[] = Array.isArray(json?.amenities)
+        ? json.amenities.filter((a: unknown) => typeof a === "string").slice(0, 10)
+        : [];
+      const raw: any[] = [
+        ...(Array.isArray(json?.featured_prices) ? json.featured_prices : []),
+        ...(Array.isArray(json?.prices) ? json.prices : []),
+      ];
+      const seen = new Set<string>();
+      const offers = raw
+        .map((o: any) => {
+          const source = typeof o?.source === "string" ? o.source : "";
+          if (!source || seen.has(source.toLowerCase())) return null;
+          seen.add(source.toLowerCase());
+          // Perk strings live in different fields per offer shape — collect all.
+          const perks: string[] = [];
+          for (const f of [o?.amenities, o?.rooms?.[0]?.amenities]) {
+            if (Array.isArray(f)) for (const x of f) if (typeof x === "string") perks.push(x);
+          }
+          const linkOf = (v: unknown) => (typeof v === "string" && v.startsWith("http") ? v : undefined);
+          return {
+            source,
+            link: linkOf(o?.link) ?? linkOf(o?.rooms?.[0]?.link),
+            priceGbp: finiteOrUndef(o?.rate_per_night?.extracted_lowest),
+            totalGbp: finiteOrUndef(o?.total_rate?.extracted_lowest),
+            freeCancellation:
+              typeof o?.free_cancellation === "boolean" ? o.free_cancellation : undefined,
+            perks: perks.slice(0, 5),
+          };
+        })
+        .filter(Boolean) as any[];
+      return { available: true, amenities, offers: offers.slice(0, 10) };
+    } catch (e) {
+      return {
+        available: false,
+        reason: e instanceof Error ? e.message : String(e),
+        amenities: [],
+        offers: [],
+      };
+    }
+  },
+});
+
 // Resolve the EXACT booking link for one hotel (called on click, not per result,
 // to spare quota). Returns the Booking.com property link when available, else the
 // hotel's own site / first OTA link. Falls back to null so the caller can use the
