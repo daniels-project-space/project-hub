@@ -255,6 +255,9 @@ export function WealthWidget() {
   const [mode, setMode] = useState<"gbp" | "pct">("gbp");
 
   const cardHistory = useQuery(api.wealth.getHistory, { range });
+  // Monthly Revolut savings check-in (due from the 5th until answered).
+  const checkin = useQuery(api.wealth.getSavingsCheckin);
+  const saveCheckin = useMutation(api.wealth.checkinSavings);
 
   const loading = wealth === undefined;
   // Drive the headline from the FRESH intraday total (Phase A `currentTotalGBP`
@@ -386,6 +389,13 @@ export function WealthWidget() {
           />
         ) : (
           <>
+            {checkin?.due && (
+              <SavingsCheckinCard
+                savingsGbp={checkin.savingsGbp}
+                onSave={(v) => saveCheckin({ valueGBP: v })}
+              />
+            )}
+
             {/* Headline card — value + delta + inline sparkline behind it,
                 with in-card range pills + £/% toggle (v1 parity). */}
             <Card
@@ -1407,6 +1417,60 @@ function RentalRevenueTile({
           />
         </div>
       )}
+    </Card>
+  );
+}
+
+// Monthly savings check-in (2026-07-03, per Daniel): from the 5th of each
+// month, ask for the REAL Revolut savings balance. The answer replaces the
+// month-end accrued estimate (see convex/wealth.ts bankMonthlyCashflow) so
+// rental profit accumulates in net worth anchored to reality. Binance /
+// Coinbase are live-fed — transfers from them net out automatically; manual
+// tiles (Stocks/Gold/Inventory) need their own update on a transfer.
+function SavingsCheckinCard({
+  savingsGbp,
+  onSave,
+}: {
+  savingsGbp: number | null;
+  onSave: (v: number) => void;
+}) {
+  const [val, setVal] = useState("");
+  const parsed = parseFloat(val.replace(/,/g, ""));
+  const valid = Number.isFinite(parsed) && parsed >= 0;
+  return (
+    <Card className="border-amber/40">
+      <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-amber">
+        Monthly savings check-in
+      </p>
+      <p className="mt-1.5 text-[13px] leading-snug text-paper-dim">
+        What's in your Revolut savings right now? This becomes the tracked
+        savings figure for the month
+        {savingsGbp != null ? ` (currently £${Math.round(savingsGbp).toLocaleString()})` : ""}.
+      </p>
+      <div className="mt-2.5 flex items-center gap-2">
+        <span className="font-mono text-sm text-paper-faint">£</span>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          placeholder="0.00"
+          className="flex-1 min-w-0 bg-ink-3/60 border border-rule-soft/60 rounded-md px-2.5 py-1.5 font-mono text-sm tabular-nums text-paper focus:outline-none focus:border-amber/50"
+        />
+        <button
+          type="button"
+          disabled={!valid}
+          onClick={() => valid && onSave(parsed)}
+          className="px-3 py-1.5 rounded-md font-mono text-[11px] uppercase tracking-[0.16em] bg-amber/20 text-amber border border-amber/40 hover:bg-amber/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Save
+        </button>
+      </div>
+      <p className="mt-2 font-mono text-[9px] leading-relaxed text-paper-faint">
+        Binance/Coinbase moves are tracked automatically. If part of this came
+        from selling Stocks, Gold or Inventory, update that tile too so it
+        isn't counted twice.
+      </p>
     </Card>
   );
 }

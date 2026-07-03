@@ -196,11 +196,20 @@ async function computeCashflowAdjustment(ctx: any): Promise<{
   netCashflowGbp: number;
 }> {
   // Confirmed rental revenue: RMv2 NET confirmed.month_revenue singleton.
+  // MONTH GUARD (2026-07-03): the cache refreshes on a 12h poll, so for up to
+  // half a day after a month rolls over it still holds LAST month's figure.
+  // Counting that against the new month's expense accrual both double-counts
+  // (last month's profit is banked into "Savings (Revolut)" at month end) and
+  // mislabels the widget. A cache row from a previous month reads as £0 until
+  // the first poll of the new month lands.
   const rentalRow = await ctx.db
     .query("rentalRevenue")
     .withIndex("by_source", (q: any) => q.eq("source", "rmv2"))
     .first();
-  const confirmedRentalGbp = rentalRow?.monthRevenueGbp ?? 0;
+  const currentMonthKey = new Date().toISOString().slice(0, 7); // YYYY-MM (UTC)
+  const rowMonthKey = (rentalRow?.monthLabel ?? "").slice(0, 7);
+  const confirmedRentalGbp =
+    rowMonthKey === currentMonthKey ? (rentalRow?.monthRevenueGbp ?? 0) : 0;
 
   // Monthly expenses total (sum of all expense rows' amountGBP).
   const expenseRows = await ctx.db.query("expenses").collect();
@@ -1563,6 +1572,141 @@ export const _rebucketFrozenJune2026 = internalMutation({
       }
     }
     return { patched };
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MONTHLY SAVINGS (2026-07-03, per Daniel). Rental profit lands in his pocket
+// as payouts, so it must ACCUMULATE in net worth instead of evaporating when
+// the in-month cashflow adjustment resets at rollover:
+//   1. Month-end cron banks the closing month's net cashflow (confirmed rental
+//      − full month expenses) into a persistent "Savings (Revolut)" cash asset.
+//   2. From the 5th of each month the wealth widget prompts for the REAL
+//      Revolut savings balance; the answer REPLACES the accrued estimate (the
+//      monthly truth anchor). Binance/Coinbase are live-fed, so money moved
+//      from them to Revolut nets out automatically; only manual tiles
+//      (Stocks/Gold/Inventory) need a matching manual update on a transfer.
+
+const SAVINGS_LABEL = "Savings (Revolut)";
+const BANKED_MONTH_KEY = "savingsBankedMonth"; // settings: last month banked (YYYY-MM)
+const CHECKIN_MONTH_KEY = "savingsCheckinMonth"; // settings: last month checked in (YYYY-MM)
+
+async function readSettingStr(ctx: any, key: string): Promise<string | null> {
+  const row = await ctx.db
+    .query("settings")
+    .withIndex("by_key", (q: any) => q.eq("key", key))
+    .first();
+  return typeof row?.value === "string" ? row.value : null;
+}
+
+async function writeSettingStr(ctx: any, key: string, value: string) {
+  const row = await ctx.db
+    .query("settings")
+    .withIndex("by_key", (q: any) => q.eq("key", key))
+    .first();
+  if (row) await ctx.db.patch(row._id, { value });
+  else await ctx.db.insert("settings", { key, value });
+}
+
+async function findSavingsAsset(ctx: any) {
+  const rows = await ctx.db
+    .query("assets")
+    .withIndex("by_category", (q: any) => q.eq("category", "cash"))
+    .collect();
+  return rows.find((r: any) => r.label === SAVINGS_LABEL) ?? null;
+}
+
+/**
+ * bankMonthlyCashflow — cron target, runs DAILY at 23:50 UTC but only acts on
+ * the last day of a month (cheap early-exit otherwise; the settings guard also
+ * makes it idempotent). Adds the closing month's net cashflow (confirmed
+ * rental − FULL month expenses — the value the in-month adjustment converges
+ * to) onto the savings asset, so the headline stays continuous at rollover.
+ * A negative month (expenses > rental) banks negative — that is real.
+ */
+export const bankMonthlyCashflow = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = new Date();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    if (tomorrow.getUTCMonth() === now.getUTCMonth()) {
+      return { banked: false, reason: "not month-end" };
+    }
+    const monthKey = now.toISOString().slice(0, 7);
+    if ((await readSettingStr(ctx, BANKED_MONTH_KEY)) === monthKey) {
+      return { banked: false, reason: "already banked" };
+    }
+    const cf = await computeCashflowAdjustment(ctx);
+    const amount = cf.confirmedRentalGbp - cf.expensesMonthlyGbp;
+    const existing = await findSavingsAsset(ctx);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        lastValueGBP: (existing.lastValueGBP ?? 0) + amount,
+        lastPricedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("assets", {
+        category: "cash",
+        label: SAVINGS_LABEL,
+        source: "manual",
+        currency: GBP,
+        lastValueGBP: amount,
+        lastPricedAt: Date.now(),
+      });
+    }
+    await writeSettingStr(ctx, BANKED_MONTH_KEY, monthKey);
+    await recomputeLiveDoc(ctx);
+    return { banked: true, monthKey, amount };
+  },
+});
+
+/** Widget state for the monthly Revolut check-in banner. */
+export const getSavingsCheckin = query({
+  args: {},
+  handler: async (ctx) => {
+    const now = new Date();
+    const monthKey = now.toISOString().slice(0, 7);
+    const lastCheckin = await readSettingStr(ctx, CHECKIN_MONTH_KEY);
+    const savings = await findSavingsAsset(ctx);
+    return {
+      // Prompt from the 5th of the month until this month's answer lands.
+      due: now.getUTCDate() >= 5 && lastCheckin !== monthKey,
+      monthKey,
+      lastCheckinMonth: lastCheckin,
+      savingsGbp: savings?.lastValueGBP ?? null,
+      savingsPricedAt: savings?.lastPricedAt ?? null,
+    };
+  },
+});
+
+/**
+ * checkinSavings — the monthly truth anchor. Daniel enters what is actually in
+ * Revolut savings on the 5th; it REPLACES the accrued estimate wholesale.
+ */
+export const checkinSavings = mutation({
+  args: { valueGBP: v.number() },
+  handler: async (ctx, { valueGBP }) => {
+    assertFinite("valueGBP", valueGBP);
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const existing = await findSavingsAsset(ctx);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        lastValueGBP: valueGBP,
+        lastPricedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("assets", {
+        category: "cash",
+        label: SAVINGS_LABEL,
+        source: "manual",
+        currency: GBP,
+        lastValueGBP: valueGBP,
+        lastPricedAt: Date.now(),
+      });
+    }
+    await writeSettingStr(ctx, CHECKIN_MONTH_KEY, monthKey);
+    await recomputeLiveDoc(ctx);
+    return { monthKey, valueGBP };
   },
 });
 

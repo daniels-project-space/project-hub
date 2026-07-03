@@ -66,6 +66,19 @@ crons.interval(
   internal.wealthActions.pollMusicIncomeCron,
 );
 
+// Month-end profit banking (2026-07-03, per Daniel): rental profit lands in
+// his pocket as payouts and must ACCUMULATE in net worth, not evaporate at
+// rollover. Daily 23:50 UTC tick that only acts on the LAST day of a month —
+// banks (confirmed rental − full month expenses) into the "Savings (Revolut)"
+// asset. Idempotent (settings guard) + cheap early-exit on every other day.
+// The 5th-of-month Revolut check-in in the wealth widget then anchors the
+// accrued estimate to the real balance.
+crons.cron(
+  "bank-monthly-cashflow",
+  "50 23 * * *",
+  internal.wealth.bankMonthlyCashflow,
+);
+
 // Daily idea generation (2026-07-03). ONE cheap OpenRouter DeepSeek call per
 // day produces BOTH the "Idea of the Day" and the "Channel Idea" cards — the
 // widgets were static "generation is paused" placeholders before this. Runs
