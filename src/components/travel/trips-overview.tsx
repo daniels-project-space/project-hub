@@ -167,6 +167,7 @@ type TripLite = {
   destLng?: number;
   destCountryCode?: string;
   travelers?: number;
+  stayStyle?: string;
   active?: boolean;
 };
 
@@ -640,10 +641,17 @@ export function TripsOverview({
   const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
 
   const city = trip?.destCity || trip?.title || "";
-  const travelers = trip?.travelers && trip.travelers > 0 ? trip.travelers : 2;
+  const travelers = trip?.travelers && trip.travelers > 0 ? trip.travelers : 1;
+  const stayStyle = trip?.stayStyle ?? "any";
   const s = parseISO(trip?.startDate);
   const e = parseISO(trip?.endDate);
   const nights = s && e ? Math.max(0, Math.round((e.getTime() - s.getTime()) / 86_400_000)) : null;
+  // Google Hotels + every portal cap a single stay search at 30 NIGHTS — longer
+  // ranges silently collapse to 1 night (the "£7 total" bug). Clamp all
+  // searches + provider links to the first 30 nights and say so.
+  const clamped = !!(nights && nights > 30);
+  const effCheckOut =
+    clamped && trip?.startDate ? addDays(trip.startDate, 30) : trip?.endDate;
   const budget = budgetDraft ?? trip?.budgetGbp ?? 0;
   const perNightBudget = budget && nights ? Math.max(20, Math.floor(budget / nights)) : undefined;
 
@@ -659,11 +667,11 @@ export function TripsOverview({
         .filter(Boolean) as { o: StayOption; otaPrice?: number }[],
     })).filter((c) => c.items.length > 0);
     return [
-      { key: "best", label: "Best price", items: results.slice(0, 16).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
+      { key: "best", label: "Best price", items: results.slice(0, 40).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
       ...byProvider.map((c) => ({
         key: c.key,
         label: c.label,
-        items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 12),
+        items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 20),
       })),
     ];
   }, [results]);
@@ -705,11 +713,12 @@ export function TripsOverview({
     setOffersFor(null);
     try {
       const res = await search({
-        query: `${city} hotels`,
+        query: stayStyle === "villas" ? `${city} villas` : `${city} hotels`,
         checkIn: trip.startDate,
-        checkOut: trip.endDate,
+        checkOut: effCheckOut ?? trip.endDate,
         adults: travelers,
         maxPricePerNight: perNightBudget,
+        vacationRentals: stayStyle === "villas" ? true : undefined,
       });
       if (!res.available) setSearchErr(res.reason ?? "search unavailable");
       setResults(res.options ?? []);
@@ -734,7 +743,7 @@ export function TripsOverview({
         propertyToken: o.propertyToken,
         query: `${city} hotels`,
         checkIn: trip.startDate,
-        checkOut: trip.endDate,
+        checkOut: effCheckOut ?? trip.endDate,
         adults: travelers,
       });
       setOffersData(res as StayDetail);
@@ -901,6 +910,27 @@ export function TripsOverview({
                 <span className="font-mono text-[11px] tabular-nums text-paper">{travelers}</span>
                 <button type="button" onClick={() => void updateTrip({ tripId, patch: { travelers: Math.min(9, travelers + 1) } })} className="px-1 font-mono text-[12px] text-paper-faint hover:text-paper">+</button>
               </div>
+              {/* stay style: villas for Bali-likes, hotels for Turkey-likes */}
+              <div className="flex items-center gap-0.5 rounded-md border border-rule-soft/60 bg-ink-3/60 p-0.5">
+                {(["any", "villas", "hotels"] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => void updateTrip({ tripId, patch: { stayStyle: st } })}
+                    className={cn(
+                      "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors",
+                      stayStyle === st ? "bg-brass/20 text-brass" : "text-paper-faint hover:text-paper",
+                    )}
+                  >
+                    {st}
+                  </button>
+                ))}
+              </div>
+              {clamped && (
+                <span className="rounded-full border border-amber/40 bg-amber/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-amber">
+                  portals cap at 30 nights — searching {fmtShort(trip.startDate)}–{fmtShort(effCheckOut)}
+                </span>
+              )}
             </div>
 
             {/* dynamic budget slider */}
@@ -927,7 +957,7 @@ export function TripsOverview({
                   <PiggyBank className="h-3 w-3" /> cashback
                 </span>
                 {BOOKING_PROVIDERS.map((p) => (
-                  <a key={p.key} href={p.url({ city, checkIn: trip.startDate, checkOut: trip.endDate, adults: travelers })} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                  <a key={p.key} href={p.url({ city, checkIn: trip.startDate, checkOut: effCheckOut, adults: travelers })} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
                     {p.label}
                   </a>
                 ))}
@@ -958,6 +988,22 @@ export function TripsOverview({
             {searchErr && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{searchErr}</p>}
           </div>
 
+          {/* searching skeleton — instant feedback while SerpAPI pages arrive */}
+          {searching && !results && (
+            <div className="no-scrollbar flex gap-2.5 overflow-x-auto pb-1">
+              {Array.from({ length: 5 }, (_, i) => (
+                <div key={i} className="w-[232px] shrink-0 animate-pulse overflow-hidden rounded-xl border border-rule-soft/40 bg-ink-2/40">
+                  <div className="h-[104px] w-full bg-ink-3/60" />
+                  <div className="space-y-2 p-2.5">
+                    <div className="h-3 w-3/4 rounded bg-ink-3/60" />
+                    <div className="h-4 w-1/2 rounded bg-ink-3/60" />
+                    <div className="h-3 w-full rounded bg-ink-3/50" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* ── provider carousels ─────────────────────────────────────────── */}
           {carousels.map((rail) => (
             <div key={rail.key}>
@@ -977,7 +1023,7 @@ export function TripsOverview({
                     o={o}
                     otaPrice={otaPrice}
                     checkIn={trip.startDate}
-                    checkOut={trip.endDate}
+                    checkOut={effCheckOut}
                     adults={travelers}
                     locking={lockingName === o.name}
                     expanded={offersFor?.name === o.name}
@@ -1005,8 +1051,10 @@ export function TripsOverview({
                 {(offersData.images.length > 0 || offersFor.image) && (
                   <div className="no-scrollbar flex snap-x gap-2 overflow-x-auto">
                     {(offersData.images.length > 0 ? offersData.images : [offersFor.image!]).map((im, i) => (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img key={i} src={im} alt="" loading="lazy" className="h-40 w-auto shrink-0 snap-start rounded-lg object-cover" />
+                      <a key={i} href={im} target="_blank" rel="noreferrer" className="shrink-0 snap-start">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={im} alt="" loading="lazy" className="h-40 w-auto rounded-lg object-cover transition-opacity hover:opacity-80" />
+                      </a>
                     ))}
                   </div>
                 )}
@@ -1015,6 +1063,11 @@ export function TripsOverview({
                   <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.22em] text-brass">
                     compare providers · total for your stay
                   </p>
+                  {offersData.amenities.length > 0 && (
+                    <p className="mb-1.5 font-mono text-[9px] text-emerald-soft/80">
+                      property includes: {offersData.amenities.slice(0, 6).join(" · ").toLowerCase()}
+                    </p>
+                  )}
                   {offersData.offers.length === 0 ? (
                     <p className="py-2 text-[12px] text-paper-faint">No per-provider offers returned for these dates.</p>
                   ) : (

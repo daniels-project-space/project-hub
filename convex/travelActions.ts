@@ -799,7 +799,7 @@ export const searchStays = action({
   ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
     const key = await getSecret(ctx, SECRET.serpapi);
     if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
-    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
 
     const baseParams: Record<string, string> = {
       engine: "google_hotels",
@@ -927,7 +927,7 @@ export const resolveStayOffers = action({
     const key = await getSecret(ctx, SECRET.serpapi);
     if (!key)
       return { available: false, reason: "SERPAPI_KEY absent", amenities: [], images: [], offers: [] };
-    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
     const params = new URLSearchParams({
       engine: "google_hotels",
       q: args.query,
@@ -969,8 +969,15 @@ export const resolveStayOffers = action({
           seen.add(source.toLowerCase());
           // Perk strings live in different fields per offer shape — collect all.
           const perks: string[] = [];
-          for (const f of [o?.amenities, o?.rooms?.[0]?.amenities]) {
+          // Perk text hides in several fields depending on the OTA: amenities,
+          // per-room amenities, discount_remarks ("Breakfast included", "20%
+          // off"…) and the room name itself when it embeds the board basis.
+          for (const f of [o?.amenities, o?.rooms?.[0]?.amenities, o?.discount_remarks]) {
             if (Array.isArray(f)) for (const x of f) if (typeof x === "string") perks.push(x);
+          }
+          const roomName = o?.rooms?.[0]?.name;
+          if (typeof roomName === "string" && /breakfast|half board|all inclusive/i.test(roomName)) {
+            perks.push(roomName);
           }
           const linkOf = (v: unknown) => (typeof v === "string" && v.startsWith("http") ? v : undefined);
           // Refundability nuance: full free-cancel flag, or a dated/partial note.

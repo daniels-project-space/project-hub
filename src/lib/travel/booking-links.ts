@@ -31,7 +31,7 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `https://www.booking.com/searchresults.html?ss=${enc(city)}` +
       (checkIn ? `&checkin=${checkIn}` : "") +
       (checkOut ? `&checkout=${checkOut}` : "") +
-      `&group_adults=${adults ?? 2}&no_rooms=1`,
+      `&group_adults=${adults ?? 1}&no_rooms=1`,
   },
   {
     key: "expedia",
@@ -40,7 +40,7 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `https://www.expedia.co.uk/Hotel-Search?destination=${enc(city)}` +
       (checkIn ? `&startDate=${checkIn}` : "") +
       (checkOut ? `&endDate=${checkOut}` : "") +
-      `&adults=${adults ?? 2}`,
+      `&adults=${adults ?? 1}`,
   },
   {
     key: "trivago",
@@ -62,7 +62,7 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `https://www.hotels.com/Hotel-Search?destination=${enc(city)}` +
       (checkIn ? `&startDate=${checkIn}` : "") +
       (checkOut ? `&endDate=${checkOut}` : "") +
-      `&adults=${adults ?? 2}`,
+      `&adults=${adults ?? 1}`,
   },
   {
     key: "trip",
@@ -71,6 +71,6 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `https://uk.trip.com/hotels/list?cityName=${enc(city)}` +
       (checkIn ? `&checkin=${checkIn}` : "") +
       (checkOut ? `&checkout=${checkOut}` : "") +
-      `&adult=${adults ?? 2}&crn=1`,
+      `&adult=${adults ?? 1}&crn=1`,
   },
 ];

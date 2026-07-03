@@ -290,6 +290,10 @@ export default defineSchema({
     // Permanent search preferences (2026-07-03): traveler count every stay /
     // flight search for this trip uses. Dates already live on the trip.
     travelers: v.optional(v.number()),
+    // Stay style per destination (Daniel: villas for Bali-likes, hotels for
+    // Turkey-likes): "villas" | "hotels" | "any". Villas searches Google's
+    // vacation-rentals inventory instead of hotels.
+    stayStyle: v.optional(v.string()),
     // --- v3 multi-mode (Stage 0, additive/backward-compatible) ---
     mode: v.optional(v.string()), // "planner" | "deal" | "trip" — drives widget mode (Stage 1)
     categories: v.optional(v.array(v.string())), // enabled activity kinds (constrains planTrip)
