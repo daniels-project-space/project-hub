@@ -470,130 +470,221 @@ type FlightHit = {
 };
 
 function TransferTile({
+  tripId,
   defaultFrom,
   defaultTo,
-  date,
+  defaultDate,
   adults,
 }: {
+  tripId: Id<"trips"> | null;
   defaultFrom: string;
   defaultTo: string;
-  date?: string;
+  defaultDate?: string;
   adults: number;
 }) {
   const searchFlights = useAction(api.travelActions.searchFlights);
-  // IATA-controlled: the AirportField dropdown matches free text to real
-  // airports (multiple suggestions), so "Bali" resolves to DPS · Denpasar.
+  const routeLeg = useAction(api.travelActions.routeLeg);
+  const addFlight = useMutation(api.tripExtras.addFlight);
+
+  type TransportMode = "plane" | "ground" | "taxi";
+  const [tmode, setTmode] = useState<TransportMode>("plane");
+  const [date, setDate] = useState(defaultDate ?? "");
+  // plane ends (IATA via dropdown)
   const [fromIata, setFromIata] = useState("");
-  const [fromLabel, setFromLabel] = useState(defaultFrom);
+  const [fromLabel, setFromLabel] = useState("");
   const [toIata, setToIata] = useState("");
-  const [toLabel, setToLabel] = useState(defaultTo);
+  const [toLabel, setToLabel] = useState("");
+  // ground ends (free-text places)
+  const [fromPlace, setFromPlace] = useState(defaultFrom);
+  const [toPlace, setToPlace] = useState(defaultTo);
   const [hits, setHits] = useState<FlightHit[] | null>(null);
+  const [route, setRoute] = useState<{ durationText?: string; distanceText?: string; distanceKm?: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [added, setAdded] = useState<string | null>(null);
 
-  const run = async () => {
+  const runPlane = async () => {
     if (!fromIata || !toIata || !date || busy) return;
-    setBusy(true);
-    setErr(null);
+    setBusy(true); setErr(null); setRoute(null);
     try {
-      const res = await searchFlights({
-        origin: fromIata,
-        destination: toIata,
-        outboundDate: date,
-        adults,
-      });
+      const res = await searchFlights({ origin: fromIata, destination: toIata, outboundDate: date, adults });
       if (!res.available) setErr(res.reason ?? "no flights returned");
       setHits((res.options ?? []).slice(0, 5) as FlightHit[]);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
+  };
+
+  const runGround = async () => {
+    if (!fromPlace.trim() || !toPlace.trim() || busy) return;
+    setBusy(true); setErr(null); setHits(null);
+    try {
+      const [a, b] = await Promise.all([geocodePlace(fromPlace.trim()), geocodePlace(toPlace.trim())]);
+      if (!a || !b) { setErr(`could not locate "${!a ? fromPlace : toPlace}"`); setRoute(null); return; }
+      const res: any = await routeLeg({
+        fromLat: a.lat, fromLng: a.lng, toLat: b.lat, toLng: b.lng,
+        mode: tmode === "taxi" ? "car" : "train",
+      });
+      if (!res?.available) { setErr(res?.reason ?? "no route returned"); setRoute(null); return; }
+      const km = typeof res.distanceMeters === "number" ? res.distanceMeters / 1000 : undefined;
+      setRoute({ durationText: res.durationText, distanceText: res.distanceText, distanceKm: km });
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    } finally { setBusy(false); }
+  };
+
+  const addToTrip = async (opts: { from: string; to: string; carrier?: string; depart?: string; arrive?: string; priceGbp?: number; bookLink?: string; key: string }) => {
+    if (!tripId) return;
+    await addFlight({
+      tripId,
+      segments: [{ from: opts.from, to: opts.to, depart: opts.depart, arrive: opts.arrive, carrier: opts.carrier }],
+      priceGbp: opts.priceGbp,
+      bookLink: opts.bookLink,
+    });
+    setAdded(opts.key);
   };
 
   const yymmdd = date ? date.replace(/-/g, "").slice(2) : "";
-  const ready = fromIata && toIata;
-  const skyscanner = ready && date
+  const planeReady = !!(fromIata && toIata && date);
+  const skyscanner = planeReady
     ? `https://www.skyscanner.net/transport/flights/${fromIata.toLowerCase()}/${toIata.toLowerCase()}/${yymmdd}/`
     : "https://www.skyscanner.net/";
-  const tripcom = ready && date
+  const tripcom = planeReady
     ? `https://uk.trip.com/flights/showfarefirst?dcity=${fromIata}&acity=${toIata}&ddate=${date}&triptype=ow&class=y&quantity=${adults}`
     : "https://uk.trip.com/flights/";
+  const gFrom = fromPlace || defaultFrom || "London";
+  const gTo = toPlace || defaultTo;
+  const taxiEst = route?.distanceKm ? Math.round(route.distanceKm * 1.3) : null;
 
   return (
     <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
-      <p className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-        <TrainFront className="h-3 w-3" /> Transfer · plane / train / bus / taxi
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+          <TrainFront className="h-3 w-3" /> Transport finder
+        </p>
+        <div className="flex items-center gap-0.5 rounded-md border border-rule-soft/60 bg-ink-3/60 p-0.5">
+          {([
+            ["plane", "flights"],
+            ["ground", "train · bus"],
+            ["taxi", "taxi · car"],
+          ] as const).map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setTmode(m); setErr(null); setHits(null); setRoute(null); }}
+              className={cn(
+                "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors",
+                tmode === m ? "bg-brass/20 text-brass" : "text-paper-faint hover:text-paper",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <div className="min-w-[170px] flex-1">
-          <AirportField
-            value={fromIata}
-            label={fromIata ? fromLabel : undefined}
-            placeholder={defaultFrom ? `From (e.g. ${defaultFrom})` : "From (city or airport)"}
-            onChange={(iata, label) => {
-              setFromIata(iata);
-              setFromLabel(label);
-            }}
-          />
-        </div>
-        <span className="text-paper-faint">→</span>
-        <div className="min-w-[170px] flex-1">
-          <AirportField
-            value={toIata}
-            label={toIata ? toLabel : undefined}
-            placeholder={defaultTo ? `To (e.g. ${defaultTo})` : "To (city or airport)"}
-            onChange={(iata, label) => {
-              setToIata(iata);
-              setToLabel(label);
-            }}
-          />
-        </div>
+        {tmode === "plane" ? (
+          <>
+            <div className="min-w-[160px] flex-1">
+              <AirportField value={fromIata} label={fromIata ? fromLabel : undefined} placeholder={defaultFrom ? `From (e.g. ${defaultFrom})` : "From (city or airport)"} onChange={(i, l) => { setFromIata(i); setFromLabel(l); }} />
+            </div>
+            <span className="text-paper-faint">→</span>
+            <div className="min-w-[160px] flex-1">
+              <AirportField value={toIata} label={toIata ? toLabel : undefined} placeholder={defaultTo ? `To (e.g. ${defaultTo})` : "To (city or airport)"} onChange={(i, l) => { setToIata(i); setToLabel(l); }} />
+            </div>
+          </>
+        ) : (
+          <>
+            <input value={fromPlace} onChange={(ev) => setFromPlace(ev.target.value)} placeholder="From (any place)" className="min-w-[160px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+            <span className="text-paper-faint">→</span>
+            <input value={toPlace} onChange={(ev) => setToPlace(ev.target.value)} placeholder="To (any place)" className="min-w-[160px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+          </>
+        )}
+        <input type="date" value={date} onChange={(ev) => setDate(ev.target.value)} className="rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 font-mono text-[11px] text-paper focus:outline-none focus:border-brass/50" />
         <button
           type="button"
-          disabled={busy || !date || !ready}
-          onClick={() => void run()}
+          disabled={busy || (tmode === "plane" ? !planeReady : !fromPlace.trim() || !toPlace.trim())}
+          onClick={() => void (tmode === "plane" ? runPlane() : runGround())}
           className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
         >
-          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plane className="h-3 w-3" />} best prices
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : tmode === "plane" ? <Plane className="h-3 w-3" /> : <TrainFront className="h-3 w-3" />}
+          find
         </button>
       </div>
-      {!ready && (
+      {tmode === "plane" && !planeReady && (
         <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">
-          type a city or airport and pick from the dropdown (both ends) to search real fares
+          pick BOTH airports from the dropdown + a date, then hit find
         </p>
       )}
       {err && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{err}</p>}
-      {hits && hits.length > 0 && (
+
+      {/* flight results */}
+      {tmode === "plane" && hits && hits.length > 0 && (
         <ul className="mt-2 divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
-          {hits.map((h, i) => (
-            <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
-              <Plane className="h-3 w-3 text-brass" />
-              <span className="font-mono text-[11px] text-paper">{h.airline ?? "Flight"}</span>
-              <span className="font-mono text-[10px] text-paper-faint">
-                {[h.departTime, h.arriveTime].filter(Boolean).join(" → ")}
-                {h.stops === 0 ? " · direct" : ` · ${h.stops} stop${h.stops === 1 ? "" : "s"}`}
-                {h.durationMin ? ` · ${Math.floor(h.durationMin / 60)}h${h.durationMin % 60 ? `${h.durationMin % 60}m` : ""}` : ""}
-              </span>
-              <span className="flex-1" />
-              {typeof h.priceGbp === "number" && (
-                <span className="font-mono text-[13px] font-bold tabular-nums text-brass">{gbp(h.priceGbp)}</span>
-              )}
-              <a href={h.bookLink} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
-                book <ExternalLink className="h-2.5 w-2.5" />
-              </a>
-            </li>
-          ))}
+          {hits.map((h, i) => {
+            const key = `f${i}`;
+            return (
+              <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                <Plane className="h-3 w-3 text-brass" />
+                <span className="font-mono text-[11px] text-paper">{h.airline ?? "Flight"}</span>
+                <span className="font-mono text-[10px] text-paper-faint">
+                  {[h.departTime, h.arriveTime].filter(Boolean).join(" → ")}
+                  {h.stops === 0 ? " · direct" : ` · ${h.stops} stop${h.stops === 1 ? "" : "s"}`}
+                </span>
+                <span className="flex-1" />
+                {typeof h.priceGbp === "number" && <span className="font-mono text-[13px] font-bold tabular-nums text-brass">{gbp(h.priceGbp)}</span>}
+                <a href={h.bookLink} target="_blank" rel="noreferrer" className="rounded-md border border-rule-soft/50 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">book</a>
+                <button
+                  type="button"
+                  disabled={added === key || !tripId}
+                  onClick={() => void addToTrip({ from: fromIata, to: toIata, carrier: h.airline, depart: h.departTime, arrive: h.arriveTime, priceGbp: h.priceGbp, bookLink: h.bookLink, key })}
+                  className="flex items-center gap-1 rounded-md border border-emerald-soft/40 bg-emerald-soft/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-soft hover:bg-emerald-soft/20 disabled:opacity-50 transition-colors"
+                >
+                  <Plus className="h-2.5 w-2.5" /> {added === key ? "added" : "add to trip"}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
-      {hits && hits.length === 0 && !err && (
-        <p className="mt-2 font-mono text-[10px] text-paper-faint">No fares returned for that day — try the provider links below.</p>
+
+      {/* ground route result */}
+      {tmode !== "plane" && route && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-rule-soft/50 px-3 py-2">
+          <TrainFront className="h-3 w-3 text-brass" />
+          <span className="font-mono text-[11px] text-paper">
+            {fromPlace} → {toPlace}
+          </span>
+          <span className="font-mono text-[10px] text-paper-faint">
+            {[route.durationText, route.distanceText].filter(Boolean).join(" · ")}
+            {tmode === "taxi" && taxiEst ? ` · taxi ~${gbp(taxiEst)} (rough est)` : ""}
+          </span>
+          <span className="flex-1" />
+          <button
+            type="button"
+            disabled={added === "g" || !tripId}
+            onClick={() => void addToTrip({ from: fromPlace, to: toPlace, carrier: tmode === "taxi" ? "Taxi / Car" : "Train / Bus", depart: date || undefined, priceGbp: tmode === "taxi" && taxiEst ? taxiEst : undefined, bookLink: `https://www.rome2rio.com/s/${encodeURIComponent(fromPlace)}/${encodeURIComponent(toPlace)}`, key: "g" })}
+            className="flex items-center gap-1 rounded-md border border-emerald-soft/40 bg-emerald-soft/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-soft hover:bg-emerald-soft/20 disabled:opacity-50 transition-colors"
+          >
+            <Plus className="h-2.5 w-2.5" /> {added === "g" ? "added" : "add to trip"}
+          </button>
+        </div>
       )}
+
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <a href={skyscanner} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Skyscanner</a>
-        <a href={tripcom} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Trip.com flights</a>
-        <a href={`https://www.omio.co.uk/search?departure=${encodeURIComponent(fromLabel || defaultFrom)}&arrival=${encodeURIComponent(toLabel || defaultTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Omio (train · bus)</a>
-        <a href={`https://www.rome2rio.com/s/${encodeURIComponent(fromLabel || defaultFrom || "London")}/${encodeURIComponent(toLabel || defaultTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Rome2rio (taxi · all modes)</a>
+        {tmode === "plane" ? (
+          <>
+            <a href={skyscanner} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Skyscanner</a>
+            <a href={tripcom} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Trip.com flights</a>
+          </>
+        ) : (
+          <>
+            <a href={`https://www.omio.co.uk/search?departure=${encodeURIComponent(gFrom)}&arrival=${encodeURIComponent(gTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Omio</a>
+            <a href="https://www.thetrainline.com/" target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Trainline</a>
+          </>
+        )}
+        <a href={`https://www.rome2rio.com/s/${encodeURIComponent(gFrom)}/${encodeURIComponent(gTo)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Rome2rio (all modes + prices)</a>
       </div>
     </div>
   );
@@ -814,6 +905,7 @@ export function TripsOverview({
         priceGbp: f.priceGbp,
         link: f.bookLink,
         locked: false,
+        sub: seg0?.carrier as string | undefined,
         stayId: null as Id<"tripStays"> | null,
       };
     }),
@@ -826,6 +918,7 @@ export function TripsOverview({
       priceGbp: st.priceGbp,
       link: st.link,
       locked: st.locked === true,
+      sub: st.provider as string | undefined,
       stayId: st._id,
     })),
   ].sort((a, b) => (a.sortDate || "9999").localeCompare(b.sortDate || "9999"));
@@ -1186,9 +1279,10 @@ export function TripsOverview({
 
           {/* ── dedicated transfer tile (real prices) ──────────────────────── */}
           <TransferTile
+            tripId={tripId}
             defaultFrom={trip.originCity ?? ""}
             defaultTo={city}
-            date={trip.startDate}
+            defaultDate={trip.startDate}
             adults={travelers}
           />
 
@@ -1210,7 +1304,7 @@ export function TripsOverview({
                 {bookingRows.map((r) => (
                   <li key={r.key} className="flex items-center gap-3 bg-ink-2/30 px-3 py-2.5">
                     <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md border", r.kind === "flight" ? "border-brass/30 bg-brass/[0.08] text-brass" : "border-emerald-soft/30 bg-emerald-soft/[0.08] text-emerald-soft")}>
-                      {r.kind === "flight" ? <Plane className="h-3.5 w-3.5" /> : <BedDouble className="h-3.5 w-3.5" />}
+                      {r.kind === "flight" ? (/taxi|train|bus|car/i.test(r.title) || /taxi|train|bus|car/i.test(String(r.sub ?? "")) ? <TrainFront className="h-3.5 w-3.5" /> : <Plane className="h-3.5 w-3.5" />) : <BedDouble className="h-3.5 w-3.5" />}
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-1.5 truncate text-[13px] text-paper">
@@ -1221,7 +1315,7 @@ export function TripsOverview({
                           </span>
                         )}
                       </p>
-                      <p className="font-mono text-[10px] text-paper-faint">{r.when || "—"}</p>
+                      <p className="font-mono text-[10px] text-paper-faint">{[r.when, r.sub].filter(Boolean).join(" · ") || "—"}</p>
                     </div>
                     {typeof r.priceGbp === "number" && <span className="font-mono text-[12px] tabular-nums text-paper-dim">{gbp(r.priceGbp)}</span>}
                     {r.stayId && (
