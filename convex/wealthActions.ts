@@ -217,22 +217,57 @@ function coinbaseJwt(
   }
 }
 
+/** Signed Coinbase GET → parsed JSON (null on any failure). */
+async function cbGet(apiKey: string, apiSecret: string, path: string): Promise<any | null> {
+  const jwt = coinbaseJwt(apiKey, apiSecret, "GET", path.split("?")[0]);
+  if (!jwt) return null;
+  return await safeJson(`https://api.coinbase.com${path}`, {
+    headers: { Authorization: `Bearer ${jwt}` },
+  });
+}
+
+type CoinbaseBalances = {
+  crypto: Record<string, number>; // symbol → units
+  cash: Record<string, number>; // cash-equivalent positions (is_cash), symbol → units
+};
+
 async function coinbaseBalances(
   apiKey: string,
   apiSecret: string,
-): Promise<Record<string, number> | null> {
-  const path = "/api/v3/brokerage/accounts";
-  const jwt = coinbaseJwt(apiKey, apiSecret, "GET", path);
-  if (!jwt) return null;
-  const j = await safeJson(`https://api.coinbase.com${path}?limit=250`, {
-    headers: { Authorization: `Bearer ${jwt}` },
-  });
+): Promise<CoinbaseBalances | null> {
+  // Portfolio breakdown FIRST (2026-07-03): it is the only surface that shows
+  // allocated/earning balances. A $21.8k USDC cash position (available_to_trade
+  // = 0, is_cash = true) was 100% INVISIBLE to /brokerage/accounts, which only
+  // reports tradeable wallet balances. spot_positions is the per-asset total
+  // (wallet + locked), so when it answers it is the sole source — mixing in the
+  // accounts endpoint would double-count.
+  const pf = await cbGet(apiKey, apiSecret, "/api/v3/brokerage/portfolios");
+  const uuid = (pf?.portfolios ?? []).find((p: any) => !p?.deleted)?.uuid;
+  if (uuid) {
+    const bd = await cbGet(apiKey, apiSecret, `/api/v3/brokerage/portfolios/${uuid}`);
+    const positions: any[] = bd?.breakdown?.spot_positions ?? [];
+    if (positions.length > 0) {
+      const out: CoinbaseBalances = { crypto: {}, cash: {} };
+      for (const p of positions) {
+        const sym = p?.asset;
+        const rawUnits = p?.total_balance_crypto;
+        const units =
+          typeof rawUnits === "number" ? rawUnits : parseFloat(rawUnits ?? "0");
+        if (!sym || !(units > DUST_EPSILON)) continue;
+        const bucket = p?.is_cash ? out.cash : out.crypto;
+        bucket[sym] = (bucket[sym] ?? 0) + units;
+      }
+      return out;
+    }
+  }
+  // Fallback: tradeable wallet accounts only (old behaviour, misses locked).
+  const j = await cbGet(apiKey, apiSecret, "/api/v3/brokerage/accounts?limit=250");
   if (!j?.accounts) return null;
-  const out: Record<string, number> = {};
+  const out: CoinbaseBalances = { crypto: {}, cash: {} };
   for (const acct of j.accounts) {
     const cur = acct?.currency;
     const amt = parseFloat(acct?.available_balance?.value ?? "0");
-    if (cur && amt > DUST_EPSILON) out[cur] = (out[cur] ?? 0) + amt;
+    if (cur && amt > DUST_EPSILON) out.crypto[cur] = (out.crypto[cur] ?? 0) + amt;
   }
   return out;
 }
@@ -265,12 +300,17 @@ export const refreshCrypto = action({
 
     const cbKey = await getSecret(ctx, SECRET.coinbaseKey);
     const cbSecret = await getSecret(ctx, SECRET.coinbaseSecret);
+    // Coinbase cash-equivalent positions (is_cash in the portfolio breakdown,
+    // e.g. an allocated USDC balance) — surfaced as category "cash" assets so
+    // parked fiat-equivalents count without masquerading as crypto exposure.
+    let coinbaseCash: Record<string, number> = {};
     if (cbKey && cbSecret) {
       const cb = await coinbaseBalances(cbKey, cbSecret);
-      if (cb)
-        for (const [k, val] of Object.entries(cb))
+      if (cb) {
+        for (const [k, val] of Object.entries(cb.crypto))
           byExchange.coinbase[k] = (byExchange.coinbase[k] ?? 0) + val;
-      else errors.push("coinbase: balance fetch failed (key/permission?)");
+        coinbaseCash = cb.cash;
+      } else errors.push("coinbase: balance fetch failed (key/permission?)");
     } else errors.push("coinbase: API key/secret missing in vault");
 
     // Phase 17: Binance SPOT auto-fetch DISABLED. Binance geo-blocks the Convex
@@ -281,11 +321,13 @@ export const refreshCrypto = action({
     // binanceBalances here; the manual row persists untouched. Coinbase stays live.
     // (binanceBalances retained but unreferenced in case egress is ever unblocked.)
 
-    // Union of symbols across both exchanges — one CoinGecko price fetch.
+    // Union of symbols across both exchanges + cash positions — one CoinGecko
+    // price fetch.
     const allSymbols = Array.from(
       new Set([
         ...Object.keys(byExchange.coinbase),
         ...Object.keys(byExchange.binance),
+        ...Object.keys(coinbaseCash),
       ]),
     );
     if (allSymbols.length === 0) {
@@ -337,6 +379,34 @@ export const refreshCrypto = action({
         });
         if (valueGBP !== undefined) updated++;
         else errors.push(`price missing for ${sym} (${tag}) (kept previous value)`);
+      }
+    }
+
+    // Coinbase cash positions → category "cash" (2026-07-03). Also retire any
+    // stale auto CRYPTO row with the same label: before the portfolio-breakdown
+    // read, a cash symbol's small tradeable remainder (e.g. USDC £2.26) was
+    // upserted under crypto; the breakdown's per-asset TOTAL now supersedes it.
+    for (const sym of Object.keys(coinbaseCash)) {
+      const label = `${sym.toUpperCase()} (Coinbase)`;
+      const gbpPer = gbpPerCache[sym];
+      const valueGBP = gbpPer !== undefined ? coinbaseCash[sym] * gbpPer : undefined;
+      await ctx.runMutation(internal.wealth._upsertAutoAsset, {
+        category: "cash",
+        label,
+        currency: sym.toUpperCase(),
+        quantity: coinbaseCash[sym],
+        externalRef: "coinbase",
+        newValueGBP: valueGBP,
+        pricedAt: valueGBP !== undefined ? now : undefined,
+      });
+      if (valueGBP !== undefined) updated++;
+      else errors.push(`price missing for cash ${sym} (Coinbase) (kept previous value)`);
+      const all: any[] = await ctx.runQuery(internal.wealth._allAssets, {});
+      const staleCrypto = all.find(
+        (a) => a.category === "crypto" && a.source === "auto" && a.label === label,
+      );
+      if (staleCrypto) {
+        await ctx.runMutation(api.wealth.removeAsset, { id: staleCrypto._id });
       }
     }
 
