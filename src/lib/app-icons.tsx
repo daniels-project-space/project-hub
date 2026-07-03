@@ -120,6 +120,13 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M10 9l6 3-6 3z" fill="currentColor" stroke="none" />
     </svg>
   ),
+  "media-engine": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <path d="M3 11l14-5v12L3 13v-2z" />
+      <path d="M7 13v5a2 2 0 004 0v-4" />
+      <path d="M20 9v6" />
+    </svg>
+  ),
   "dropship-ai": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M5 8h14l-1.5 9H6.5L5 8z" />

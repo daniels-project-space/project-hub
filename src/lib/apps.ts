@@ -179,6 +179,17 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
 
+  {
+    slug: "media-engine",
+    name: "Media Engine",
+    short: "ME",
+    description: "Unified marketing & media engine — AI persona Instagram growth, UGC product ad streams, YouTube Shorts factory, email marketing.",
+    status: "live",
+    vercelUrl: "https://media-engine-seven.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/media-engine",
+    category: "creator",
+  },
+
   // Idea / not yet started
   {
     slug: "factory-2",
