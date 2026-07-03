@@ -55,6 +55,7 @@ import {
 } from "@/components/travel/itinerary-timeline";
 import { InfoRail } from "@/components/travel/info-rail";
 import { FindMode } from "@/components/travel/find-mode";
+import { TripsOverview } from "@/components/travel/trips-overview";
 import { FlightChip } from "@/components/travel/flight-chip";
 import { PackingChecklist } from "@/components/travel/packing-checklist";
 import {
@@ -63,7 +64,7 @@ import {
 } from "@/lib/travel/categories";
 
 // ── mode + category icon resolution ────────────────────────────────────────
-type TravelMode = "planner" | "deal" | "trip";
+type TravelMode = "trips" | "planner" | "deal" | "trip";
 
 // Map the category module's icon-name strings → actual lucide components, so the
 // categories.ts module stays SSR-safe / icon-library-agnostic.
@@ -349,6 +350,7 @@ function ModeSwitch({
   onChange: (m: TravelMode) => void;
 }) {
   const tabs: { value: TravelMode; label: string; Icon: LucideIcon }[] = [
+    { value: "trips", label: "Trips", Icon: Plane },
     { value: "planner", label: "Planner", Icon: MapIcon },
     { value: "deal", label: "Find", Icon: Tag },
     { value: "trip", label: "Trip", Icon: Globe2 },
@@ -610,10 +612,10 @@ export function TravelWidget() {
   // Local state mirrors the Convex value and re-syncs when the selection or its
   // persisted mode changes (e.g. after another client writes it).
   const [mode, setMode] = useState<TravelMode>(
-    (selectedTrip?.mode as TravelMode) ?? "planner",
+    (selectedTrip?.mode as TravelMode) ?? "trips",
   );
   useEffect(() => {
-    const m = (selectedTrip?.mode as TravelMode) ?? "planner";
+    const m = (selectedTrip?.mode as TravelMode) ?? "trips";
     setMode(m);
   }, [selectedId, selectedTrip?.mode]);
 
@@ -782,6 +784,12 @@ export function TravelWidget() {
             </button>
           </div>
         </div>
+
+        {/* ── TRIPS overview (streamlined default: next trip + bookings +
+            cashback booking chips) ── */}
+        {mode === "trips" && (
+          <TripsOverview tripId={selectedId} trip={selectedTrip} />
+        )}
 
         {/* ── FIND / DEAL mode (hotels via Booking.com + flights) ── */}
         {mode === "deal" && (
