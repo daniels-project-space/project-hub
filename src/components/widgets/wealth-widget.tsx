@@ -404,6 +404,7 @@ export function WealthWidget() {
                     className="w-full h-full"
                     strokeColor={up ? "var(--color-emerald-soft)" : "var(--color-rose-soft)"}
                     endDot
+                    baseline
                   />
                 </div>
               )}
@@ -911,6 +912,7 @@ function HistorySheet({
                 className="w-full"
                 axis
                 endDot
+                baseline
                 strokeColor="var(--color-brass)"
                 valueFormat={
                   mode === "gbp" ? (v) => fmtK(v) : (v) => `${v.toFixed(0)}%`

@@ -13,6 +13,7 @@ export function MiniChart({
   fill = true,
   axis = false,
   endDot = false,
+  baseline = false,
   className,
   valueFormat,
 }: {
@@ -27,6 +28,9 @@ export function MiniChart({
   axis?: boolean;
   /** Draw a dot at the latest point. */
   endDot?: boolean;
+  /** Dashed reference line at the series' FIRST value, so any chart reads
+      change-vs-start at a glance (2026-07-03). */
+  baseline?: boolean;
   className?: string;
   /** Formats the value-axis tick labels (e.g. £124.7k). */
   valueFormat?: (n: number) => string;
@@ -116,6 +120,20 @@ export function MiniChart({
         ))}
 
       {fill && <path d={area} fill={`url(#${gid})`} stroke="none" />}
+
+      {/* dashed baseline at the range's starting value */}
+      {baseline && n > 1 && (
+        <line
+          x1={pad}
+          y1={yAt(data[0]).toFixed(2)}
+          x2={pad + w}
+          y2={yAt(data[0]).toFixed(2)}
+          stroke={strokeColor}
+          strokeOpacity="0.35"
+          strokeWidth="1"
+          strokeDasharray="4 4"
+        />
+      )}
 
       <path
         d={line}

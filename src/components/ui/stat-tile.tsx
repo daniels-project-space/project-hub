@@ -104,6 +104,7 @@ export function StatTile({
             className="w-full h-full"
             strokeColor={TONE_STROKE[tone]}
             endDot
+            baseline
           />
         </div>
       )}

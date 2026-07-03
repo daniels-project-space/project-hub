@@ -1,10 +1,10 @@
 [Unit]
-Description=Run the Binance->Convex bridge every ~20 min (Phase 19)
+Description=Run the Binance->Convex bridge twice daily (2026-07-03 poll diet)
 
 [Timer]
-# First run ~1 min after boot, then every 20 minutes.
+# First run ~1 min after boot, then every 12 hours (2x/day per Daniel).
 OnBootSec=1min
-OnUnitActiveSec=20min
+OnUnitActiveSec=12h
 AccuracySec=30s
 Persistent=true
 Unit=binance-bridge.service

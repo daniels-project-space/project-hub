@@ -1527,5 +1527,44 @@ export const ingest = mutation({
   },
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MIGRATION (run once 2026-07-03, kept as the record of what was corrected):
+// From 2026-06-03 to 2026-07-03 every feed was frozen and the snapshots carried
+// a phantom bookkeeping split — a manual "Coinbase" crypto lump of £34,347 that
+// in reality was ~$21.8k USDC parked ON Coinbase (cash) + the ETH sitting in
+// Binance isolated margin, plus stale margin (£4,515 vs real £23,885) and stale
+// spot (£365 vs £4,012). This rebuckets that frozen window to the corrected
+// split at the level measured live on 2026-07-03 (+£5,065/row) so the graphs
+// read a continuous, truthfully-bucketed line instead of a dead plateau with a
+// cliff. LEVEL correction only — intra-window market movement is unknowable.
+export const _rebucketFrozenJune2026 = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("netWorthSnapshots").collect();
+    let patched = 0;
+    for (const r of rows) {
+      const bc: any = r.byCategory ?? {};
+      // Fingerprint of the frozen window: the phantom lump + stale margin.
+      if (
+        Math.round(bc.crypto ?? 0) === 34347 &&
+        Math.round(bc.margin ?? 0) === 4515
+      ) {
+        await ctx.db.patch(r._id, {
+          byCategory: {
+            ...bc,
+            crypto: 69,
+            cash: (bc.cash ?? 0) + 16326,
+            margin: 23885,
+            binance: 27897,
+          },
+          totalGBP: r.totalGBP + 5065,
+        });
+        patched++;
+      }
+    }
+    return { patched };
+  },
+});
+
 // Re-exported constants for the action module (kept in sync via import there).
 export const _const = { GBP, DUST_EPSILON };

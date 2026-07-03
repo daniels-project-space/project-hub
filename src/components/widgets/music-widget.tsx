@@ -123,6 +123,7 @@ export function MusicWidget() {
             height={72}
             axis
             endDot
+            baseline
             className="w-full"
             valueFormat={(n) => n.toLocaleString()}
           />

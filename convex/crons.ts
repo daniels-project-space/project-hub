@@ -3,36 +3,37 @@ import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-// Daily net-worth snapshot (Wave 1 · Wealth). Refreshes live prices best-effort
-// then records one `netWorthSnapshots` row. Runs 06:00 UTC.
-crons.daily(
+// Net-worth snapshot — records a `netWorthSnapshots` history row (the graphs'
+// data). Twice-daily cadence set 2026-07-03 per Daniel ("2 times per day"):
+// 06:00 + 18:00 UTC gives the charts two real points a day instead of one.
+crons.cron(
   "net-worth-snapshot",
-  { hourUTC: 6, minuteUTC: 0 },
+  "0 6,18 * * *",
   internal.wealthActions.snapshot,
 );
 
-// Prices-only refresh (Phase A backbone). Re-prices crypto/gold + FX and
-// updates the singleton `currentPrices` (live) doc — NO history row written.
-// Poll-diet 2026-07-03: 30 min → 60 min (personal dashboard; hourly is plenty),
-// and the price-alert check now runs INSIDE refreshLive right after prices
-// land. The old separate 15-min `alerts-price-check` cron was deleted — it
-// compared alerts against prices that only changed on this refresh anyway, so
-// the extra ticks could never catch anything new.
-crons.interval(
+// Prices-only refresh (Phase A backbone). Re-prices crypto (Coinbase live) /
+// gold / FX and updates the singleton `currentPrices` (live) doc — NO history
+// row written. The price-alert check runs INSIDE this action right after
+// prices land (the old separate 15-min alerts cron was deleted — it compared
+// against prices that only changed here anyway). 2026-07-03 cadence per
+// Daniel: everything polls twice a day; offset +6h from the snapshots so the
+// dashboard refreshes 4× spread across the day (00/06/12/18 UTC effectively).
+crons.cron(
   "net-worth-live-refresh",
-  { hours: 1 },
+  "0 0,12 * * *",
   internal.wealthActions.refreshLive,
 );
 
-// Recurring LLM deal-hunt fleet tick (Phase D). Hourly tick fans out to active
-// `hunts` whose lastCheckedAt is older than their per-hunt cadence (derived from
-// the cron `schedule` string). Early-exits on an empty/idle hunts table, so an
-// idle tick is one cheap DB read. LLM = OpenRouter DeepSeek (2026-07-03; the
-// Anthropic API org has no credits — see huntActions.ts). NEEDS vault keys:
-// serpapi:SERPAPI_KEY + openrouter:OPENROUTER_API_KEY.
+// Recurring LLM deal-hunt fleet tick (Phase D). Fans out to active `hunts`
+// whose lastCheckedAt is older than their per-hunt cadence. Early-exits on an
+// empty/idle hunts table, so an idle tick is one cheap DB read. LLM =
+// OpenRouter DeepSeek (2026-07-03; the Anthropic API org has no credits — see
+// huntActions.ts). NEEDS vault keys: serpapi:SERPAPI_KEY +
+// openrouter:OPENROUTER_API_KEY. Twice daily (2026-07-03 poll diet).
 crons.interval(
   "hunts-fleet-check",
-  { hours: 1 },
+  { hours: 12 },
   internal.huntActions.enqueueDueHunts,
 );
 
@@ -47,11 +48,11 @@ crons.interval(
 // Rental-revenue poll (Phase 16). Server-side read of rental-manager-v2's
 // Convex dashboard:getStatsDrawerData → confirmed NET month revenue into the
 // rentalRevenue cache doc. RMv2 Convex URL read from the vault (NOT hardcoded).
-// Poll-diet 2026-07-03: 1h → 2h (revenue moves a few times a day at most; the
-// widget shows its own "upd Xh ago" badge so staleness is always visible).
+// Twice daily (2026-07-03 poll diet per Daniel); the widget shows its own
+// "upd Xh ago" badge so staleness is always visible.
 crons.interval(
   "rental-revenue-poll",
-  { hours: 2 },
+  { hours: 12 },
   internal.wealthActions.pollRentalRevenueCron,
 );
 
