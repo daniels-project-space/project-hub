@@ -468,6 +468,13 @@ function StayCard({
             </span>
           )}
         </p>
+        {/* WHICH SITE prices this + how many compare */}
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-emerald-soft/80">
+          via {o.provider ?? o.offers?.[0]?.source ?? "Google best price"}
+          {(o.offers ?? []).length > 1 && (
+            <span className="text-paper-faint"> · {(o.offers ?? []).length} providers priced</span>
+          )}
+        </p>
         {/* perks straight from the search payload — visible without the sheet */}
         {(o.amenities ?? []).length > 0 && (
           <div className="flex flex-wrap gap-1">

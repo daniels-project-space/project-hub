@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +32,7 @@ export function Sheet({
 
   if (!open) return null;
 
-  return (
+  const node = (
     <div
       className="fixed inset-0 z-50 flex"
       role="dialog"
@@ -73,4 +74,9 @@ export function Sheet({
       </div>
     </div>
   );
+
+  // Portal to <body>: a transformed ancestor (carousel, deferred-mount wrapper)
+  // otherwise becomes the containing block for this fixed overlay and shoves it
+  // out of the viewport.
+  return typeof document !== "undefined" ? createPortal(node, document.body) : node;
 }
