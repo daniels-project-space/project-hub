@@ -899,17 +899,23 @@ export const resolveStayOffers = action({
     available: boolean;
     reason?: string;
     amenities: string[];
+    images: string[];
+    address?: string;
+    lat?: number;
+    lng?: number;
     offers: {
       source: string;
       link?: string;
       priceGbp?: number;
       totalGbp?: number;
       freeCancellation?: boolean;
+      cancellationNote?: string;
       perks: string[];
     }[];
   }> => {
     const key = await getSecret(ctx, SECRET.serpapi);
-    if (!key) return { available: false, reason: "SERPAPI_KEY absent", amenities: [], offers: [] };
+    if (!key)
+      return { available: false, reason: "SERPAPI_KEY absent", amenities: [], images: [], offers: [] };
     const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 2;
     const params = new URLSearchParams({
       engine: "google_hotels",
@@ -926,10 +932,20 @@ export const resolveStayOffers = action({
     try {
       const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
       const json: any = await res.json();
-      if (json?.error) return { available: false, reason: String(json.error), amenities: [], offers: [] };
+      if (json?.error)
+        return { available: false, reason: String(json.error), amenities: [], images: [], offers: [] };
       const amenities: string[] = Array.isArray(json?.amenities)
         ? json.amenities.filter((a: unknown) => typeof a === "string").slice(0, 10)
         : [];
+      // Room/property gallery for the detail sheet's scrollable image rail.
+      const images: string[] = Array.isArray(json?.images)
+        ? json.images
+            .map((im: any) => im?.original_image ?? im?.thumbnail)
+            .filter((u: unknown) => typeof u === "string")
+            .slice(0, 10)
+        : [];
+      const gps = json?.gps_coordinates ?? {};
+      const address = typeof json?.address === "string" ? json.address : undefined;
       const raw: any[] = [
         ...(Array.isArray(json?.featured_prices) ? json.featured_prices : []),
         ...(Array.isArray(json?.prices) ? json.prices : []),
@@ -946,6 +962,15 @@ export const resolveStayOffers = action({
             if (Array.isArray(f)) for (const x of f) if (typeof x === "string") perks.push(x);
           }
           const linkOf = (v: unknown) => (typeof v === "string" && v.startsWith("http") ? v : undefined);
+          // Refundability nuance: full free-cancel flag, or a dated/partial note.
+          let cancellationNote: string | undefined;
+          if (typeof o?.free_cancellation_until_date === "string") {
+            cancellationNote = `free cancel until ${o.free_cancellation_until_date}`;
+          } else if (typeof o?.rooms?.[0]?.free_cancellation_until_date === "string") {
+            cancellationNote = `free cancel until ${o.rooms[0].free_cancellation_until_date}`;
+          } else if (o?.free_cancellation === false) {
+            cancellationNote = "non-refundable / partial";
+          }
           return {
             source,
             link: linkOf(o?.link) ?? linkOf(o?.rooms?.[0]?.link),
@@ -953,16 +978,26 @@ export const resolveStayOffers = action({
             totalGbp: finiteOrUndef(o?.total_rate?.extracted_lowest),
             freeCancellation:
               typeof o?.free_cancellation === "boolean" ? o.free_cancellation : undefined,
+            cancellationNote,
             perks: perks.slice(0, 5),
           };
         })
         .filter(Boolean) as any[];
-      return { available: true, amenities, offers: offers.slice(0, 10) };
+      return {
+        available: true,
+        amenities,
+        images,
+        address,
+        lat: finiteOrUndef(gps?.latitude),
+        lng: finiteOrUndef(gps?.longitude),
+        offers: offers.slice(0, 10),
+      };
     } catch (e) {
       return {
         available: false,
         reason: e instanceof Error ? e.message : String(e),
         amenities: [],
+        images: [],
         offers: [],
       };
     }

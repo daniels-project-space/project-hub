@@ -47,6 +47,7 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { BOOKING_PROVIDERS } from "@/lib/travel/booking-links";
 import { geocodePlace } from "@/lib/travel/geocode";
+import { findAirport } from "@/lib/travel/airports";
 import { Sheet } from "@/components/ui/sheet";
 import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
 
@@ -117,7 +118,17 @@ type ResolvedOffer = {
   priceGbp?: number;
   totalGbp?: number;
   freeCancellation?: boolean;
+  cancellationNote?: string;
   perks: string[];
+};
+
+type StayDetail = {
+  amenities: string[];
+  images: string[];
+  address?: string;
+  lat?: number;
+  lng?: number;
+  offers: ResolvedOffer[];
 };
 
 // Cashback portals ↔ Google Hotels offer sources (loose contains-match).
@@ -252,11 +263,20 @@ function StayCard({
             </span>
           )}
         </div>
-        <p className="font-mono text-[13px] font-bold tabular-nums leading-none text-paper">
-          {typeof nightly === "number" ? `${gbp(nightly)}/nt` : "price on site"}
-          {typeof o.totalGbp === "number" && (
-            <span className="ml-1.5 text-[10px] font-normal text-paper-faint">{gbp(o.totalGbp)} total</span>
+        {/* TOTAL for the whole stay is the headline; nightly is secondary. */}
+        <p className="font-mono text-[14px] font-bold tabular-nums leading-none text-paper">
+          {typeof o.totalGbp === "number"
+            ? `${gbp(o.totalGbp)} total`
+            : typeof nightly === "number"
+              ? `${gbp(nightly)}/nt`
+              : "price on site"}
+          {typeof o.totalGbp === "number" && typeof nightly === "number" && (
+            <span className="ml-1.5 text-[10px] font-normal text-paper-faint">{gbp(nightly)}/nt</span>
           )}
+        </p>
+        {/* WHICH SITE the booking link goes to */}
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-emerald-soft/80">
+          via {o.provider ?? o.offers?.[0]?.source ?? "Booking.com"}
         </p>
         <div className="flex min-h-[16px] flex-wrap gap-1">
           {o.freeCancellation && (
@@ -368,6 +388,121 @@ function BookingTimeline({
   );
 }
 
+// ── TRANSFER TILE: figure out the leg + real prices (2026-07-03) ────────────
+// Dedicated transport solver: resolves both ends to airports, pulls REAL
+// flight prices (SerpAPI google_flights, 1 credit per search), and offers
+// train/bus/taxi via Rome2rio + Omio and flights via Skyscanner deep links.
+type FlightHit = {
+  priceGbp?: number;
+  airline?: string;
+  stops: number;
+  departTime?: string;
+  arriveTime?: string;
+  durationMin?: number;
+  bookLink: string;
+};
+
+function TransferTile({
+  defaultFrom,
+  defaultTo,
+  date,
+  adults,
+}: {
+  defaultFrom: string;
+  defaultTo: string;
+  date?: string;
+  adults: number;
+}) {
+  const searchFlights = useAction(api.travelActions.searchFlights);
+  const [from, setFrom] = useState(defaultFrom);
+  const [to, setTo] = useState(defaultTo);
+  const [hits, setHits] = useState<FlightHit[] | null>(null);
+  const [iatas, setIatas] = useState<{ from: string; to: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async () => {
+    if (!from.trim() || !to.trim() || !date || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const [a, b] = await Promise.all([findAirport(from.trim()), findAirport(to.trim())]);
+      if (!a || !b) {
+        setErr(`no airport found for "${!a ? from : to}"`);
+        setHits(null);
+        return;
+      }
+      setIatas({ from: a.iata, to: b.iata });
+      const res = await searchFlights({
+        origin: a.iata,
+        destination: b.iata,
+        outboundDate: date,
+        adults,
+      });
+      if (!res.available) setErr(res.reason ?? "no flights returned");
+      setHits((res.options ?? []).slice(0, 3) as FlightHit[]);
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skyscanner =
+    iatas && date
+      ? `https://www.skyscanner.net/transport/flights/${iatas.from.toLowerCase()}/${iatas.to.toLowerCase()}/${date.replace(/-/g, "").slice(2)}/`
+      : `https://www.skyscanner.net/`;
+
+  return (
+    <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
+      <p className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+        <TrainFront className="h-3 w-3" /> Transfer · plane / train / bus / taxi
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input value={from} onChange={(ev) => setFrom(ev.target.value)} placeholder="From (city)" className="min-w-[110px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+        <span className="text-paper-faint">→</span>
+        <input value={to} onChange={(ev) => setTo(ev.target.value)} placeholder="To (city)" className="min-w-[110px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50" />
+        <button
+          type="button"
+          disabled={busy || !date}
+          onClick={() => void run()}
+          className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plane className="h-3 w-3" />} best prices
+        </button>
+      </div>
+      {err && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{err}</p>}
+      {hits && hits.length > 0 && (
+        <ul className="mt-2 divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
+          {hits.map((h, i) => (
+            <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
+              <Plane className="h-3 w-3 text-brass" />
+              <span className="font-mono text-[11px] text-paper">{h.airline ?? "Flight"}</span>
+              <span className="font-mono text-[10px] text-paper-faint">
+                {[h.departTime, h.arriveTime].filter(Boolean).join(" → ")}
+                {h.stops === 0 ? " · direct" : ` · ${h.stops} stop${h.stops === 1 ? "" : "s"}`}
+                {h.durationMin ? ` · ${Math.floor(h.durationMin / 60)}h${h.durationMin % 60 ? `${h.durationMin % 60}m` : ""}` : ""}
+              </span>
+              <span className="flex-1" />
+              {typeof h.priceGbp === "number" && (
+                <span className="font-mono text-[13px] font-bold tabular-nums text-brass">{gbp(h.priceGbp)}</span>
+              )}
+              <a href={h.bookLink} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                book <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <a href={skyscanner} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Skyscanner</a>
+        <a href={`https://www.omio.co.uk/search?departure=${encodeURIComponent(from)}&arrival=${encodeURIComponent(to)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Omio (train · bus)</a>
+        <a href={`https://www.rome2rio.com/s/${encodeURIComponent(from)}/${encodeURIComponent(to)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">Rome2rio (taxi · all modes)</a>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export function TripsOverview({
   tripId,
@@ -405,7 +540,7 @@ export function TripsOverview({
   const [creating, setCreating] = useState(false);
   // offers panel: which property + its resolved offers
   const [offersFor, setOffersFor] = useState<StayOption | null>(null);
-  const [offersData, setOffersData] = useState<ResolvedOffer[] | null>(null);
+  const [offersData, setOffersData] = useState<StayDetail | null>(null);
   const [offersLoading, setOffersLoading] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
 
@@ -507,9 +642,9 @@ export function TripsOverview({
         checkOut: trip.endDate,
         adults: travelers,
       });
-      setOffersData(res.offers as ResolvedOffer[]);
+      setOffersData(res as StayDetail);
     } catch {
-      setOffersData([]);
+      setOffersData({ amenities: [], images: [], offers: [] });
     } finally {
       setOffersLoading(false);
     }
@@ -744,51 +879,107 @@ export function TripsOverview({
             </div>
           ))}
 
-          {/* ── offers panel: WHO each link goes to + that rate's perks ─────── */}
-          {offersFor && (
-            <div className="rounded-xl border border-brass/40 bg-ink-2/40 px-4 py-3">
-              <div className="flex items-center justify-between">
-                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-brass">
-                  offers · {offersFor.name}
-                </p>
-                <button type="button" onClick={() => setOffersFor(null)} className="font-mono text-[11px] text-paper-faint hover:text-paper">×</button>
-              </div>
-              {offersLoading ? (
-                <p className="flex items-center gap-2 py-3 text-[12px] text-paper-faint">
-                  <Loader2 className="h-3 w-3 animate-spin" /> resolving exact provider pages (dates + guests prefilled)…
-                </p>
-              ) : !offersData || offersData.length === 0 ? (
-                <p className="py-3 text-[12px] text-paper-faint">
-                  No direct offers returned — use the cashback chips above (search lands prefilled).
-                </p>
-              ) : (
-                <ul className="mt-2 divide-y divide-rule-soft/30">
-                  {offersData.map((of, i) => (
-                    <li key={i} className="flex flex-wrap items-center gap-2 py-2">
-                      <span className="min-w-[110px] font-mono text-[11px] font-bold text-paper">{of.source}</span>
-                      {typeof of.priceGbp === "number" && (
-                        <span className="font-mono text-[12px] tabular-nums text-brass">{gbp(of.priceGbp)}/nt</span>
-                      )}
-                      {of.freeCancellation && (
-                        <span className="rounded-full border border-emerald-soft/40 bg-emerald-soft/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-emerald-soft">free cancel</span>
-                      )}
-                      {of.perks.slice(0, 3).map((p) => (
-                        <span key={p} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">{p}</span>
+          {/* ── property detail sheet: gallery + map + provider comparison ─── */}
+          <Sheet
+            open={!!offersFor}
+            onClose={() => setOffersFor(null)}
+            title={offersFor?.name ?? ""}
+          >
+            {offersLoading ? (
+              <p className="flex items-center gap-2 p-6 text-[12px] text-paper-faint">
+                <Loader2 className="h-3 w-3 animate-spin" /> resolving offers, photos + exact provider pages…
+              </p>
+            ) : offersFor && offersData ? (
+              <div className="max-h-[70vh] space-y-3 overflow-y-auto p-1">
+                {/* room / property gallery — scrollable */}
+                {(offersData.images.length > 0 || offersFor.image) && (
+                  <div className="no-scrollbar flex snap-x gap-2 overflow-x-auto">
+                    {(offersData.images.length > 0 ? offersData.images : [offersFor.image!]).map((im, i) => (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img key={i} src={im} alt="" loading="lazy" className="h-40 w-auto shrink-0 snap-start rounded-lg object-cover" />
+                    ))}
+                  </div>
+                )}
+                {/* provider price comparison — TOTALS first, choose + lock */}
+                <div>
+                  <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.22em] text-brass">
+                    compare providers · total for your stay
+                  </p>
+                  {offersData.offers.length === 0 ? (
+                    <p className="py-2 text-[12px] text-paper-faint">No per-provider offers returned for these dates.</p>
+                  ) : (
+                    <ul className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
+                      {offersData.offers.map((of, i) => (
+                        <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                          <span className="min-w-[104px] font-mono text-[11px] font-bold text-paper">{of.source}</span>
+                          <span className="font-mono text-[13px] font-bold tabular-nums text-brass">
+                            {typeof of.totalGbp === "number"
+                              ? `${gbp(of.totalGbp)} total`
+                              : typeof of.priceGbp === "number"
+                                ? `${gbp(of.priceGbp)}/nt`
+                                : "—"}
+                          </span>
+                          {typeof of.totalGbp === "number" && typeof of.priceGbp === "number" && (
+                            <span className="font-mono text-[10px] text-paper-faint">{gbp(of.priceGbp)}/nt</span>
+                          )}
+                          {of.freeCancellation ? (
+                            <span className="rounded-full border border-emerald-soft/40 bg-emerald-soft/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-emerald-soft">free cancel</span>
+                          ) : of.cancellationNote ? (
+                            <span className="rounded-full border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-amber">{of.cancellationNote}</span>
+                          ) : null}
+                          {of.perks.slice(0, 3).map((pk) => (
+                            <span key={pk} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">{pk}</span>
+                          ))}
+                          <span className="flex-1" />
+                          {of.link && (
+                            <a href={of.link} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-rule-soft/50 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                              open <ExternalLink className="h-2.5 w-2.5" />
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void lockIn(
+                                { ...offersFor, link: of.link ?? offersFor.link, totalGbp: of.totalGbp ?? offersFor.totalGbp },
+                                of.source,
+                                of.priceGbp,
+                              );
+                              setOffersFor(null);
+                            }}
+                            className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors"
+                          >
+                            <Lock className="h-2.5 w-2.5" /> lock this
+                          </button>
+                        </li>
                       ))}
-                      <span className="flex-1" />
-                      {of.link ? (
-                        <a href={of.link} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors">
-                          open at {of.source.split(".")[0]} <ExternalLink className="h-2.5 w-2.5" />
-                        </a>
-                      ) : (
-                        <span className="font-mono text-[9px] uppercase text-paper-faint/60">no direct link</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+                    </ul>
+                  )}
+                </div>
+                {/* amenities */}
+                {offersData.amenities.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {offersData.amenities.map((a) => (
+                      <span key={a} className="rounded-full border border-rule-soft/50 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-paper-faint">{a}</span>
+                    ))}
+                  </div>
+                )}
+                {/* embedded Google map */}
+                {typeof offersData.lat === "number" && typeof offersData.lng === "number" && (
+                  <div>
+                    <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                      location{offersData.address ? ` · ${offersData.address}` : ""}
+                    </p>
+                    <iframe
+                      title="map"
+                      src={`https://www.google.com/maps?q=${offersData.lat},${offersData.lng}&z=14&output=embed`}
+                      className="h-56 w-full rounded-lg border border-rule-soft/50"
+                      loading="lazy"
+                    />
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </Sheet>
 
           {/* ── trip timeline + transfers ──────────────────────────────────── */}
           {trip.startDate && trip.endDate && (
@@ -822,26 +1013,21 @@ export function TripsOverview({
                   ))}
                 </div>
               )}
-              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
-                  <TrainFront className="h-3 w-3" /> transport
-                </span>
-                {trip.originCity && (
-                  <a href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`flights from ${trip.originCity} to ${city} on ${trip.startDate}`)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
-                    Google Flights
-                  </a>
-                )}
-                {trip.originCity && (
-                  <a href={`https://www.rome2rio.com/s/${encodeURIComponent(trip.originCity)}/${encodeURIComponent(city)}`} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
-                    Rome2rio (all modes + prices)
-                  </a>
-                )}
+              <div className="mt-2 flex justify-end">
                 <Link href={`/travel/${tripId}`} className="rounded-full border border-rule-soft/50 bg-ink-2/40 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
-                  plan transfers →
+                  plan multi-stop transfers →
                 </Link>
               </div>
             </div>
           )}
+
+          {/* ── dedicated transfer tile (real prices) ──────────────────────── */}
+          <TransferTile
+            defaultFrom={trip.originCity ?? ""}
+            defaultTo={city}
+            date={trip.startDate}
+            adults={travelers}
+          />
 
           {/* ── bookings ───────────────────────────────────────────────────── */}
           <div>
