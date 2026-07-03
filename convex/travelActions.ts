@@ -728,6 +728,12 @@ type StayOption = {
   priceGbp?: number;
   totalGbp?: number;
   image?: string;
+  /** Small thumbnail for result cards (original stays for the detail gallery). */
+  thumb?: string;
+  /** "hotel" | "vacation rental" | "hostel"… straight from Google Hotels. */
+  propertyType?: string;
+  /** Star class (extracted_hotel_class) when Google knows it. */
+  hotelClass?: number;
   rating?: number;
   freeCancellation?: boolean;
   lat?: number;
@@ -836,9 +842,14 @@ export const searchStays = action({
       const options: StayOption[] = collected.slice(0, 50).map((p) => {
         const img =
           p?.images?.[0]?.original_image ?? p?.images?.[0]?.thumbnail ?? undefined;
+        const thumb =
+          p?.images?.[0]?.thumbnail ?? p?.images?.[0]?.original_image ?? undefined;
         const coords = p?.gps_coordinates ?? {};
         return {
           name: typeof p?.name === "string" ? p.name : "Hotel",
+          thumb: typeof thumb === "string" ? thumb : undefined,
+          propertyType: typeof p?.type === "string" ? p.type : undefined,
+          hotelClass: finiteOrUndef(p?.extracted_hotel_class),
           provider: p?.prices?.[0]?.source ?? undefined,
           priceGbp: finiteOrUndef(p?.rate_per_night?.extracted_lowest),
           totalGbp: finiteOrUndef(p?.total_rate?.extracted_lowest),

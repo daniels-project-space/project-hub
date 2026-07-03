@@ -103,6 +103,9 @@ type StayOption = {
   priceGbp?: number;
   totalGbp?: number;
   image?: string;
+  thumb?: string;
+  propertyType?: string;
+  hotelClass?: number;
   rating?: number;
   freeCancellation?: boolean;
   link: string;
@@ -111,6 +114,25 @@ type StayOption = {
   amenities?: string[];
   offers?: { source: string; priceGbp?: number }[];
 };
+
+// Dorm / shared-room detector (2026-07-03): Google's lowest rate for hostels
+// is a DORM BED price that reads absurdly cheap next to private rooms. Flag it
+// loudly so a £8/nt bunk is never mistaken for a £8/nt room.
+function dormLikely(o: StayOption): boolean {
+  if (/hostel/i.test(o.propertyType ?? "")) return true;
+  return /hostel|dorm|capsule|bunk|backpacker|shared room/i.test(
+    `${o.name} ${(o.amenities ?? []).join(" ")}`,
+  );
+}
+
+// Provider search deep-link for a SPECIFIC property (query = property name +
+// trip dates) — chips on the card land you on that provider already searched.
+function providerLinkFor(sourceLabel: string, propertyName: string, checkIn?: string, checkOut?: string, adults?: number): string | null {
+  const pm = PROVIDER_MATCH.find((m) => m.test.test(sourceLabel));
+  if (!pm) return null;
+  const bp = BOOKING_PROVIDERS.find((b) => b.key === pm.key);
+  return bp ? bp.url({ city: propertyName, checkIn, checkOut, adults }) : null;
+}
 
 type ResolvedOffer = {
   source: string;
@@ -225,6 +247,9 @@ function YearBand({
 function StayCard({
   o,
   otaPrice,
+  checkIn,
+  checkOut,
+  adults,
   onLock,
   onDetails,
   locking,
@@ -232,81 +257,122 @@ function StayCard({
 }: {
   o: StayOption;
   otaPrice?: number;
+  checkIn?: string;
+  checkOut?: string;
+  adults?: number;
   onLock: (o: StayOption) => void;
   onDetails: (o: StayOption) => void;
   locking: boolean;
   expanded: boolean;
 }) {
   const nightly = otaPrice ?? o.priceGbp;
+  const dorm = dormLikely(o);
+  const offerChips = (o.offers ?? []).filter((x) => typeof x.priceGbp === "number").slice(0, 3);
   return (
     <div
       className={cn(
-        "w-[218px] shrink-0 snap-start overflow-hidden rounded-xl border bg-ink-2/40 transition-colors",
-        expanded ? "border-brass/60" : "border-rule-soft/60",
+        "w-[232px] shrink-0 snap-start overflow-hidden rounded-xl border bg-ink-2/40 transition-colors",
+        expanded ? "border-brass/60" : "border-rule-soft/60 hover:border-rule-soft",
       )}
     >
-      {o.image ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={o.image} alt="" className="h-24 w-full object-cover" loading="lazy" />
-      ) : (
-        <div className="grid h-24 w-full place-items-center bg-ink-3/50 text-paper-faint">
-          <BedDouble className="h-5 w-5" />
-        </div>
-      )}
+      <button type="button" onClick={() => onDetails(o)} className="block w-full text-left">
+        {o.thumb || o.image ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={o.thumb ?? o.image} alt="" className="h-[104px] w-full object-cover" loading="lazy" decoding="async" />
+        ) : (
+          <div className="grid h-[104px] w-full place-items-center bg-ink-3/50 text-paper-faint">
+            <BedDouble className="h-5 w-5" />
+          </div>
+        )}
+      </button>
       <div className="space-y-1.5 p-2.5">
         <div className="flex items-start justify-between gap-1.5">
           <p className="line-clamp-2 text-[12px] leading-snug text-paper">{o.name}</p>
-          {typeof o.rating === "number" && (
-            <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-amber">
-              <Star className="h-2.5 w-2.5 fill-current" />
-              {o.rating.toFixed(1)}
+          <span className="flex shrink-0 flex-col items-end gap-0.5">
+            {typeof o.rating === "number" && (
+              <span className="flex items-center gap-0.5 font-mono text-[10px] text-amber">
+                <Star className="h-2.5 w-2.5 fill-current" />
+                {o.rating.toFixed(1)}
+              </span>
+            )}
+            {typeof o.hotelClass === "number" && o.hotelClass > 0 && (
+              <span className="font-mono text-[8px] tracking-tight text-paper-faint">{"★".repeat(Math.round(o.hotelClass))}</span>
+            )}
+          </span>
+        </div>
+        {/* room-type honesty + provider */}
+        <div className="flex flex-wrap items-center gap-1">
+          {dorm ? (
+            <span className="rounded-full border border-rose-soft/50 bg-rose-soft/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-rose-soft">
+              dorm / shared
+            </span>
+          ) : (
+            <span className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-paper-faint">
+              {o.propertyType === "vacation rental" ? "private rental" : "private room"}
             </span>
           )}
-        </div>
-        {/* TOTAL for the whole stay is the headline; nightly is secondary. */}
-        <p className="font-mono text-[14px] font-bold tabular-nums leading-none text-paper">
-          {typeof o.totalGbp === "number"
-            ? `${gbp(o.totalGbp)} total`
-            : typeof nightly === "number"
-              ? `${gbp(nightly)}/nt`
-              : "price on site"}
-          {typeof o.totalGbp === "number" && typeof nightly === "number" && (
-            <span className="ml-1.5 text-[10px] font-normal text-paper-faint">{gbp(nightly)}/nt</span>
-          )}
-        </p>
-        {/* WHICH SITE the booking link goes to */}
-        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-emerald-soft/80">
-          via {o.provider ?? o.offers?.[0]?.source ?? "Booking.com"}
-        </p>
-        <div className="flex min-h-[16px] flex-wrap gap-1">
           {o.freeCancellation && (
             <span className="rounded-full border border-emerald-soft/40 bg-emerald-soft/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.12em] text-emerald-soft">
               free cancel
             </span>
           )}
-          {(o.amenities ?? []).slice(0, 2).map((a) => (
-            <span key={a} className="rounded-full border border-rule-soft/50 px-1.5 py-px font-mono text-[8px] uppercase tracking-[0.08em] text-paper-faint">
-              {a}
-            </span>
-          ))}
         </div>
-        <div className="flex items-center justify-between pt-0.5">
-          <button
-            type="button"
-            onClick={() => onDetails(o)}
-            className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-faint hover:text-brass transition-colors"
+        {/* TOTAL headline, nightly secondary */}
+        <p className="font-mono text-[15px] font-bold tabular-nums leading-none text-paper">
+          {typeof o.totalGbp === "number"
+            ? gbp(o.totalGbp)
+            : typeof nightly === "number"
+              ? `${gbp(nightly)}/nt`
+              : "price on site"}
+          {typeof o.totalGbp === "number" && (
+            <span className="ml-1 text-[9px] font-normal uppercase tracking-[0.1em] text-paper-faint">
+              total{typeof nightly === "number" ? ` · ${gbp(nightly)}/nt` : ""}
+            </span>
+          )}
+        </p>
+        {/* prices at other providers — right on the card */}
+        {offerChips.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {offerChips.map((c) => {
+              const href = providerLinkFor(c.source, o.name, checkIn, checkOut, adults);
+              const label = `${c.source.replace(/\.co(m|\.uk).*$/i, "")} ${gbp(c.priceGbp!)}`;
+              return href ? (
+                <a key={c.source} href={href} target="_blank" rel="noreferrer" className="rounded-full border border-rule-soft/50 bg-ink-3/50 px-1.5 py-px font-mono text-[9px] text-paper-dim hover:border-brass/50 hover:text-brass transition-colors">
+                  {label}
+                </a>
+              ) : (
+                <span key={c.source} className="rounded-full border border-rule-soft/50 bg-ink-3/50 px-1.5 py-px font-mono text-[9px] text-paper-dim">
+                  {label}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <div className="flex items-center gap-1.5 pt-0.5">
+          <a
+            href={o.link}
+            target="_blank"
+            rel="noreferrer"
+            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-paper-faint/30 bg-ink-3/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-paper hover:border-brass/50 hover:text-brass transition-colors"
           >
-            offers {expanded ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}
-          </button>
+            open <ExternalLink className="h-2.5 w-2.5" />
+          </a>
           <button
             type="button"
             disabled={locking}
             onClick={() => onLock(o)}
-            className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-50"
+            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-50"
           >
-            <Lock className="h-2.5 w-2.5" /> lock in
+            <Lock className="h-2.5 w-2.5" /> lock
           </button>
         </div>
+        <button
+          type="button"
+          onClick={() => onDetails(o)}
+          className="flex w-full items-center justify-center gap-1 font-mono text-[9px] uppercase tracking-[0.16em] text-paper-faint hover:text-brass transition-colors"
+        >
+          compare providers + photos {expanded ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}
+        </button>
       </div>
     </div>
   );
@@ -837,6 +903,18 @@ export function TripsOverview({
                   </a>
                 ))}
               </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-amber/80">lastminute deals</span>
+                <a href={`https://www.lastminute.com/hotels/${encodeURIComponent(city.toLowerCase().replace(/\s+/g, "-"))}.html`} target="_blank" rel="noreferrer" className="rounded-full border border-amber/30 bg-amber/5 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-amber/60 hover:text-amber transition-colors">
+                  {city} hotels
+                </a>
+                <a href={`https://www.lastminute.com/holidays/${encodeURIComponent(city.toLowerCase().replace(/\s+/g, "-"))}.html`} target="_blank" rel="noreferrer" className="rounded-full border border-amber/30 bg-amber/5 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-amber/60 hover:text-amber transition-colors">
+                  {city} holidays
+                </a>
+                <a href="https://www.lastminute.com/deals" target="_blank" rel="noreferrer" className="rounded-full border border-amber/30 bg-amber/5 px-2 py-0.5 font-mono text-[10px] text-paper-dim hover:border-amber/60 hover:text-amber transition-colors">
+                  deals hub
+                </a>
+              </div>
               <button
                 type="button"
                 disabled={!canSearch || searching}
@@ -869,6 +947,9 @@ export function TripsOverview({
                     key={`${rail.key}-${i}-${o.name}`}
                     o={o}
                     otaPrice={otaPrice}
+                    checkIn={trip.startDate}
+                    checkOut={trip.endDate}
+                    adults={travelers}
                     locking={lockingName === o.name}
                     expanded={offersFor?.name === o.name}
                     onDetails={(opt) => void openOffers(opt)}
