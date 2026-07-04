@@ -485,7 +485,7 @@ function ProviderDealRail({
         <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
           {d.image && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={d.image} alt="" loading="lazy" className="h-10 w-14 shrink-0 rounded-md object-cover" />
+            <img src={d.image} alt="" loading="lazy" className="h-14 w-20 shrink-0 rounded-md object-cover" />
           )}
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12px] text-paper">{d.name}</span>
@@ -1262,7 +1262,17 @@ export function TripsOverview({
         vacationRentals: stayStyle === "villas" ? true : undefined,
       });
       if (!res.available) setSearchErr(res.reason ?? "search unavailable");
-      setResults(res.options ?? []);
+      const opts = (res.options ?? []) as StayOption[];
+      setResults(opts);
+      // AUTOMATIC full comparison (2026-07-04, per Daniel): provider price
+      // enrichment + the three Browserbase live hunts fire with the search.
+      setEnriched(false);
+      void deepCompare(opts);
+      for (const pm of PROVIDER_MATCH) {
+        if (["lastminute", "stayforlong", "trivago"].includes(pm.key)) {
+          void huntProviderDeals(pm.key, pm.label, pm.domain);
+        }
+      }
     } catch (err) {
       setSearchErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1356,9 +1366,10 @@ export function TripsOverview({
   // parallel (one click ≈ 8 serpapi credits) and merge every portal's real
   // prices back into the results — provider rails then fill with proper CARDS
   // (image, price at that portal, perks, overlay) for every OTA Google lists.
-  const deepCompare = async () => {
-    if (!results || enriching || !trip?.startDate) return;
-    const visible = showHostels ? results : results.filter((o) => !dormLikely(o));
+  const deepCompare = async (list?: StayOption[]) => {
+    const source = list ?? results;
+    if (!source || enriching || !trip?.startDate) return;
+    const visible = showHostels ? source : source.filter((o) => !dormLikely(o));
     const top = visible.filter((o) => o.propertyToken).slice(0, 8);
     if (top.length === 0) return;
     setEnriching(true);

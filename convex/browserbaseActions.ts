@@ -69,7 +69,7 @@ async function renderPage(
   apiKey: string,
   projectId: string,
   url: string,
-): Promise<{ text: string; anchors: { href: string; text: string }[]; images: string[] }> {
+): Promise<{ text: string; anchors: { href: string; text: string; img?: string }[]; images: string[] }> {
   // 1. session
   const sres = await fetch(`${BB_API}/sessions`, {
     method: "POST",
@@ -125,7 +125,15 @@ async function renderPage(
           }).slice(0, 120).join(NL);
           const text = (priceLines + NL + "----" + NL + full).slice(0, 14000);
           const anchors = Array.from(document.querySelectorAll("a[href]"))
-            .map(function (a) { return { href: a.href, text: (a.innerText || "").trim().slice(0, 120) }; })
+            .map(function (a) {
+              var card = a.closest("article, li, section, div");
+              var im = card ? card.querySelector("img[src]") : null;
+              return {
+                href: a.href,
+                text: (a.innerText || "").trim().slice(0, 120),
+                img: im && im.src && im.src.indexOf("http") === 0 ? im.src : "",
+              };
+            })
             .filter(function (a) { return a.text.length > 3 && a.href.indexOf("http") === 0; })
             .slice(0, 60);
           const images = Array.from(document.querySelectorAll("img[src]"))
@@ -261,13 +269,13 @@ export const providerDealsLive = action({
               content:
                 `This is the RENDERED ${args.provider} page for ${args.city} stays` +
                 (args.checkIn ? ` (${args.checkIn} to ${args.checkOut})` : "") +
-                `. Extract up to 8 listings WITH their prices as shown. STRICT JSON only:\n` +
+                `. Extract up to 8 HOTEL/PROPERTY listings WITH their prices as shown - NEVER destination/area tiles (skip names that are just places like Seminyak, Kuta, Ubud). STRICT JSON only:\n` +
                 `{"deals":[{"name":"<property>","price":"<price as displayed>","priceGbp":<approx GBP number or null>,` +
                 `"link":"<best matching anchor href or null>","image":"<best matching image url or null>","note":"<rating/area/perk>"}]}\n` +
-                `Use ANCHORS to pick links (match by property name) and IMAGES in order as a fallback gallery. ` +
+                `Use ANCHORS to pick links AND images (each row is name :: link :: image-url of the SAME card). Loose IMAGES are a fallback gallery. ` +
                 `Only listings genuinely on the page. ASCII only.\n` +
                 `PAGE TEXT:\n${rendered.text.slice(0, 9000)}\n\nANCHORS:\n` +
-                rendered.anchors.map((a) => `${a.text} :: ${a.href}`).join("\n").slice(0, 3000) +
+                rendered.anchors.map((a) => `${a.text} :: ${a.href} :: ${(a as { img?: string }).img ?? ""}`).join("\n").slice(0, 3800) +
                 `\n\nIMAGES:\n${rendered.images.join("\n").slice(0, 1500)}`,
             },
           ],
