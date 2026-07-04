@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { BOOKING_PROVIDERS } from "@/lib/travel/booking-links";
 import { geocodePlace, searchPlaces, type GeoPlace } from "@/lib/travel/geocode";
 import { AirportField } from "@/components/travel/airport-field";
+import { TripJourney } from "@/components/travel/trip-journey";
 import { Sheet } from "@/components/ui/sheet";
 import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
 
@@ -1252,6 +1253,7 @@ export function TripsOverview({
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
+  const [journeyOpen, setJourneyOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   type ProviderDeal = { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
@@ -1639,10 +1641,11 @@ export function TripsOverview({
         </button>
         <button
           type="button"
-          onClick={() => setGlobeOpen(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
+          onClick={() => setJourneyOpen(true)}
+          disabled={!tripId}
+          className="flex items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
         >
-          <Globe2 className="h-3 w-3" /> globe
+          <Globe2 className="h-3 w-3" /> journey · map + timeline
         </button>
       </div>
       {adding && (
@@ -2308,6 +2311,9 @@ export function TripsOverview({
           )}
         </div>
       </Sheet>
+
+      {/* ── Journey master overlay: connected globe + node timeline + money ── */}
+      <TripJourney tripId={tripId} trip={trip} open={journeyOpen} onClose={() => setJourneyOpen(false)} />
     </div>
   );
 }
