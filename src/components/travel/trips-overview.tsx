@@ -1147,6 +1147,12 @@ export function TripsOverview({
   const [browseOpen, setBrowseOpen] = useState(false);
   type ProviderDeal = { name: string; price?: string; priceGbp?: number; link?: string; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
+  // ONE-CLICK provider enrichment: property-detail calls return the FULL
+  // per-OTA price list Google truncates out of search results. Cache each
+  // detail so compare overlays open instantly afterwards.
+  const [detailCache, setDetailCache] = useState<Record<string, StayDetail>>({});
+  const [enriching, setEnriching] = useState(false);
+  const [enriched, setEnriched] = useState(false);
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1267,6 +1273,11 @@ export function TripsOverview({
     setOffersFor(o);
     setOffersData(null);
     if (!o.propertyToken || !trip?.startDate || !trip?.endDate) return;
+    const cached = detailCache[o.propertyToken];
+    if (cached) {
+      setOffersData(cached);
+      return;
+    }
     setOffersLoading(true);
     try {
       const res = await resolveOffers({
@@ -1277,6 +1288,7 @@ export function TripsOverview({
         adults: travelers,
       });
       setOffersData(res as StayDetail);
+      if (o.propertyToken) setDetailCache((c) => ({ ...c, [o.propertyToken!]: res as StayDetail }));
     } catch {
       setOffersData({ amenities: [], images: [], offers: [] });
     } finally {
@@ -1319,6 +1331,52 @@ export function TripsOverview({
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: res.deals ?? [] } }));
     } catch {
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: [] } }));
+    }
+  };
+
+  // "Compare all providers": detail-fetch the top visible properties in
+  // parallel (one click ≈ 8 serpapi credits) and merge every portal's real
+  // prices back into the results — provider rails then fill with proper CARDS
+  // (image, price at that portal, perks, overlay) for every OTA Google lists.
+  const deepCompare = async () => {
+    if (!results || enriching || !trip?.startDate) return;
+    const visible = showHostels ? results : results.filter((o) => !dormLikely(o));
+    const top = visible.filter((o) => o.propertyToken).slice(0, 8);
+    if (top.length === 0) return;
+    setEnriching(true);
+    try {
+      const details = await Promise.all(
+        top.map((o) =>
+          resolveOffers({
+            propertyToken: o.propertyToken!,
+            query: `${city} hotels`,
+            checkIn: trip.startDate!,
+            checkOut: (effCheckOut ?? trip.endDate)!,
+            adults: travelers,
+          })
+            .then((d) => ({ token: o.propertyToken!, detail: d as StayDetail }))
+            .catch(() => null),
+        ),
+      );
+      const byToken: Record<string, StayDetail> = {};
+      for (const d of details) if (d) byToken[d.token] = d.detail;
+      setDetailCache((c) => ({ ...c, ...byToken }));
+      setResults((prev) =>
+        prev
+          ? prev.map((o) => {
+              const d = o.propertyToken ? byToken[o.propertyToken] : undefined;
+              if (!d || d.offers.length === 0) return o;
+              return {
+                ...o,
+                offers: d.offers.map((x) => ({ source: x.source, priceGbp: x.priceGbp })),
+                amenities: o.amenities?.length ? o.amenities : d.amenities.slice(0, 4),
+              };
+            })
+          : prev,
+      );
+      setEnriched(true);
+    } finally {
+      setEnriching(false);
     }
   };
 
@@ -1584,6 +1642,20 @@ export function TripsOverview({
               count={results.length}
               action={
                 <span className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={enriching}
+                    onClick={() => void deepCompare()}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors",
+                      enriched
+                        ? "border-emerald-soft/50 bg-emerald-soft/10 text-emerald-soft"
+                        : "border-brass/40 bg-brass/10 text-brass hover:bg-brass/20",
+                    )}
+                  >
+                    {enriching ? <Loader2 className="h-3 w-3 animate-spin" /> : <PiggyBank className="h-3 w-3" />}
+                    {enriched ? "providers compared" : "compare all providers"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setShowHostels((h) => !h)}
