@@ -19,7 +19,8 @@
  *  - Lock-in stays, booking timeline with symbols/times, transfers chain.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import {
@@ -255,6 +256,78 @@ function isoOf(y: number, m: number, d: number): string {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
+// Anchored popover: renders `children` in a portal to <body>, positioned under
+// the anchor rect, so it can never be clipped by an ancestor's overflow/height
+// (the recurring "cut-off card" bug). Flips above the anchor near the viewport
+// bottom, and closes on outside-click / scroll / resize.
+function AnchoredPopover({
+  anchorRef,
+  open,
+  onClose,
+  width,
+  children,
+}: {
+  anchorRef: React.RefObject<HTMLElement | null>;
+  open: boolean;
+  onClose: () => void;
+  width: number;
+  children: React.ReactNode;
+}) {
+  const [pos, setPos] = useState<{ left: number; top: number; flip: boolean } | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const spaceBelow = window.innerHeight - r.bottom;
+      const flip = spaceBelow < 320 && r.top > spaceBelow;
+      const left = Math.min(Math.max(8, r.left), vw - width - 8);
+      setPos({ left, top: flip ? r.top : r.bottom, flip });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, anchorRef, width]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (popRef.current?.contains(e.target as Node)) return;
+      if (anchorRef.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open, onClose, anchorRef]);
+
+  if (!open || !pos || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={popRef}
+      style={{
+        position: "fixed",
+        left: pos.left,
+        top: pos.top,
+        width,
+        transform: pos.flip ? "translateY(-100%)" : undefined,
+        marginTop: pos.flip ? -6 : 6,
+        zIndex: 60,
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 function DateField({
   value,
   min,
@@ -266,6 +339,7 @@ function DateField({
   onChange: (v: string) => void;
   className?: string;
 }) {
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const seed = parseISO(value) ?? parseISO(min ?? "") ?? new Date();
   const [vy, setVy] = useState(seed.getUTCFullYear());
@@ -290,6 +364,7 @@ function DateField({
   return (
     <div className={cn("relative", className)}>
       <button
+        ref={anchorRef}
         type="button"
         onClick={() => (open ? setOpen(false) : openCal())}
         className={cn(
@@ -304,10 +379,8 @@ function DateField({
             : "pick a date"}
         </span>
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden="true" />
-          <div className="absolute left-0 top-full z-40 mt-1.5 w-[248px] rounded-xl border border-rule-soft/70 bg-ink-2 p-3 shadow-2xl">
+      <AnchoredPopover anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={248}>
+          <div className="w-[248px] rounded-xl border border-rule-soft/70 bg-ink-2 p-3 shadow-2xl">
             <div className="mb-2 flex items-center justify-between">
               <button
                 type="button"
@@ -364,8 +437,7 @@ function DateField({
               })}
             </div>
           </div>
-        </>
-      )}
+      </AnchoredPopover>
     </div>
   );
 }
@@ -384,6 +456,7 @@ function PlaceField({
   const [results, setResults] = useState<GeoPlace[]>([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
 
   const query = async (text: string) => {
     setQ(text);
@@ -406,22 +479,26 @@ function PlaceField({
   };
 
   return (
-    <div className="relative min-w-[170px] flex-1">
+    <div className="relative min-w-[170px] flex-1" ref={anchorRef}>
       <div className="group flex items-center gap-1.5 rounded-lg border border-rule-soft/60 bg-ink-3/60 px-2.5 py-1.5 transition-colors focus-within:border-brass/60">
         <Search className="h-3 w-3 shrink-0 text-paper-faint transition-colors group-focus-within:text-brass" />
         <input
           value={q}
           onChange={(ev) => void query(ev.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
           placeholder={placeholder}
           className="w-full bg-transparent text-[12px] text-paper outline-none placeholder:text-paper-faint/60"
         />
         {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-paper-faint" />}
         {selected && <span className="shrink-0 rounded bg-emerald-soft/15 px-1 font-mono text-[8px] uppercase text-emerald-soft">set</span>}
       </div>
-      {open && (
-        <ul className="absolute left-0 right-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-lg border border-rule-soft/70 bg-ink-2 shadow-2xl">
+      <AnchoredPopover
+        anchorRef={anchorRef}
+        open={open && results.length > 0}
+        onClose={() => setOpen(false)}
+        width={anchorRef.current?.offsetWidth ?? 220}
+      >
+        <ul className="max-h-56 overflow-y-auto rounded-lg border border-rule-soft/70 bg-ink-2 shadow-2xl">
           {results.map((r, i) => (
             <li key={`${r.name}-${r.lat}-${i}`}>
               <button
@@ -442,7 +519,7 @@ function PlaceField({
             </li>
           ))}
         </ul>
-      )}
+      </AnchoredPopover>
     </div>
   );
 }
