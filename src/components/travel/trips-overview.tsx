@@ -41,6 +41,11 @@ import {
   Plus,
   ChevronDown,
   ChevronUp,
+  MapPin,
+  Check,
+  ArrowRight,
+  ArrowLeft,
+  SkipForward,
 } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -1220,6 +1225,97 @@ function TransferTile({
   );
 }
 
+// ── guided trip stages (2026-07-04 redesign): one focused task at a time ────
+const TRIP_STAGES = [
+  { key: "setup", label: "Setup", icon: MapPin, hint: "where · when · who · budget" },
+  { key: "stays", label: "Stays", icon: BedDouble, hint: "find + lock a place" },
+  { key: "transport", label: "Transport", icon: TrainFront, hint: "how you get around" },
+  { key: "plan", label: "Plan", icon: CalendarRange, hint: "bookings + day-by-day" },
+] as const;
+type TripStage = (typeof TRIP_STAGES)[number]["key"];
+
+function StageStepper({
+  stage,
+  setStage,
+  status,
+}: {
+  stage: TripStage;
+  setStage: (s: TripStage) => void;
+  status: Record<TripStage, "done" | "skipped" | "todo">;
+}) {
+  return (
+    <div className="no-scrollbar flex items-stretch gap-1 overflow-x-auto rounded-xl border border-rule-soft/50 bg-ink-2/30 p-1">
+      {TRIP_STAGES.map((s, i) => {
+        const on = stage === s.key;
+        const st = status[s.key];
+        return (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => setStage(s.key)}
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition-colors",
+              on ? "bg-brass/15 text-brass" : "text-paper-faint hover:text-paper",
+            )}
+          >
+            <span
+              className={cn(
+                "grid h-5 w-5 shrink-0 place-items-center rounded-full border font-mono text-[9px]",
+                on ? "border-brass/60 bg-brass/20 text-brass" : st === "done" ? "border-emerald-soft/50 bg-emerald-soft/15 text-emerald-soft" : "border-rule-soft/60 text-paper-faint",
+              )}
+            >
+              {st === "done" ? <Check className="h-3 w-3" /> : i + 1}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate font-mono text-[10px] uppercase tracking-[0.14em]">{s.label}</span>
+              {on && <span className="block truncate font-mono text-[8px] normal-case tracking-normal text-paper-faint">{s.hint}</span>}
+            </span>
+            {st === "skipped" && <span className="ml-auto shrink-0 font-mono text-[7px] uppercase text-paper-faint/60">skip</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Bottom nav for the current stage: back / skip / next.
+function StageNav({
+  stage,
+  setStage,
+  onSkip,
+}: {
+  stage: TripStage;
+  setStage: (s: TripStage) => void;
+  onSkip?: () => void;
+}) {
+  const idx = TRIP_STAGES.findIndex((s) => s.key === stage);
+  const prev = TRIP_STAGES[idx - 1];
+  const next = TRIP_STAGES[idx + 1];
+  return (
+    <div className="flex items-center justify-between gap-2 pt-1">
+      {prev ? (
+        <button type="button" onClick={() => setStage(prev.key)} className="flex items-center gap-1 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint hover:text-paper transition-colors">
+          <ArrowLeft className="h-3 w-3" /> {prev.label}
+        </button>
+      ) : (
+        <span />
+      )}
+      <div className="flex items-center gap-2">
+        {onSkip && next && (
+          <button type="button" onClick={() => { onSkip(); setStage(next.key); }} className="flex items-center gap-1 rounded-lg border border-rule-soft/50 bg-ink-2/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-paper-faint hover:text-paper transition-colors">
+            <SkipForward className="h-3 w-3" /> skip
+          </button>
+        )}
+        {next && (
+          <button type="button" onClick={() => setStage(next.key)} className="flex items-center gap-1 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 transition-colors">
+            {next.label} <ArrowRight className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export function TripsOverview({
   tripId,
@@ -1254,6 +1350,8 @@ export function TripsOverview({
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
   const [journeyOpen, setJourneyOpen] = useState(false);
+  const [stage, setStage] = useState<TripStage>("setup");
+  const [transportSkipped, setTransportSkipped] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   type ProviderDeal = { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
@@ -1674,7 +1772,21 @@ export function TripsOverview({
         <p className="py-6 text-center text-[12px] text-paper-faint">No trip selected — add one above.</p>
       ) : (
         <>
-          {/* ── hero + preferences + dynamic budget ─────────────────────────── */}
+          {/* ── guided stage stepper ─────────────────────────────────────────── */}
+          <StageStepper
+            stage={stage}
+            setStage={setStage}
+            status={{
+              setup: trip.startDate && trip.endDate ? "done" : "todo",
+              stays: savedStays.some((st) => st.locked === true) ? "done" : "todo",
+              transport: (flights ?? []).length > 0 ? "done" : transportSkipped ? "skipped" : "todo",
+              plan: "todo",
+            }}
+          />
+
+          {/* ── STAGE: setup — hero + preferences + dynamic budget ──────────── */}
+          {stage === "setup" && (
+          <>
           <div
             className="relative overflow-hidden rounded-xl border border-rule-soft/60 px-4 py-4"
             style={{ background: "linear-gradient(150deg, oklch(0.24 0.02 75 / 0.55), oklch(0.17 0.008 245 / 0.75) 55%)" }}
@@ -1801,6 +1913,23 @@ export function TripsOverview({
             {!canSearch && <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">set both dates to enable live prices</p>}
             {searchErr && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{searchErr}</p>}
           </div>
+          <StageNav stage={stage} setStage={setStage} />
+          </>
+          )}
+
+          {/* ── STAGE: stays — live search results + provider rails ──────────── */}
+          {stage === "stays" && (
+          <>
+          {results === null && !searching && (
+            <button
+              type="button"
+              disabled={!canSearch}
+              onClick={() => void runSearch()}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
+            >
+              <Search className="h-3 w-3" /> {canSearch ? "load live prices across all providers" : "set dates in Setup first"}
+            </button>
+          )}
 
           {/* aggregation buffer: search + enrichment + live hunts all at once */}
           {(searching || enriching || Object.values(providerDealState).some((st) => st.loading)) && (
@@ -1987,6 +2116,9 @@ export function TripsOverview({
               </div>
             </Section>
           )}
+          <StageNav stage={stage} setStage={setStage} />
+          </>
+          )}
 
           {/* ── property detail sheet: gallery + map + provider comparison ─── */}
           <Sheet
@@ -2097,6 +2229,9 @@ export function TripsOverview({
             ) : null}
           </Sheet>
 
+          {/* ── STAGE: transport — timeline + transfer finder ───────────────── */}
+          {stage === "transport" && (
+          <>
           {/* ── trip timeline + transfers ──────────────────────────────────── */}
           {trip.startDate && trip.endDate && (
             <Section title="Trip timeline">
@@ -2146,7 +2281,13 @@ export function TripsOverview({
             defaultDate={trip.startDate}
             adults={travelers}
           />
+          <StageNav stage={stage} setStage={setStage} onSkip={() => setTransportSkipped(true)} />
+          </>
+          )}
 
+          {/* ── STAGE: plan — bookings summary + day-by-day ─────────────────── */}
+          {stage === "plan" && (
+          <>
           {/* ── bookings ───────────────────────────────────────────────────── */}
           <div>
             <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
@@ -2216,6 +2357,9 @@ export function TripsOverview({
           <Link href={`/travel/${tripId}`} className="flex items-center justify-center gap-1.5 rounded-lg border border-rule-soft/50 bg-ink-2/30 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors">
         <Maximize2 className="h-3 w-3" /> open full planner
           </Link>
+          <StageNav stage={stage} setStage={setStage} />
+          </>
+          )}
         </>
       )}
 
