@@ -455,7 +455,7 @@ function ProviderDealRail({
 }: {
   railKey: string;
   label: string;
-  state?: { loading: boolean; deals: { name: string; price?: string; priceGbp?: number; link?: string; note?: string }[] | null };
+  state?: { loading: boolean; deals: { name: string; price?: string; priceGbp?: number; link?: string; image?: string; note?: string }[] | null };
   onHunt: () => void;
 }) {
   if (!state || (!state.loading && state.deals === null)) {
@@ -483,6 +483,10 @@ function ProviderDealRail({
     <ul key={railKey} className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
       {state.deals.map((d, i) => (
         <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
+          {d.image && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={d.image} alt="" loading="lazy" className="h-10 w-14 shrink-0 rounded-md object-cover" />
+          )}
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12px] text-paper">{d.name}</span>
             {d.note && <span className="block truncate font-mono text-[9px] text-paper-faint">{d.note}</span>}
@@ -1138,6 +1142,7 @@ export function TripsOverview({
   const search = useAction(api.travelActions.searchStays);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDeals = useAction(api.travelActions.providerDeals);
+  const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
   const [results, setResults] = useState<StayOption[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -1145,7 +1150,7 @@ export function TripsOverview({
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
-  type ProviderDeal = { name: string; price?: string; priceGbp?: number; link?: string; note?: string };
+  type ProviderDeal = { name: string; price?: string; priceGbp?: number; link?: string; image?: string; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
   // ONE-CLICK provider enrichment: property-detail calls return the FULL
   // per-OTA price list Google truncates out of search results. Cache each
@@ -1321,13 +1326,26 @@ export function TripsOverview({
   const huntProviderDeals = async (key: string, label: string, domain: string) => {
     setProviderDealState((st) => ({ ...st, [key]: { loading: true, deals: st[key]?.deals ?? null } }));
     try {
-      const res = await providerDeals({
-        city,
-        domain,
-        provider: label,
-        checkIn: trip?.startDate,
-        checkOut: effCheckOut ?? trip?.endDate,
-      });
+      // JS-only portals get the REAL browser (Browserbase renders the page →
+      // prices + images as displayed); the rest use the cheap indexed hunt.
+      const useLive = ["lastminute", "stayforlong", "trivago"].includes(key);
+      const res = useLive
+        ? await providerDealsLive({
+            providerKey: key,
+            provider: label,
+            domain,
+            city,
+            checkIn: trip?.startDate,
+            checkOut: effCheckOut ?? trip?.endDate,
+            adults: travelers,
+          })
+        : await providerDeals({
+            city,
+            domain,
+            provider: label,
+            checkIn: trip?.startDate,
+            checkOut: effCheckOut ?? trip?.endDate,
+          });
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: res.deals ?? [] } }));
     } catch {
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: [] } }));
