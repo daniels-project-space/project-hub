@@ -82,6 +82,8 @@ const SECRET = {
   // per-OTA breakdown, free + ~100 results). Wired 2026-07-04.
   ppUrl: { service: "ppbridge", keyName: "PP_BRIDGE_URL" },
   ppToken: { service: "ppbridge", keyName: "PP_BRIDGE_TOKEN" },
+  // Apify — purpose-built Expedia/Hotels.com scrapers (beat Akamai bot wall).
+  apify: { service: "apify", keyName: "APIFY_TOKEN" },
 } as const;
 
 const SERPAPI_URL = "https://serpapi.com/search.json";
@@ -876,6 +878,97 @@ export const ppHotels = action({
               : bookingDeepLink(r?.name ?? args.city, args.checkIn, args.checkOut, args.adults ?? 1),
           googleLink: typeof r?.booking_urls?.google_url === "string" ? r.booking_urls.google_url : undefined,
           offers,
+        };
+      });
+      return { available: true, options };
+    } catch (e) {
+      return { available: false, reason: e instanceof Error ? e.message : String(e), options: [] };
+    }
+  },
+});
+
+/**
+ * apifyHotels (2026-07-04) — the Akamai-walled portals (Expedia, Hotels.com)
+ * via Apify's purpose-built scraper actors. One sync API call → structured
+ * listings (name, nightly + total price, rating, image, direct link). ~$5 per
+ * 1000 results (≈20p/search). Gated on the vault apify token; absent → skips
+ * cleanly so the caller falls back to the hunt path.
+ */
+const APIFY_ACTOR: Record<string, string> = {
+  expedia: "crawlerbros~expedia-hotels-scraper",
+  hotels: "tri_angle~expedia-hotels-com-reviews-scraper",
+};
+
+export const apifyHotels = action({
+  args: {
+    site: v.string(), // "expedia" | "hotels"
+    city: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
+    const token = await getSecret(ctx, SECRET.apify);
+    const actor = APIFY_ACTOR[args.site];
+    if (!token) return { available: false, reason: "apify token absent", options: [] };
+    if (!actor) return { available: false, reason: `no actor for ${args.site}`, options: [] };
+    const num = (x: unknown): number | undefined => {
+      if (typeof x === "number" && Number.isFinite(x)) return x;
+      if (typeof x === "string") {
+        const m = x.replace(/,/g, "").match(/([0-9]+(?:\.[0-9]+)?)/);
+        if (m) return Number(m[1]);
+      }
+      return undefined;
+    };
+    try {
+      const res = await fetch(
+        `https://api.apify.com/v2/acts/${actor}/run-sync-get-dataset-items?token=${encodeURIComponent(token)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            destination: args.city,
+            checkIn: args.checkIn,
+            checkOut: args.checkOut,
+            adults: args.adults && args.adults > 0 ? Math.floor(args.adults) : 1,
+            rooms: 1,
+            maxItems: 40,
+            currency: "GBP",
+          }),
+        },
+      );
+      if (!res.ok) return { available: false, reason: `apify ${res.status}`, options: [] };
+      const rows: any[] = await res.json();
+      if (!Array.isArray(rows)) return { available: false, reason: "apify non-array", options: [] };
+      const nights = Math.max(
+        1,
+        Math.round((Date.parse(args.checkOut) - Date.parse(args.checkIn)) / 86_400_000),
+      );
+      const providerLabel = args.site === "hotels" ? "Hotels.com" : "Expedia";
+      const options: StayOption[] = rows.slice(0, 40).map((r) => {
+        const total = num(r?.totalPrice ?? r?.total_price ?? r?.priceTotal);
+        const night = num(r?.price ?? r?.pricePerNight ?? r?.nightlyPrice) ?? (total ? Math.round(total / nights) : undefined);
+        const img = typeof r?.imageUrl === "string" ? r.imageUrl : (Array.isArray(r?.images) ? r.images[0] : undefined);
+        const badges: string[] = Array.isArray(r?.badges) ? r.badges.filter((x: unknown) => typeof x === "string") : [];
+        const note = [r?.ratingText, r?.reviewCount ? `${r.reviewCount} reviews` : "", r?.neighborhood]
+          .filter(Boolean)
+          .join(" · ")
+          .slice(0, 80);
+        return {
+          name: typeof r?.name === "string" ? r.name : "Hotel",
+          provider: providerLabel,
+          priceGbp: night,
+          totalGbp: total,
+          image: img,
+          thumb: img,
+          gallery: Array.isArray(r?.images) ? r.images.filter((u: unknown) => typeof u === "string").slice(0, 8) : img ? [img] : [],
+          rating: num(r?.rating),
+          amenities: badges.length ? badges.slice(0, 4) : note ? [note] : undefined,
+          link: typeof r?.url === "string" ? r.url : bookingDeepLink(r?.name ?? args.city, args.checkIn, args.checkOut, args.adults ?? 1),
+          offers: [],
         };
       });
       return { available: true, options };

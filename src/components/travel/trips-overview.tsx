@@ -1166,6 +1166,7 @@ export function TripsOverview({
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
   const ppHotels = useAction(api.travelActions.ppHotels);
+  const apifyHotels = useAction(api.travelActions.apifyHotels);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
@@ -1184,6 +1185,8 @@ export function TripsOverview({
   const [enriching, setEnriching] = useState(false);
   const [enriched, setEnriched] = useState(false);
   const [bookingLive, setBookingLive] = useState<{ loading: boolean; options: StayOption[] }>({ loading: false, options: [] });
+  // Apify-backed live rails for the Akamai-walled portals (Expedia/Hotels.com).
+  const [apifyLive, setApifyLive] = useState<Record<string, { loading: boolean; options: StayOption[] }>>({});
   const [dealOpen, setDealOpen] = useState<{ name: string; priceNight?: string; priceTotal?: string; link?: string; images?: string[]; note?: string } | null>(null);
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
@@ -1322,6 +1325,19 @@ export function TripsOverview({
       })
         .then((b) => setBookingLive({ loading: false, options: (b.options ?? []) as StayOption[] }))
         .catch(() => setBookingLive({ loading: false, options: [] }));
+      // Expedia + Hotels.com via Apify (skips silently if no token in vault).
+      for (const site of ["expedia", "hotels"] as const) {
+        setApifyLive((m) => ({ ...m, [site]: { loading: true, options: m[site]?.options ?? [] } }));
+        void apifyHotels({
+          site,
+          city,
+          checkIn: trip.startDate!,
+          checkOut: (effCheckOut ?? trip.endDate)!,
+          adults: travelers,
+        })
+          .then((r) => setApifyLive((m) => ({ ...m, [site]: { loading: false, options: (r.options ?? []) as StayOption[] } })))
+          .catch(() => setApifyLive((m) => ({ ...m, [site]: { loading: false, options: [] } })));
+      }
       void (async () => {
         const enrichedList = (await deepCompare(opts)) ?? opts;
         for (const pm of PROVIDER_MATCH) {
@@ -1818,6 +1834,37 @@ export function TripsOverview({
               )}
             </div>
           )}
+          {(["expedia", "hotels"] as const).map((site) => {
+            const st = apifyLive[site];
+            if (!st || (!st.loading && st.options.length === 0)) return null;
+            const label = site === "hotels" ? "Hotels.com · live" : "Expedia · live";
+            return (
+              <div key={`apify-${site}`}>
+                <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                  {label}
+                  {st.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {st.options.length}</span>}
+                  <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
+                </p>
+                {st.options.length > 0 && (
+                  <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
+                    {st.options.map((o, i) => (
+                      <StayCard
+                        key={`${site}-${i}-${o.name}`}
+                        o={o}
+                        checkIn={trip.startDate}
+                        checkOut={effCheckOut}
+                        adults={travelers}
+                        locking={lockingName === o.name}
+                        expanded={offersFor?.name === o.name}
+                        onDetails={(opt) => void openOffers(opt)}
+                        onLock={(opt) => void lockIn(opt, o.provider ?? label, opt.priceGbp)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {carousels.map((rail) => (
             <div key={rail.key}>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
