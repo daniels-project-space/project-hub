@@ -452,10 +452,12 @@ function ProviderDealRail({
   label,
   state,
   onHunt,
+  onOpenDeal,
 }: {
   railKey: string;
   label: string;
-  state?: { loading: boolean; deals: { name: string; price?: string; priceGbp?: number; link?: string; image?: string; note?: string }[] | null };
+  state?: { loading: boolean; deals: { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string }[] | null };
+  onOpenDeal?: (d: { name: string; priceNight?: string; priceTotal?: string; link?: string; images?: string[]; note?: string }) => void;
   onHunt: () => void;
 }) {
   if (!state || (!state.loading && state.deals === null)) {
@@ -499,9 +501,23 @@ function ProviderDealRail({
             <span className="block truncate text-[12px] text-paper">{d.name}</span>
             {d.note && <span className="block truncate font-mono text-[9px] text-paper-faint">{d.note}</span>}
           </span>
-          {d.price && <span className="font-mono text-[12px] font-bold tabular-nums text-brass">{d.price}</span>}
-          {typeof d.priceGbp === "number" && !(d.price ?? "").includes("£") && (
-            <span className="font-mono text-[10px] text-paper-faint">≈{gbp(d.priceGbp)}</span>
+          {d.priceTotal && (
+            <span className="font-mono text-[12px] font-bold tabular-nums text-brass">
+              {d.priceTotal} <span className="text-[9px] font-normal uppercase text-paper-faint">total</span>
+            </span>
+          )}
+          {d.priceNight && (
+            <span className="font-mono text-[11px] tabular-nums text-paper-dim">
+              {d.priceNight} <span className="text-[9px] uppercase text-paper-faint">/nt</span>
+            </span>
+          )}
+          {!d.priceTotal && !d.priceNight && typeof d.priceGbpTotal === "number" && (
+            <span className="font-mono text-[12px] font-bold tabular-nums text-brass">≈{gbp(d.priceGbpTotal)} total</span>
+          )}
+          {onOpenDeal && (
+            <button type="button" onClick={() => onOpenDeal(d)} className="font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint hover:text-brass transition-colors">
+              photos+
+            </button>
           )}
           {d.link && (
             <a href={d.link} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors">
@@ -1157,7 +1173,7 @@ export function TripsOverview({
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
-  type ProviderDeal = { name: string; price?: string; priceGbp?: number; link?: string; image?: string; note?: string };
+  type ProviderDeal = { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
   // ONE-CLICK provider enrichment: property-detail calls return the FULL
   // per-OTA price list Google truncates out of search results. Cache each
@@ -1165,6 +1181,7 @@ export function TripsOverview({
   const [detailCache, setDetailCache] = useState<Record<string, StayDetail>>({});
   const [enriching, setEnriching] = useState(false);
   const [enriched, setEnriched] = useState(false);
+  const [dealOpen, setDealOpen] = useState<{ name: string; priceNight?: string; priceTotal?: string; link?: string; images?: string[]; note?: string } | null>(null);
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1649,6 +1666,32 @@ export function TripsOverview({
             {searchErr && <p className="mt-1.5 font-mono text-[10px] text-rose-soft">{searchErr}</p>}
           </div>
 
+          {/* aggregation buffer: search + enrichment + live hunts all at once */}
+          {(searching || enriching || Object.values(providerDealState).some((st) => st.loading)) && (
+            <div className="rounded-lg border border-rule-soft/50 bg-ink-2/30 px-3 py-2">
+              {(() => {
+                const hunts = Object.values(providerDealState);
+                const total = 2 + hunts.length; // search + enrichment + each hunt
+                const done =
+                  (searching ? 0 : 1) +
+                  (enriching ? 0 : 1) +
+                  hunts.filter((st) => !st.loading).length;
+                const pct = Math.round((done / Math.max(1, total)) * 100);
+                return (
+                  <>
+                    <p className="mb-1 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.2em] text-paper-faint">
+                      <Loader2 className="h-3 w-3 animate-spin text-brass" />
+                      aggregating providers · {done}/{total} sources in
+                    </p>
+                    <div className="h-1 overflow-hidden rounded-full bg-ink-3/70">
+                      <div className="h-full rounded-full bg-brass transition-all duration-500" style={{ width: `${Math.max(6, pct)}%` }} />
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
           {/* searching skeleton — instant feedback while SerpAPI pages arrive */}
           {searching && !results && (
             <div className="no-scrollbar flex gap-2.5 overflow-x-auto pb-1">
@@ -1726,6 +1769,7 @@ export function TripsOverview({
                   label={rail.label}
                   state={providerDealState[rail.key]}
                   onHunt={() => void huntProviderDeals(rail.key, rail.label, (rail as { domain?: string }).domain ?? "")}
+                  onOpenDeal={(d) => setDealOpen(d)}
                 />
               ) : (
               <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
@@ -2019,6 +2063,38 @@ export function TripsOverview({
             <p className="py-8 text-center text-[12px] text-paper-faint">Load live prices first, then browse everything here.</p>
           )}
         </div>
+      </Sheet>
+
+      {/* ── hunted-deal overlay: photos + info + link ─────────────────────── */}
+      <Sheet open={!!dealOpen} onClose={() => setDealOpen(null)} title={dealOpen?.name ?? ""}>
+        {dealOpen && (
+          <div className="space-y-3 p-4">
+            {(dealOpen.images ?? []).length > 0 && (
+              <div className="no-scrollbar flex snap-x gap-2 overflow-x-auto">
+                {(dealOpen.images ?? []).map((im, i) => (
+                  <a key={i} href={im} target="_blank" rel="noreferrer" className="shrink-0 snap-start">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={im} alt="" loading="lazy" className="h-40 w-auto rounded-lg object-cover transition-opacity hover:opacity-80" />
+                  </a>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {dealOpen.priceTotal && (
+                <span className="font-mono text-[15px] font-bold tabular-nums text-brass">{dealOpen.priceTotal} <span className="text-[10px] font-normal uppercase text-paper-faint">total</span></span>
+              )}
+              {dealOpen.priceNight && (
+                <span className="font-mono text-[12px] tabular-nums text-paper-dim">{dealOpen.priceNight} <span className="text-[9px] uppercase text-paper-faint">/nt</span></span>
+              )}
+              {dealOpen.note && <span className="font-mono text-[10px] text-paper-faint">{dealOpen.note}</span>}
+            </div>
+            {dealOpen.link && (
+              <a href={dealOpen.link} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-brass hover:bg-brass/20 transition-colors">
+                open on the provider <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
+        )}
       </Sheet>
 
       {/* ── globe overlay: where you are, when ───────────────────────────── */}

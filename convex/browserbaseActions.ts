@@ -208,7 +208,7 @@ export const providerDealsLive = action({
   ): Promise<{
     available: boolean;
     reason?: string;
-    deals: { name: string; price?: string; priceGbp?: number; link?: string; image?: string; note?: string }[];
+    deals: { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string }[];
   }> => {
     const apiKey = await readSecret(ctx, "browserbase", "BROWSERBASE_API_KEY");
     const projectId = await readSecret(ctx, "browserbase", "BROWSERBASE_PROJECT_ID");
@@ -272,8 +272,8 @@ export const providerDealsLive = action({
               content:
                 `This is the RENDERED ${args.provider} page for ${args.city} stays` +
                 (args.checkIn ? ` (${args.checkIn} to ${args.checkOut})` : "") +
-                `. Extract up to 6 HOTEL/PROPERTY listings WITH their prices as shown - NEVER destination/area tiles (skip names that are just places like Seminyak, Kuta, Ubud). STRICT JSON only:\n` +
-                `{"deals":[{"name":"<property>","price":"<price as displayed>","priceGbp":<approx GBP number or null>,` +
+                `. Extract up to 12 HOTEL/PROPERTY listings - NEVER destination/area tiles (skip names that are just places like Seminyak, Kuta, Ubud). PRICE SEMANTICS ARE CRITICAL: portals show per-night AND stay-total prices; NEVER put a nightly rate in the total field. Decide from context text (per night / a night = nightly; total / for N nights = total); leave the other null. STRICT JSON only:\n` +
+                `{"deals":[{"name":"<property>","priceNight":"<nightly price as displayed or null>","priceTotal":"<stay-total as displayed or null>","priceGbpNight":<approx GBP number or null>,"priceGbpTotal":<approx GBP number or null>,` +
                 `"link":"<best matching anchor href or null>","image":"<best matching image url or null>","note":"<rating/area/perk>"}]}\n` +
                 `Use ANCHORS to pick links AND images (each row is name :: link :: image-url of the SAME card). Loose IMAGES are a fallback gallery. ` +
                 `Only listings genuinely on the page. ASCII only.\n` +
@@ -290,15 +290,27 @@ export const providerDealsLive = action({
       const parsed = JSON.parse(m ? m[0] : text);
       const deals = (Array.isArray(parsed?.deals) ? parsed.deals : [])
         .filter((d: any) => typeof d?.name === "string")
-        .slice(0, 6)
-        .map((d: any) => ({
-          name: d.name,
-          price: typeof d.price === "string" ? d.price : undefined,
-          priceGbp: typeof d.priceGbp === "number" && Number.isFinite(d.priceGbp) ? d.priceGbp : undefined,
-          link: typeof d.link === "string" && d.link.startsWith("http") ? d.link : undefined,
-          image: typeof d.image === "string" && d.image.startsWith("http") ? d.image : undefined,
-          note: typeof d.note === "string" ? d.note.slice(0, 90) : undefined,
-        }));
+        .slice(0, 12)
+        .map((d: any) => {
+          const image = typeof d.image === "string" && d.image.startsWith("http") ? d.image : undefined;
+          // Card image first, then page gallery shots for the overlay rail.
+          const images = [image, ...rendered.images]
+            .filter((u, i, arr): u is string => typeof u === "string" && arr.indexOf(u) === i)
+            .slice(0, 6);
+          return {
+            name: d.name,
+            priceNight: typeof d.priceNight === "string" ? d.priceNight : undefined,
+            priceTotal: typeof d.priceTotal === "string" ? d.priceTotal : undefined,
+            priceGbpNight:
+              typeof d.priceGbpNight === "number" && Number.isFinite(d.priceGbpNight) ? d.priceGbpNight : undefined,
+            priceGbpTotal:
+              typeof d.priceGbpTotal === "number" && Number.isFinite(d.priceGbpTotal) ? d.priceGbpTotal : undefined,
+            link: typeof d.link === "string" && d.link.startsWith("http") ? d.link : undefined,
+            image,
+            images,
+            note: typeof d.note === "string" ? d.note.slice(0, 90) : undefined,
+          };
+        });
       return { available: true, deals };
     } catch (e) {
       return { available: false, reason: `extraction failed: ${e instanceof Error ? e.message : String(e)}`, deals: [] };
