@@ -160,6 +160,7 @@ const PROVIDER_MATCH: { key: string; label: string; test: RegExp }[] = [
   { key: "hotels", label: "Hotels.com", test: /hotels\.com/i },
   { key: "trivago", label: "Trivago", test: /trivago/i },
   { key: "lastminute", label: "lastminute", test: /lastminute/i },
+  { key: "stayforlong", label: "Stayforlong", test: /stayforlong/i },
   { key: "trip", label: "Trip.com", test: /trip\.com/i },
 ];
 
@@ -244,7 +245,15 @@ function YearBand({
   );
 }
 
-// ── modern date field: dark-scheme native picker in a styled shell ──────────
+// ── custom calendar field (2026-07-04): fully house-styled popover — no more
+//    native picker chrome anywhere near the travel planner. ──────────────────
+const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function isoOf(y: number, m: number, d: number): string {
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 function DateField({
   value,
   min,
@@ -256,22 +265,107 @@ function DateField({
   onChange: (v: string) => void;
   className?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const seed = parseISO(value) ?? parseISO(min ?? "") ?? new Date();
+  const [vy, setVy] = useState(seed.getUTCFullYear());
+  const [vm, setVm] = useState(seed.getUTCMonth());
+
+  const openCal = () => {
+    const d = parseISO(value) ?? parseISO(min ?? "") ?? new Date();
+    setVy(d.getUTCFullYear());
+    setVm(d.getUTCMonth());
+    setOpen(true);
+  };
+
+  const daysInMonth = new Date(Date.UTC(vy, vm + 1, 0)).getUTCDate();
+  const firstDow = (new Date(Date.UTC(vy, vm, 1)).getUTCDay() + 6) % 7; // Mon=0
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const cells: (number | null)[] = [
+    ...Array.from({ length: firstDow }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+
   return (
-    <label
-      className={cn(
-        "group flex items-center gap-1.5 rounded-lg border border-rule-soft/60 bg-ink-3/60 px-2.5 py-1.5 transition-colors focus-within:border-brass/60 hover:border-rule-soft",
-        className,
+    <div className={cn("relative", className)}>
+      <button
+        type="button"
+        onClick={() => (open ? setOpen(false) : openCal())}
+        className={cn(
+          "group flex items-center gap-1.5 rounded-lg border bg-ink-3/60 px-2.5 py-1.5 transition-colors hover:border-rule-soft",
+          open ? "border-brass/60" : "border-rule-soft/60",
+        )}
+      >
+        <CalendarRange className={cn("h-3.5 w-3.5 transition-colors", open ? "text-brass" : "text-paper-faint")} />
+        <span className={cn("font-mono text-[11px]", value ? "text-paper" : "text-paper-faint/60")}>
+          {value
+            ? parseISO(value)!.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+            : "pick a date"}
+        </span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div className="absolute left-0 top-full z-40 mt-1.5 w-[248px] rounded-xl border border-rule-soft/70 bg-ink-2 p-3 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => (vm === 0 ? (setVm(11), setVy(vy - 1)) : setVm(vm - 1))}
+                className="grid h-6 w-6 place-items-center rounded-md border border-rule-soft/50 text-paper-faint hover:border-brass/50 hover:text-brass transition-colors"
+              >
+                <ChevronDown className="h-3 w-3 rotate-90" />
+              </button>
+              <span className="font-display italic text-[14px] text-paper">
+                {MONTHS[vm]} <span className="text-paper-faint">{vy}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => (vm === 11 ? (setVm(0), setVy(vy + 1)) : setVm(vm + 1))}
+                className="grid h-6 w-6 place-items-center rounded-md border border-rule-soft/50 text-paper-faint hover:border-brass/50 hover:text-brass transition-colors"
+              >
+                <ChevronDown className="h-3 w-3 -rotate-90" />
+              </button>
+            </div>
+            <div className="grid grid-cols-7 gap-0.5">
+              {WEEKDAYS.map((w) => (
+                <span key={w} className="py-1 text-center font-mono text-[8px] uppercase tracking-[0.1em] text-paper-faint/60">
+                  {w}
+                </span>
+              ))}
+              {cells.map((d, i) => {
+                if (d === null) return <span key={`e${i}`} />;
+                const iso = isoOf(vy, vm, d);
+                const disabled = !!min && iso < min;
+                const selected = iso === value;
+                const isToday = iso === todayIso;
+                return (
+                  <button
+                    key={iso}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      onChange(iso);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "grid h-7 w-7 place-items-center rounded-md font-mono text-[11px] tabular-nums transition-colors",
+                      selected
+                        ? "bg-brass text-ink font-bold"
+                        : disabled
+                          ? "text-paper-faint/25 cursor-not-allowed"
+                          : "text-paper-dim hover:bg-brass/15 hover:text-brass",
+                      isToday && !selected && "border border-amber/50",
+                    )}
+                  >
+                    {d}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
       )}
-    >
-      <CalendarRange className="h-3.5 w-3.5 text-paper-faint transition-colors group-focus-within:text-brass" />
-      <input
-        type="date"
-        value={value}
-        min={min}
-        onChange={(ev) => onChange(ev.target.value)}
-        className="bg-transparent font-mono text-[11px] text-paper outline-none [color-scheme:dark]"
-      />
-    </label>
+    </div>
   );
 }
 
@@ -951,32 +1045,39 @@ export function TripsOverview({
   const s = parseISO(trip?.startDate);
   const e = parseISO(trip?.endDate);
   const nights = s && e ? Math.max(0, Math.round((e.getTime() - s.getTime()) / 86_400_000)) : null;
-  // Google Hotels + every portal cap a single stay search at 30 NIGHTS — longer
-  // ranges silently collapse to 1 night (the "£7 total" bug). Clamp all
-  // searches + provider links to the first 30 nights and say so.
-  const clamped = !!(nights && nights > 30);
+  // Portals cap a single stay search at ~30 nights — longer ranges silently
+  // collapse to 1 night (the "£7 total" bug). HARD-clamp everything to 29
+  // nights (a margin under every portal's limit) and say so.
+  const clamped = !!(nights && nights > 29);
   const effCheckOut =
-    clamped && trip?.startDate ? addDays(trip.startDate, 30) : trip?.endDate;
+    clamped && trip?.startDate ? addDays(trip.startDate, 29) : trip?.endDate;
   const budget = budgetDraft ?? trip?.budgetGbp ?? 0;
   const perNightBudget = budget && nights ? Math.max(20, Math.floor(budget / nights)) : undefined;
 
   const carousels = useMemo(() => {
     if (!results) return [];
     const visible = showHostels ? results : results.filter((o) => !dormLikely(o));
-    const byProvider = PROVIDER_MATCH.map((pm) => ({
-      ...pm,
-      items: visible
+    // EVERY provider gets a rail. Priced rails use Google's per-OTA offers;
+    // providers Google didn't price fall back to the top picks, whose cards
+    // deep-link that provider's search for the exact property + dates.
+    const byProvider = PROVIDER_MATCH.map((pm) => {
+      const priced = visible
         .map((o) => {
           const offer = (o.offers ?? []).find((x) => pm.test.test(x.source));
           return offer ? { o, otaPrice: offer.priceGbp } : null;
         })
-        .filter(Boolean) as { o: StayOption; otaPrice?: number }[],
-    })).filter((c) => c.items.length > 0);
+        .filter(Boolean) as { o: StayOption; otaPrice?: number }[];
+      return {
+        ...pm,
+        fallback: priced.length === 0,
+        items: priced.length > 0 ? priced : visible.slice(0, 10).map((o) => ({ o, otaPrice: undefined as number | undefined })),
+      };
+    });
     return [
       { key: "best", label: "Best price", items: visible.slice(0, 40).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
       ...byProvider.map((c) => ({
         key: c.key,
-        label: c.label,
+        label: c.fallback ? `${c.label} · top picks (search links)` : c.label,
         items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 20),
       })),
     ];
@@ -1261,7 +1362,7 @@ export function TripsOverview({
               </div>
               {clamped && (
                 <span className="rounded-full border border-amber/40 bg-amber/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-amber">
-                  portals cap at 30 nights — searching {fmtShort(trip.startDate)}–{fmtShort(effCheckOut)}
+                  portals cap at 29 nights — searching {fmtShort(trip.startDate)}–{fmtShort(effCheckOut)}
                 </span>
               )}
             </div>

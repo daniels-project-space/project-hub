@@ -65,6 +65,13 @@ export const BOOKING_PROVIDERS: BookingProvider[] = [
       `&adults=${adults ?? 1}`,
   },
   {
+    key: "stayforlong",
+    label: "Stayforlong",
+    // Long-stay specialist. Their search is JS-only (no deep-linkable params —
+    // probed 2026-07-04: /search, /hotels/{...} all 404) → land on the site.
+    url: () => "https://www.stayforlong.co.uk/uk-en/",
+  },
+  {
     key: "trip",
     label: "Trip.com",
     url: ({ city, checkIn, checkOut, adults }) =>
