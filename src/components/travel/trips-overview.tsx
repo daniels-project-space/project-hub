@@ -1183,6 +1183,7 @@ export function TripsOverview({
   const [detailCache, setDetailCache] = useState<Record<string, StayDetail>>({});
   const [enriching, setEnriching] = useState(false);
   const [enriched, setEnriched] = useState(false);
+  const [bookingLive, setBookingLive] = useState<{ loading: boolean; options: StayOption[] }>({ loading: false, options: [] });
   const [dealOpen, setDealOpen] = useState<{ name: string; priceNight?: string; priceTotal?: string; link?: string; images?: string[]; note?: string } | null>(null);
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
@@ -1309,6 +1310,18 @@ export function TripsOverview({
       // AUTOMATIC full comparison (2026-07-04, per Daniel): provider price
       // enrichment + the three Browserbase live hunts fire with the search.
       setEnriched(false);
+      // Booking.com LIVE (residential-proxy render — real 40+ results, correct
+      // total-and-nightly prices, no login) as its own rail.
+      setBookingLive({ loading: true, options: [] });
+      void ppHotels({
+        city,
+        checkIn: trip.startDate!,
+        checkOut: (effCheckOut ?? trip.endDate)!,
+        adults: travelers,
+        site: "booking",
+      })
+        .then((b) => setBookingLive({ loading: false, options: (b.options ?? []) as StayOption[] }))
+        .catch(() => setBookingLive({ loading: false, options: [] }));
       void (async () => {
         const enrichedList = (await deepCompare(opts)) ?? opts;
         for (const pm of PROVIDER_MATCH) {
@@ -1779,6 +1792,32 @@ export function TripsOverview({
               }
             >
               <div className="space-y-3">
+          {(bookingLive.loading || bookingLive.options.length > 0) && (
+            <div>
+              <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
+                Booking.com · live
+                {bookingLive.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {bookingLive.options.length}</span>}
+                <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
+              </p>
+              {bookingLive.options.length > 0 && (
+                <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
+                  {bookingLive.options.map((o, i) => (
+                    <StayCard
+                      key={`bk-${i}-${o.name}`}
+                      o={o}
+                      checkIn={trip.startDate}
+                      checkOut={effCheckOut}
+                      adults={travelers}
+                      locking={lockingName === o.name}
+                      expanded={offersFor?.name === o.name}
+                      onDetails={(opt) => void openOffers(opt)}
+                      onLock={(opt) => void lockIn(opt, "Booking.com", opt.priceGbp)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {carousels.map((rail) => (
             <div key={rail.key}>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">

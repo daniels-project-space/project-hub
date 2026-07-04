@@ -809,6 +809,7 @@ export const ppHotels = action({
     checkIn: v.string(),
     checkOut: v.string(),
     adults: v.optional(v.number()),
+    site: v.optional(v.string()),
   },
   handler: async (
     ctx,
@@ -822,7 +823,7 @@ export const ppHotels = action({
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          site: "hotel-goat",
+          site: args.site ?? "hotel-goat",
           city: args.city,
           checkIn: args.checkIn,
           checkOut: args.checkOut,
@@ -851,19 +852,24 @@ export const ppHotels = action({
           }))
           .filter((o: any) => o.source)
           .slice(0, 10);
+        const rnote = typeof r?.note === "string" ? r.note : undefined;
+        const noteRating = rnote ? num((rnote.match(/[0-9]+\.[0-9]/) || [])[0]) : undefined;
+        const rImg = typeof r?.image === "string" ? r.image : undefined;
         return {
           name: typeof r?.name === "string" ? r.name : "Hotel",
-          provider: offers[0]?.source,
+          provider: args.site === "booking" ? "Booking.com" : offers[0]?.source,
           priceGbp: num(r?.price_per_night),
           totalGbp: num(r?.price_total),
-          image: images[0],
-          thumb: images[0],
-          gallery: images,
-          rating: num(r?.rating),
+          image: images[0] ?? rImg,
+          thumb: images[0] ?? rImg,
+          gallery: images.length ? images : rImg ? [rImg] : [],
+          rating: num(r?.rating) ?? noteRating,
           hotelClass: num(r?.hotel_class),
-          amenities: Array.isArray(r?.amenities)
-            ? r.amenities.filter((x: unknown) => typeof x === "string").slice(0, 4)
-            : undefined,
+          amenities: rnote
+            ? [rnote]
+            : Array.isArray(r?.amenities)
+              ? r.amenities.filter((x: unknown) => typeof x === "string").slice(0, 4)
+              : undefined,
           link:
             typeof r?.booking_urls?.primary === "string"
               ? r.booking_urls.primary
