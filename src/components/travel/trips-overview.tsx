@@ -120,9 +120,17 @@ type StayOption = {
 // loudly so a £8/nt bunk is never mistaken for a £8/nt room.
 function dormLikely(o: StayOption): boolean {
   if (/hostel/i.test(o.propertyType ?? "")) return true;
-  return /hostel|dorm|capsule|bunk|backpacker|shared room/i.test(
-    `${o.name} ${(o.amenities ?? []).join(" ")}`,
-  );
+  if (
+    /hostel|dorm(itory)?|capsule|bunk|backpacker|shared (room|bathroom)|pod hotel/i.test(
+      `${o.name} ${(o.amenities ?? []).join(" ")}`,
+    )
+  )
+    return true;
+  // Price-floor heuristic: a "private room" under ~£6/nt in ANY market is a
+  // dorm bed being sold per-person. Star class 4+ exempts (flash deals).
+  const nightly = o.priceGbp;
+  if (typeof nightly === "number" && nightly > 0 && nightly < 6 && (o.hotelClass ?? 0) < 4) return true;
+  return false;
 }
 
 
@@ -924,6 +932,8 @@ export function TripsOverview({
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Dorms/hostels are OFF by default (Daniel books private places).
+  const [showHostels, setShowHostels] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newCity, setNewCity] = useState("");
   const [newStart, setNewStart] = useState("");
@@ -952,9 +962,10 @@ export function TripsOverview({
 
   const carousels = useMemo(() => {
     if (!results) return [];
+    const visible = showHostels ? results : results.filter((o) => !dormLikely(o));
     const byProvider = PROVIDER_MATCH.map((pm) => ({
       ...pm,
-      items: results
+      items: visible
         .map((o) => {
           const offer = (o.offers ?? []).find((x) => pm.test.test(x.source));
           return offer ? { o, otaPrice: offer.priceGbp } : null;
@@ -962,14 +973,14 @@ export function TripsOverview({
         .filter(Boolean) as { o: StayOption; otaPrice?: number }[],
     })).filter((c) => c.items.length > 0);
     return [
-      { key: "best", label: "Best price", items: results.slice(0, 40).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
+      { key: "best", label: "Best price", items: visible.slice(0, 40).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
       ...byProvider.map((c) => ({
         key: c.key,
         label: c.label,
         items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 20),
       })),
     ];
-  }, [results]);
+  }, [results, showHostels]);
 
   // globe data: all trips with coords, chronological arcs, focus = current/next
   const globeData = useMemo(() => {
@@ -1332,13 +1343,27 @@ export function TripsOverview({
               title="Stays"
               count={results.length}
               action={
-                <button
-                  type="button"
-                  onClick={() => setBrowseOpen(true)}
-                  className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 transition-colors"
-                >
-                  <Maximize2 className="h-3 w-3" /> browse fullscreen
-                </button>
+                <span className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowHostels((h) => !h)}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors",
+                      showHostels
+                        ? "border-rose-soft/50 bg-rose-soft/10 text-rose-soft"
+                        : "border-rule-soft/50 bg-ink-2/40 text-paper-faint hover:text-paper",
+                    )}
+                  >
+                    {showHostels ? "hostels shown" : "hostels hidden"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBrowseOpen(true)}
+                    className="flex items-center gap-1.5 rounded-md border border-brass/40 bg-brass/10 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 transition-colors"
+                  >
+                    <Maximize2 className="h-3 w-3" /> browse fullscreen
+                  </button>
+                </span>
               }
             >
               <div className="space-y-3">
