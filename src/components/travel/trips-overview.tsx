@@ -477,7 +477,15 @@ function ProviderDealRail({
     );
   }
   if (!state.deals || state.deals.length === 0) {
-    return <p className="rounded-lg border border-rule-soft/50 px-3 py-2.5 font-mono text-[10px] text-paper-faint">nothing indexed from {label} for this destination — use the cashback chip above</p>;
+    return (
+      <button
+        type="button"
+        onClick={onHunt}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-amber/40 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.18em] text-amber/80 hover:border-amber/70 hover:text-amber transition-colors"
+      >
+        <Search className="h-3 w-3" /> {label} hunt came back empty this pass — retry
+      </button>
+    );
   }
   return (
     <ul key={railKey} className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
@@ -1141,7 +1149,6 @@ export function TripsOverview({
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
-  const providerDeals = useAction(api.travelActions.providerDeals);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
   const [results, setResults] = useState<StayOption[] | null>(null);
@@ -1267,12 +1274,16 @@ export function TripsOverview({
       // AUTOMATIC full comparison (2026-07-04, per Daniel): provider price
       // enrichment + the three Browserbase live hunts fire with the search.
       setEnriched(false);
-      void deepCompare(opts);
-      for (const pm of PROVIDER_MATCH) {
-        if (["lastminute", "stayforlong", "trivago"].includes(pm.key)) {
-          void huntProviderDeals(pm.key, pm.label, pm.domain);
+      void (async () => {
+        const enrichedList = (await deepCompare(opts)) ?? opts;
+        for (const pm of PROVIDER_MATCH) {
+          if (pm.key === "booking") continue; // always priced via Google
+          const covered = enrichedList.some((o) =>
+            (o.offers ?? []).some((x) => pm.test.test(x.source)),
+          );
+          if (!covered) void huntProviderDeals(pm.key, pm.label, pm.domain);
         }
-      }
+      })();
     } catch (err) {
       setSearchErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1336,26 +1347,17 @@ export function TripsOverview({
   const huntProviderDeals = async (key: string, label: string, domain: string) => {
     setProviderDealState((st) => ({ ...st, [key]: { loading: true, deals: st[key]?.deals ?? null } }));
     try {
-      // JS-only portals get the REAL browser (Browserbase renders the page →
-      // prices + images as displayed); the rest use the cheap indexed hunt.
-      const useLive = ["lastminute", "stayforlong", "trivago"].includes(key);
-      const res = useLive
-        ? await providerDealsLive({
-            providerKey: key,
-            provider: label,
-            domain,
-            city,
-            checkIn: trip?.startDate,
-            checkOut: effCheckOut ?? trip?.endDate,
-            adults: travelers,
-          })
-        : await providerDeals({
-            city,
-            domain,
-            provider: label,
-            checkIn: trip?.startDate,
-            checkOut: effCheckOut ?? trip?.endDate,
-          });
+      // EVERY provider hunt uses the REAL browser (Browserbase) — rendered
+      // pages carry prices AND images; the indexed hunt never had either.
+      const res = await providerDealsLive({
+        providerKey: key,
+        provider: label,
+        domain,
+        city,
+        checkIn: trip?.startDate,
+        checkOut: effCheckOut ?? trip?.endDate,
+        adults: travelers,
+      });
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: res.deals ?? [] } }));
     } catch {
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: [] } }));
@@ -1404,6 +1406,12 @@ export function TripsOverview({
           : prev,
       );
       setEnriched(true);
+      return source.map((o) => {
+        const d = o.propertyToken ? byToken[o.propertyToken] : undefined;
+        return d && d.offers.length > 0
+          ? { ...o, offers: d.offers.map((x) => ({ source: x.source, priceGbp: x.priceGbp })) }
+          : o;
+      });
     } finally {
       setEnriching(false);
     }

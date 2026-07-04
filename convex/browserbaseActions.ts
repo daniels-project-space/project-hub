@@ -103,6 +103,8 @@ async function renderPage(
       if (st?.result?.value === "complete" && i >= 5) break;
     }
     // Listing cards lazy-load on scroll — walk down the page to force them in.
+    // Price/image hydration on OTA result pages lags the scroll — give it room.
+    await sleep(4000);
     for (const frac of [0.35, 0.7, 1, 0.5]) {
       await cdp
         .send(
@@ -135,6 +137,7 @@ async function renderPage(
               };
             })
             .filter(function (a) { return a.text.length > 3 && a.href.indexOf("http") === 0; })
+            .sort(function (x, y) { return (y.img ? 1 : 0) - (x.img ? 1 : 0); })
             .slice(0, 60);
           const images = Array.from(document.querySelectorAll("img[src]"))
             .map(function (i) { return i.src; })
@@ -262,14 +265,14 @@ export const providerDealsLive = action({
         body: JSON.stringify({
           model: "deepseek/deepseek-v4-flash",
           provider: { only: ["deepseek", "alibaba"] },
-          max_tokens: 3600, // v4-flash reasons from the same budget — 2200 truncated the JSON
+          max_tokens: 5500, // v4-flash reasoning + long OTA urls — smaller budgets truncate the JSON
           messages: [
             {
               role: "user",
               content:
                 `This is the RENDERED ${args.provider} page for ${args.city} stays` +
                 (args.checkIn ? ` (${args.checkIn} to ${args.checkOut})` : "") +
-                `. Extract up to 8 HOTEL/PROPERTY listings WITH their prices as shown - NEVER destination/area tiles (skip names that are just places like Seminyak, Kuta, Ubud). STRICT JSON only:\n` +
+                `. Extract up to 6 HOTEL/PROPERTY listings WITH their prices as shown - NEVER destination/area tiles (skip names that are just places like Seminyak, Kuta, Ubud). STRICT JSON only:\n` +
                 `{"deals":[{"name":"<property>","price":"<price as displayed>","priceGbp":<approx GBP number or null>,` +
                 `"link":"<best matching anchor href or null>","image":"<best matching image url or null>","note":"<rating/area/perk>"}]}\n` +
                 `Use ANCHORS to pick links AND images (each row is name :: link :: image-url of the SAME card). Loose IMAGES are a fallback gallery. ` +
@@ -287,7 +290,7 @@ export const providerDealsLive = action({
       const parsed = JSON.parse(m ? m[0] : text);
       const deals = (Array.isArray(parsed?.deals) ? parsed.deals : [])
         .filter((d: any) => typeof d?.name === "string")
-        .slice(0, 8)
+        .slice(0, 6)
         .map((d: any) => ({
           name: d.name,
           price: typeof d.price === "string" ? d.price : undefined,
