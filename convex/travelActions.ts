@@ -78,6 +78,10 @@ const SECRET = {
   serpapi: { service: "serpapi", keyName: "SERPAPI_KEY" },
   // OpenRouter (DeepSeek) — groundFares price extraction. Verified live.
   openrouter: { service: "openrouter", keyName: "OPENROUTER_API_KEY" },
+  // Printing Press CLI bridge on the VPS (hotel-goat = Google Hotels with
+  // per-OTA breakdown, free + ~100 results). Wired 2026-07-04.
+  ppUrl: { service: "ppbridge", keyName: "PP_BRIDGE_URL" },
+  ppToken: { service: "ppbridge", keyName: "PP_BRIDGE_TOKEN" },
 } as const;
 
 const SERPAPI_URL = "https://serpapi.com/search.json";
@@ -756,6 +760,8 @@ type StayOption = {
   amenities?: string[];
   /** Per-OTA offers from Google Hotels — powers the per-provider carousels. */
   offers?: { source: string; priceGbp?: number }[];
+  /** Full photo set when the source provides it up front (pp-bridge). */
+  gallery?: string[];
 };
 
 const BROWSER_UA =
@@ -790,6 +796,88 @@ function bookingDeepLink(
   // nflt=fc%3D2 → Booking.com "Free cancellation" facet.
   return `https://www.booking.com/searchresults.html?${p.toString()}&nflt=fc%3D2`;
 }
+
+/**
+ * ppHotels (2026-07-04) — the Printing Press bridge: hotel-goat CLI on the VPS
+ * hits Google Hotels' own surface and returns FULL results (per-OTA price
+ * breakdown, galleries, booking links) for FREE — no serpapi credits. Falls
+ * back cleanly when the bridge is down (caller then uses searchStays).
+ */
+export const ppHotels = action({
+  args: {
+    city: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
+    const url = await getSecret(ctx, SECRET.ppUrl);
+    const token = await getSecret(ctx, SECRET.ppToken);
+    if (!url || !token) return { available: false, reason: "pp-bridge keys absent", options: [] };
+    try {
+      const res = await fetch(`${url}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          site: "hotel-goat",
+          city: args.city,
+          checkIn: args.checkIn,
+          checkOut: args.checkOut,
+          adults: args.adults && args.adults > 0 ? Math.floor(args.adults) : 1,
+        }),
+      });
+      if (!res.ok) return { available: false, reason: `bridge ${res.status}`, options: [] };
+      const json: any = await res.json();
+      const rows: any[] = Array.isArray(json?.results) ? json.results : [];
+      const num = (x: unknown): number | undefined => {
+        if (typeof x === "number" && Number.isFinite(x)) return x;
+        if (typeof x === "string") {
+          const m = x.replace(/,/g, "").match(/([0-9]+(?:\.[0-9]+)?)/);
+          if (m) return Number(m[1]);
+        }
+        return undefined;
+      };
+      const options: StayOption[] = rows.slice(0, 100).map((r) => {
+        const images: string[] = Array.isArray(r?.images)
+          ? r.images.filter((u: unknown) => typeof u === "string").slice(0, 8)
+          : [];
+        const offers = (Array.isArray(r?.prices) ? r.prices : [])
+          .map((o: any) => ({
+            source: String(o?.source ?? o?.ota ?? o?.provider ?? "").trim(),
+            priceGbp: num(o?.price_per_night ?? o?.rate_per_night ?? o?.price ?? o?.nightly),
+          }))
+          .filter((o: any) => o.source)
+          .slice(0, 10);
+        return {
+          name: typeof r?.name === "string" ? r.name : "Hotel",
+          provider: offers[0]?.source,
+          priceGbp: num(r?.price_per_night),
+          totalGbp: num(r?.price_total),
+          image: images[0],
+          thumb: images[0],
+          gallery: images,
+          rating: num(r?.rating),
+          hotelClass: num(r?.hotel_class),
+          amenities: Array.isArray(r?.amenities)
+            ? r.amenities.filter((x: unknown) => typeof x === "string").slice(0, 4)
+            : undefined,
+          link:
+            typeof r?.booking_urls?.primary === "string"
+              ? r.booking_urls.primary
+              : bookingDeepLink(r?.name ?? args.city, args.checkIn, args.checkOut, args.adults ?? 1),
+          googleLink: typeof r?.booking_urls?.google_url === "string" ? r.booking_urls.google_url : undefined,
+          offers,
+        };
+      });
+      return { available: true, options };
+    } catch (e) {
+      return { available: false, reason: e instanceof Error ? e.message : String(e), options: [] };
+    }
+  },
+});
 
 export const searchStays = action({
   args: {

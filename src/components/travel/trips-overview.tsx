@@ -113,6 +113,7 @@ type StayOption = {
   propertyToken?: string;
   amenities?: string[];
   offers?: { source: string; priceGbp?: number }[];
+  gallery?: string[];
 };
 
 // Dorm / shared-room detector (2026-07-03): Google's lowest rate for hostels
@@ -1164,6 +1165,7 @@ export function TripsOverview({
   const setLocked = useMutation(api.tripExtras.setStayLocked);
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
+  const ppHotels = useAction(api.travelActions.ppHotels);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
@@ -1277,14 +1279,30 @@ export function TripsOverview({
     setSearchErr(null);
     setOffersFor(null);
     try {
-      const res = await search({
-        query: stayStyle === "villas" ? `${city} villas` : `${city} hotels`,
+      // FREE path first: the Printing Press bridge (hotel-goat) returns full
+      // results with per-OTA prices + galleries; serpapi remains the fallback.
+      let res: { available: boolean; reason?: string; options: StayOption[] };
+      const pp = await ppHotels({
+        city: stayStyle === "villas" ? `${city} villas` : city,
         checkIn: trip.startDate,
-        checkOut: effCheckOut ?? trip.endDate,
+        checkOut: (effCheckOut ?? trip.endDate)!,
         adults: travelers,
-        maxPricePerNight: perNightBudget,
-        vacationRentals: stayStyle === "villas" ? true : undefined,
-      });
+      }).catch(() => ({ available: false as const, options: [] as StayOption[] }));
+      if (pp.available && pp.options.length >= 8) {
+        const capped = perNightBudget
+          ? pp.options.filter((o) => (o.priceGbp ?? 0) <= perNightBudget || o.priceGbp == null)
+          : pp.options;
+        res = { available: true, options: capped };
+      } else {
+        res = (await search({
+          query: stayStyle === "villas" ? `${city} villas` : `${city} hotels`,
+          checkIn: trip.startDate,
+          checkOut: effCheckOut ?? trip.endDate,
+          adults: travelers,
+          maxPricePerNight: perNightBudget,
+          vacationRentals: stayStyle === "villas" ? true : undefined,
+        })) as { available: boolean; reason?: string; options: StayOption[] };
+      }
       if (!res.available) setSearchErr(res.reason ?? "search unavailable");
       const opts = (res.options ?? []) as StayOption[];
       setResults(opts);
@@ -1315,7 +1333,16 @@ export function TripsOverview({
     }
     setOffersFor(o);
     setOffersData(null);
-    if (!o.propertyToken || !trip?.startDate || !trip?.endDate) return;
+    if (!o.propertyToken) {
+      // pp-bridge results carry their gallery + per-OTA offers up front.
+      setOffersData({
+        amenities: o.amenities ?? [],
+        images: o.gallery ?? (o.image ? [o.image] : []),
+        offers: (o.offers ?? []).map((x) => ({ source: x.source, priceGbp: x.priceGbp, perks: [] })),
+      });
+      return;
+    }
+    if (!trip?.startDate || !trip?.endDate) return;
     const cached = detailCache[o.propertyToken];
     if (cached) {
       setOffersData(cached);
