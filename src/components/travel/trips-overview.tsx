@@ -1326,7 +1326,7 @@ export function TripsOverview({
         .then((b) => setBookingLive({ loading: false, options: (b.options ?? []) as StayOption[] }))
         .catch(() => setBookingLive({ loading: false, options: [] }));
       // Expedia + Hotels.com via Apify (skips silently if no token in vault).
-      for (const site of ["expedia", "hotels"] as const) {
+      for (const site of ["expedia"] as const) {
         setApifyLive((m) => ({ ...m, [site]: { loading: true, options: m[site]?.options ?? [] } }));
         void apifyHotels({
           site,
@@ -1834,10 +1834,10 @@ export function TripsOverview({
               )}
             </div>
           )}
-          {(["expedia", "hotels"] as const).map((site) => {
+          {(["expedia"] as const).map((site) => {
             const st = apifyLive[site];
             if (!st || (!st.loading && st.options.length === 0)) return null;
-            const label = site === "hotels" ? "Hotels.com · live" : "Expedia · live";
+            const label = "Expedia · live";
             return (
               <div key={`apify-${site}`}>
                 <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">

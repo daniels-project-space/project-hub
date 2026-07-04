@@ -947,7 +947,7 @@ export const apifyHotels = action({
         1,
         Math.round((Date.parse(args.checkOut) - Date.parse(args.checkIn)) / 86_400_000),
       );
-      const providerLabel = args.site === "hotels" ? "Hotels.com" : "Expedia";
+      const providerLabel = "Expedia";
       const options: StayOption[] = rows.slice(0, 40).map((r) => {
         const total = num(r?.totalPrice ?? r?.total_price ?? r?.priceTotal);
         const night = num(r?.price ?? r?.pricePerNight ?? r?.nightlyPrice) ?? (total ? Math.round(total / nights) : undefined);
