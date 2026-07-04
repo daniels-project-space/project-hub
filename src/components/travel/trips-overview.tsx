@@ -720,6 +720,24 @@ function BookingTimeline({
   );
 }
 
+// Country taxi meter tariffs (approx GBP base + per-km) — turns distance into
+// a realistic local range instead of one global rate. Fallback: mid European.
+const TAXI_TARIFFS: Record<string, { base: number; perKm: number }> = {
+  ID: { base: 0.35, perKm: 0.35 }, // Bluebird
+  TH: { base: 0.8, perKm: 0.25 },
+  VN: { base: 0.4, perKm: 0.45 },
+  MY: { base: 0.5, perKm: 0.35 },
+  TR: { base: 0.9, perKm: 0.55 },
+  GB: { base: 3.2, perKm: 2.0 },
+  ES: { base: 2.1, perKm: 1.0 },
+  IT: { base: 3.0, perKm: 1.3 },
+  FR: { base: 2.6, perKm: 1.5 },
+  DE: { base: 3.5, perKm: 1.9 },
+  PT: { base: 2.0, perKm: 0.8 },
+  GR: { base: 1.2, perKm: 0.9 },
+  US: { base: 2.5, perKm: 1.6 },
+};
+
 // ── TRANSFER TILE: figure out the leg + real prices (2026-07-03) ────────────
 // Dedicated transport solver: resolves both ends to airports, pulls REAL
 // flight prices (SerpAPI google_flights, 1 credit per search), and offers
@@ -749,6 +767,7 @@ function TransferTile({
 }) {
   const searchFlights = useAction(api.travelActions.searchFlights);
   const routeLeg = useAction(api.travelActions.routeLeg);
+  const groundFares = useAction(api.travelActions.groundFares);
   const addFlight = useMutation(api.tripExtras.addFlight);
 
   type TransportMode = "plane" | "ground" | "taxi";
@@ -766,6 +785,8 @@ function TransferTile({
   const toPlace = toGeo?.name ?? defaultTo;
   const [hits, setHits] = useState<FlightHit[] | null>(null);
   const [route, setRoute] = useState<{ durationText?: string; distanceText?: string; distanceKm?: number; fareText?: string } | null>(null);
+  const [fares, setFares] = useState<{ label: string; price: string; priceGbp?: number; source?: string; link?: string }[] | null>(null);
+  const [faresBusy, setFaresBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [added, setAdded] = useState<string | null>(null);
@@ -799,6 +820,13 @@ function TransferTile({
       if (!res?.available) { setErr(res?.reason ?? "no route returned"); setRoute(null); return; }
       const km = typeof res.distanceMeters === "number" ? res.distanceMeters / 1000 : undefined;
       setRoute({ durationText: res.durationText, distanceText: res.distanceText, distanceKm: km, fareText: res.fareText });
+      // Hunt REAL quoted prices for this leg (1 search credit + tiny LLM call).
+      setFares(null);
+      setFaresBusy(true);
+      void groundFares({ from: a.name, to: b.name, kind: tmode === "taxi" ? "taxi" : "ground" })
+        .then((f) => setFares(f.offers ?? []))
+        .catch(() => setFares([]))
+        .finally(() => setFaresBusy(false));
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally { setBusy(false); }
@@ -825,7 +853,10 @@ function TransferTile({
     : "https://uk.trip.com/flights/";
   const gFrom = fromPlace || defaultFrom || "London";
   const gTo = toPlace || defaultTo;
-  const taxiEst = route?.distanceKm ? Math.round(route.distanceKm * 1.3) : null;
+  const tariff = TAXI_TARIFFS[(fromGeo?.countryCode ?? toGeo?.countryCode ?? "").toUpperCase()] ?? { base: 2.5, perKm: 1.2 };
+  const taxiLo = route?.distanceKm ? Math.max(1, Math.round(tariff.base + route.distanceKm * tariff.perKm * 0.85)) : null;
+  const taxiHi = route?.distanceKm ? Math.round(tariff.base + route.distanceKm * tariff.perKm * 1.25) : null;
+  const taxiEst = taxiHi;
 
   return (
     <div className="rounded-xl border border-rule-soft/50 bg-ink-2/30 px-4 py-3">
@@ -934,8 +965,8 @@ function TransferTile({
             {route.fareText && (
               <span className="font-mono text-[12px] font-bold tabular-nums text-brass">fare {route.fareText}</span>
             )}
-            {tmode === "taxi" && taxiEst && (
-              <span className="font-mono text-[11px] tabular-nums text-brass">taxi ~{gbp(taxiEst)} <span className="text-[9px] font-normal text-paper-faint">rough est</span></span>
+            {tmode === "taxi" && taxiLo && taxiHi && (
+              <span className="font-mono text-[11px] tabular-nums text-brass">meter {gbp(taxiLo)}–{gbp(taxiHi)} <span className="text-[9px] font-normal text-paper-faint">local tariff est</span></span>
             )}
             <span className="flex-1" />
             <button
@@ -947,6 +978,37 @@ function TransferTile({
               <Plus className="h-2.5 w-2.5" /> {added === "g" ? "added" : "add to trip"}
             </button>
           </div>
+          {/* LIVE quoted prices for this exact leg */}
+          {(faresBusy || (fares && fares.length > 0)) && (
+            <div className="rounded-lg border border-brass/30 bg-brass/[0.04] px-3 py-2">
+              <p className="mb-1 font-mono text-[9px] uppercase tracking-[0.2em] text-brass/85">
+                best offers found {faresBusy && <Loader2 className="ml-1 inline h-2.5 w-2.5 animate-spin" />}
+              </p>
+              {fares && fares.length > 0 && (
+                <ul className="divide-y divide-rule-soft/20">
+                  {fares.map((f, i) => (
+                    <li key={i} className="flex flex-wrap items-center gap-2 py-1.5">
+                      <span className="font-mono text-[11px] text-paper">{f.label}</span>
+                      <span className="font-mono text-[12px] font-bold tabular-nums text-brass">{f.price}</span>
+                      {typeof f.priceGbp === "number" && !f.price.includes("£") && (
+                        <span className="font-mono text-[10px] text-paper-faint">≈{gbp(f.priceGbp)}</span>
+                      )}
+                      <span className="flex-1" />
+                      {f.source && <span className="font-mono text-[9px] text-paper-faint/70">{f.source}</span>}
+                      {f.link && (
+                        <a href={f.link} target="_blank" rel="noreferrer" className="text-paper-faint hover:text-brass transition-colors">
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {fares && fares.length === 0 && !faresBusy && (
+            <p className="font-mono text-[10px] text-paper-faint">no concrete fares found online for this leg — use the provider links below</p>
+          )}
           {/* book it: providers with the route prefilled */}
           <ul className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
             {(tmode === "taxi"

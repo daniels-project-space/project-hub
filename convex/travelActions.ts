@@ -76,6 +76,8 @@ const SECRET = {
   googlePlaces: { service: "google", keyName: "GOOGLE_PLACES_API_KEY" },
   // SerpApi — Google Hotels (Deal mode) + Google Flights. Verified live.
   serpapi: { service: "serpapi", keyName: "SERPAPI_KEY" },
+  // OpenRouter (DeepSeek) — groundFares price extraction. Verified live.
+  openrouter: { service: "openrouter", keyName: "OPENROUTER_API_KEY" },
 } as const;
 
 const SERPAPI_URL = "https://serpapi.com/search.json";
@@ -1149,6 +1151,110 @@ function flightsDeepLink(
     (returnDate ? ` through ${returnDate}` : "");
   return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
 }
+
+/**
+ * groundFares (2026-07-04) — REAL quoted prices for trains/buses/taxis where
+ * no booking API exists: ONE Google search (SerpAPI) for the route's fares,
+ * then a cheap DeepSeek call extracts the concrete offers people actually
+ * quote (Perama shuttle $7, Grab ~150k IDR, GWK shuttle…) with source links.
+ * ~1 serpapi credit + ~1k DeepSeek tokens per lookup, on demand only.
+ */
+export const groundFares = action({
+  args: {
+    from: v.string(),
+    to: v.string(),
+    kind: v.string(), // "ground" (train/bus/shuttle) | "taxi"
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    available: boolean;
+    reason?: string;
+    offers: { label: string; price: string; priceGbp?: number; source?: string; link?: string }[];
+  }> => {
+    const serpKey = await getSecret(ctx, SECRET.serpapi);
+    if (!serpKey) return { available: false, reason: "SERPAPI_KEY absent", offers: [] };
+    const q =
+      args.kind === "taxi"
+        ? `taxi or ride hailing price from ${args.from} to ${args.to}`
+        : `${args.from} to ${args.to} bus shuttle train ticket price`;
+    const params = new URLSearchParams({
+      engine: "google",
+      q,
+      gl: "uk",
+      hl: "en",
+      num: "8",
+      api_key: serpKey,
+    });
+    let evidence = "";
+    let organic: { title?: string; snippet?: string; link?: string }[] = [];
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      if (json?.error) return { available: false, reason: String(json.error), offers: [] };
+      const ab = json?.answer_box;
+      if (ab?.answer || ab?.snippet) evidence += `ANSWER: ${ab.answer ?? ab.snippet}\n`;
+      organic = Array.isArray(json?.organic_results) ? json.organic_results.slice(0, 6) : [];
+      for (const r of organic) evidence += `- ${r.title ?? ""}: ${r.snippet ?? ""} (${r.link ?? ""})\n`;
+    } catch (e) {
+      return { available: false, reason: String(e), offers: [] };
+    }
+    if (!evidence.trim()) return { available: true, offers: [] };
+
+    const llmKey = await getSecret(ctx, SECRET.openrouter);
+    if (!llmKey) return { available: true, offers: [] };
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${llmKey}` },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash",
+          provider: { only: ["deepseek", "alibaba"] },
+          max_tokens: 1400,
+          messages: [
+            {
+              role: "user",
+              content:
+                `From these search results about ${args.kind === "taxi" ? "taxi/ride-hailing" : "bus/shuttle/train"} prices ` +
+                `from ${args.from} to ${args.to}, extract up to 5 CONCRETE price offers. STRICT JSON only:\n` +
+                `{"offers":[{"label":"<operator/mode>","price":"<price as quoted incl currency>","priceGbp":<approx GBP number or null>,` +
+                `"source":"<site name>","link":"<url or null>"}]}\n` +
+                `Only real quoted prices from the evidence; convert to GBP approximately (IDR 20000/GBP, USD 0.75/GBP, EUR 0.85/GBP). ` +
+                `ASCII only.\nEVIDENCE:\n${evidence.slice(0, 3500)}`,
+            },
+          ],
+        }),
+      });
+      const j: any = await res.json();
+      const text: string = j?.choices?.[0]?.message?.content ?? "";
+      const m = text.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(m ? m[0] : text);
+      const offers = (Array.isArray(parsed?.offers) ? parsed.offers : [])
+        .filter((o: any) => typeof o?.label === "string" && typeof o?.price === "string")
+        .slice(0, 5)
+        .map((o: any) => ({
+          label: o.label,
+          price: o.price,
+          priceGbp: finiteOrUndef(o.priceGbp),
+          source: typeof o.source === "string" ? o.source : undefined,
+          link: typeof o.link === "string" && o.link.startsWith("http") ? o.link : undefined,
+        }));
+      return { available: true, offers };
+    } catch {
+      // LLM flaked — fall back to the raw top snippets as unparsed offers.
+      return {
+        available: true,
+        offers: organic.slice(0, 3).map((r) => ({
+          label: r.title ?? "search result",
+          price: (r.snippet ?? "").slice(0, 90),
+          source: r.link ? new URL(r.link).hostname.replace("www.", "") : undefined,
+          link: r.link,
+        })),
+      };
+    }
+  },
+});
 
 export const searchFlights = action({
   args: {
