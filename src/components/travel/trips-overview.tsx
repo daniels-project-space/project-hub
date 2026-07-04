@@ -1161,7 +1161,7 @@ export function TripsOverview({
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [newCity, setNewCity] = useState("");
+  const [newPlace, setNewPlace] = useState<GeoPlace | null>(null);
   const [newStart, setNewStart] = useState("");
   const [newEnd, setNewEnd] = useState("");
   const [creating, setCreating] = useState(false);
@@ -1410,21 +1410,20 @@ export function TripsOverview({
   };
 
   const addTrip = async () => {
-    if (!newCity.trim() || creating) return;
+    if (!newPlace || creating) return;
     setCreating(true);
     try {
-      const geo = await geocodePlace(newCity.trim()).catch(() => null);
       const id = await createTrip({
-        title: newCity.trim(),
-        destCity: geo?.name ?? newCity.trim(),
-        destLat: geo?.lat,
-        destLng: geo?.lng,
-        destCountryCode: geo?.countryCode,
+        title: newPlace.name,
+        destCity: newPlace.name,
+        destLat: newPlace.lat,
+        destLng: newPlace.lng,
+        destCountryCode: newPlace.countryCode,
         startDate: newStart || undefined,
         endDate: newEnd || undefined,
       });
       setAdding(false);
-      setNewCity("");
+      setNewPlace(null);
       setNewStart("");
       setNewEnd("");
       onSelectTrip(id);
@@ -1490,13 +1489,7 @@ export function TripsOverview({
       </div>
       {adding && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brass/30 bg-ink-2/40 px-3 py-2.5">
-          <input
-            type="text"
-            value={newCity}
-            onChange={(ev) => setNewCity(ev.target.value)}
-            placeholder="Destination city…"
-            className="min-w-[140px] flex-1 rounded-md border border-rule-soft/60 bg-ink-3/60 px-2 py-1 text-[12px] text-paper focus:outline-none focus:border-brass/50"
-          />
+          <PlaceField placeholder="Destination city…" selected={newPlace} onSelect={setNewPlace} />
           <DateField
             value={newStart}
             onChange={(v) => {
@@ -1507,7 +1500,7 @@ export function TripsOverview({
           <DateField value={newEnd} min={newStart} onChange={setNewEnd} />
           <button
             type="button"
-            disabled={!newCity.trim() || creating}
+            disabled={!newPlace || creating}
             onClick={() => void addTrip()}
             className="rounded-md border border-brass/40 bg-brass/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
           >
