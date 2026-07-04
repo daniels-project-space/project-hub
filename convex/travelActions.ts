@@ -1256,6 +1256,114 @@ export const groundFares = action({
   },
 });
 
+/**
+ * providerDeals (2026-07-04) — REAL provider-site-specific listings. Google's
+ * hotel offers rarely include non-Booking OTAs, so per provider we run ONE
+ * site-restricted Google search (site:expedia.co.uk "<city>" hotels) and let
+ * DeepSeek extract that provider's OWN listings/deals with quoted prices and
+ * links INTO that site. 1 serpapi credit + ~1k tokens, on demand per rail.
+ */
+export const providerDeals = action({
+  args: {
+    city: v.string(),
+    domain: v.string(), // e.g. "expedia.co.uk"
+    provider: v.string(), // display name
+    checkIn: v.optional(v.string()),
+    checkOut: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    available: boolean;
+    reason?: string;
+    deals: { name: string; price?: string; priceGbp?: number; link?: string; note?: string }[];
+  }> => {
+    const serpKey = await getSecret(ctx, SECRET.serpapi);
+    if (!serpKey) return { available: false, reason: "SERPAPI_KEY absent", deals: [] };
+    const params = new URLSearchParams({
+      engine: "google",
+      q: `site:${args.domain} ${args.city} hotel`,
+      gl: "uk",
+      hl: "en",
+      num: "10",
+      api_key: serpKey,
+    });
+    let organic: { title?: string; snippet?: string; link?: string }[] = [];
+    // SerpAPI intermittently answers "couldn't get valid results — try again";
+    // one retry clears it in practice.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+        const json: any = await res.json();
+        if (json?.error) {
+          if (attempt === 0 && /try again/i.test(String(json.error))) continue;
+          return { available: false, reason: String(json.error), deals: [] };
+        }
+        organic = Array.isArray(json?.organic_results) ? json.organic_results.slice(0, 9) : [];
+        break;
+      } catch (e) {
+        if (attempt === 1) return { available: false, reason: String(e), deals: [] };
+      }
+    }
+    if (organic.length === 0) return { available: true, deals: [] };
+    const evidence = organic
+      .map((r) => `- ${r.title ?? ""} :: ${r.snippet ?? ""} :: ${r.link ?? ""}`)
+      .join("\n");
+
+    const llmKey = await getSecret(ctx, SECRET.openrouter);
+    const fallback = () => ({
+      available: true as const,
+      deals: organic.slice(0, 6).map((r) => ({
+        name: (r.title ?? "listing").replace(/ [-|].*$/, ""),
+        note: (r.snippet ?? "").slice(0, 90),
+        link: r.link,
+      })),
+    });
+    if (!llmKey) return fallback();
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${llmKey}` },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash",
+          provider: { only: ["deepseek", "alibaba"] },
+          max_tokens: 1600,
+          messages: [
+            {
+              role: "user",
+              content:
+                `These are ${args.provider} (${args.domain}) search results for ${args.city} hotels. ` +
+                `Extract up to 6 SPECIFIC properties or deals FROM THIS SITE. STRICT JSON only:\n` +
+                `{"deals":[{"name":"<property or deal>","price":"<quoted price or null>","priceGbp":<approx GBP number or null>,` +
+                `"link":"<the ${args.domain} url>","note":"<short detail e.g. rating, area, perk>"}]}\n` +
+                `Prefer entries with prices in the snippet. Links MUST be on ${args.domain}. ASCII only.\n` +
+                `EVIDENCE:\n${evidence.slice(0, 3500)}`,
+            },
+          ],
+        }),
+      });
+      const j: any = await res.json();
+      const text: string = j?.choices?.[0]?.message?.content ?? "";
+      const m = text.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(m ? m[0] : text);
+      const deals = (Array.isArray(parsed?.deals) ? parsed.deals : [])
+        .filter((d: any) => typeof d?.name === "string")
+        .slice(0, 6)
+        .map((d: any) => ({
+          name: d.name,
+          price: typeof d.price === "string" ? d.price : undefined,
+          priceGbp: finiteOrUndef(d.priceGbp),
+          link: typeof d.link === "string" && d.link.startsWith("http") ? d.link : undefined,
+          note: typeof d.note === "string" ? d.note.slice(0, 90) : undefined,
+        }));
+      return deals.length > 0 ? { available: true, deals } : fallback();
+    } catch {
+      return fallback();
+    }
+  },
+});
+
 export const searchFlights = action({
   args: {
     origin: v.string(),

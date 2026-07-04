@@ -154,14 +154,14 @@ type StayDetail = {
 };
 
 // Cashback portals ↔ Google Hotels offer sources (loose contains-match).
-const PROVIDER_MATCH: { key: string; label: string; test: RegExp }[] = [
-  { key: "booking", label: "Booking.com", test: /booking\.com/i },
-  { key: "expedia", label: "Expedia", test: /expedia/i },
-  { key: "hotels", label: "Hotels.com", test: /hotels\.com/i },
-  { key: "trivago", label: "Trivago", test: /trivago/i },
-  { key: "lastminute", label: "lastminute", test: /lastminute/i },
-  { key: "stayforlong", label: "Stayforlong", test: /stayforlong/i },
-  { key: "trip", label: "Trip.com", test: /trip\.com/i },
+const PROVIDER_MATCH: { key: string; label: string; test: RegExp; domain: string }[] = [
+  { key: "booking", label: "Booking.com", test: /booking\.com/i, domain: "booking.com" },
+  { key: "expedia", label: "Expedia", test: /expedia/i, domain: "expedia.co.uk" },
+  { key: "hotels", label: "Hotels.com", test: /hotels\.com/i, domain: "hotels.com" },
+  { key: "trivago", label: "Trivago", test: /trivago/i, domain: "trivago.co.uk" },
+  { key: "lastminute", label: "lastminute", test: /lastminute/i, domain: "lastminute.com" },
+  { key: "stayforlong", label: "Stayforlong", test: /stayforlong/i, domain: "stayforlong.com" },
+  { key: "trip", label: "Trip.com", test: /trip\.com/i, domain: "trip.com" },
 ];
 
 type TripLite = {
@@ -443,6 +443,62 @@ function PlaceField({
         </ul>
       )}
     </div>
+  );
+}
+
+// ── provider deal rail: hunts THAT site's own listings on demand ────────────
+function ProviderDealRail({
+  railKey,
+  label,
+  state,
+  onHunt,
+}: {
+  railKey: string;
+  label: string;
+  state?: { loading: boolean; deals: { name: string; price?: string; priceGbp?: number; link?: string; note?: string }[] | null };
+  onHunt: () => void;
+}) {
+  if (!state || (!state.loading && state.deals === null)) {
+    return (
+      <button
+        type="button"
+        onClick={onHunt}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-rule-soft/60 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
+      >
+        <Search className="h-3 w-3" /> hunt {label} deals for this destination
+      </button>
+    );
+  }
+  if (state.loading) {
+    return (
+      <p className="flex items-center gap-2 rounded-lg border border-rule-soft/50 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-paper-faint">
+        <Loader2 className="h-3 w-3 animate-spin" /> hunting {label}'s own listings…
+      </p>
+    );
+  }
+  if (!state.deals || state.deals.length === 0) {
+    return <p className="rounded-lg border border-rule-soft/50 px-3 py-2.5 font-mono text-[10px] text-paper-faint">nothing indexed from {label} for this destination — use the cashback chip above</p>;
+  }
+  return (
+    <ul key={railKey} className="divide-y divide-rule-soft/30 rounded-lg border border-rule-soft/50">
+      {state.deals.map((d, i) => (
+        <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2">
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12px] text-paper">{d.name}</span>
+            {d.note && <span className="block truncate font-mono text-[9px] text-paper-faint">{d.note}</span>}
+          </span>
+          {d.price && <span className="font-mono text-[12px] font-bold tabular-nums text-brass">{d.price}</span>}
+          {typeof d.priceGbp === "number" && !(d.price ?? "").includes("£") && (
+            <span className="font-mono text-[10px] text-paper-faint">≈{gbp(d.priceGbp)}</span>
+          )}
+          {d.link && (
+            <a href={d.link} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors">
+              open <ExternalLink className="h-2.5 w-2.5" />
+            </a>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1081,6 +1137,7 @@ export function TripsOverview({
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
+  const providerDeals = useAction(api.travelActions.providerDeals);
 
   const [results, setResults] = useState<StayOption[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -1088,6 +1145,8 @@ export function TripsOverview({
   const [lockingName, setLockingName] = useState<string | null>(null);
   const [globeOpen, setGlobeOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  type ProviderDeal = { name: string; price?: string; priceGbp?: number; link?: string; note?: string };
+  const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1132,14 +1191,16 @@ export function TripsOverview({
       return {
         ...pm,
         fallback: priced.length === 0,
-        items: priced.length > 0 ? priced : visible.slice(0, 10).map((o) => ({ o, otaPrice: undefined as number | undefined })),
+        items: priced, // fallback rails hunt provider-site deals on demand instead
       };
     });
     return [
       { key: "best", label: "Best price", items: visible.slice(0, 40).map((o) => ({ o, otaPrice: undefined as number | undefined })) },
       ...byProvider.map((c) => ({
         key: c.key,
-        label: c.fallback ? `${c.label} · top picks (search links)` : c.label,
+        label: c.label,
+        domain: c.domain,
+        fallback: c.fallback,
         items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 20),
       })),
     ];
@@ -1242,6 +1303,22 @@ export function TripsOverview({
       });
     } finally {
       setLockingName(null);
+    }
+  };
+
+  const huntProviderDeals = async (key: string, label: string, domain: string) => {
+    setProviderDealState((st) => ({ ...st, [key]: { loading: true, deals: st[key]?.deals ?? null } }));
+    try {
+      const res = await providerDeals({
+        city,
+        domain,
+        provider: label,
+        checkIn: trip?.startDate,
+        checkOut: effCheckOut ?? trip?.endDate,
+      });
+      setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: res.deals ?? [] } }));
+    } catch {
+      setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: [] } }));
     }
   };
 
@@ -1534,13 +1611,21 @@ export function TripsOverview({
             <div key={rail.key}>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
                 {rail.label}
-                <span className="text-paper-faint/50">· {rail.items.length}</span>
+                {!("fallback" in rail && rail.fallback) && <span className="text-paper-faint/50">· {rail.items.length}</span>}
                 {rail.key !== "best" && (
                   <span className="flex items-center gap-1 text-emerald-soft/70">
                     <PiggyBank className="h-2.5 w-2.5" /> cashback
                   </span>
                 )}
               </p>
+              {"fallback" in rail && rail.fallback ? (
+                <ProviderDealRail
+                  railKey={rail.key}
+                  label={rail.label}
+                  state={providerDealState[rail.key]}
+                  onHunt={() => void huntProviderDeals(rail.key, rail.label, (rail as { domain?: string }).domain ?? "")}
+                />
+              ) : (
               <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
                 {rail.items.map(({ o, otaPrice }, i) => (
                   <StayCard
@@ -1557,6 +1642,7 @@ export function TripsOverview({
                   />
                 ))}
               </div>
+              )}
             </div>
           ))}
               </div>
