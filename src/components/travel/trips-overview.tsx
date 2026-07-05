@@ -1350,7 +1350,6 @@ export function TripsOverview({
   const removeStay = useMutation(api.tripExtras.removeStay);
   const search = useAction(api.travelActions.searchStays);
   const ppHotels = useAction(api.travelActions.ppHotels);
-  const apifyHotels = useAction(api.travelActions.apifyHotels);
   const resolveByName = useAction(api.travelActions.resolveStayByName);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
@@ -1379,7 +1378,6 @@ export function TripsOverview({
   const [enriched, setEnriched] = useState(false);
   const [bookingLive, setBookingLive] = useState<{ loading: boolean; options: StayOption[] }>({ loading: false, options: [] });
   // Apify-backed live rails for the Akamai-walled portals (Expedia/Hotels.com).
-  const [apifyLive, setApifyLive] = useState<Record<string, { loading: boolean; options: StayOption[] }>>({});
   const [dealOpen, setDealOpen] = useState<{ name: string; priceNight?: string; priceTotal?: string; link?: string; images?: string[]; note?: string } | null>(null);
   // Dorms/hostels are OFF by default (Daniel books private places).
   const [showHostels, setShowHostels] = useState(false);
@@ -1525,27 +1523,21 @@ export function TripsOverview({
       })
         .then((b) => setBookingLive({ loading: false, options: (b.options ?? []) as StayOption[] }))
         .catch(() => setBookingLive({ loading: false, options: [] }));
-      // Expedia + Hotels.com via Apify (skips silently if no token in vault).
-      for (const site of ["expedia"] as const) {
-        setApifyLive((m) => ({ ...m, [site]: { loading: true, options: m[site]?.options ?? [] } }));
-        void apifyHotels({
-          site,
-          city,
-          checkIn: trip.startDate!,
-          checkOut: (effCheckOut ?? trip.endDate)!,
-          adults: travelers,
-        })
-          .then((r) => setApifyLive((m) => ({ ...m, [site]: { loading: false, options: (r.options ?? []) as StayOption[] } })))
-          .catch(() => setApifyLive((m) => ({ ...m, [site]: { loading: false, options: [] } })));
-      }
+      // Every uncovered provider — Expedia included — hunts via the free
+      // Browserbase renderer (real deals from each portal's SEO/property pages).
+      // Apify's Expedia actor needs the paid Pro rental, so it's not auto-fired.
       void (async () => {
         const enrichedList = (await deepCompare(opts)) ?? opts;
-        for (const pm of PROVIDER_MATCH) {
-          if (pm.key === "booking") continue; // always priced via Google
-          const covered = enrichedList.some((o) =>
-            (o.offers ?? []).some((x) => pm.test.test(x.source)),
+        const toHunt = PROVIDER_MATCH.filter((pm) => {
+          if (pm.key === "booking") return false; // always priced via Google
+          return !enrichedList.some((o) => (o.offers ?? []).some((x) => pm.test.test(x.source)));
+        });
+        // Serialise in small batches — Browserbase caps concurrent sessions, and
+        // firing all at once was making several hunts come back empty.
+        for (let i = 0; i < toHunt.length; i += 2) {
+          await Promise.all(
+            toHunt.slice(i, i + 2).map((pm) => huntProviderDeals(pm.key, pm.label, pm.domain)),
           );
-          if (!covered) void huntProviderDeals(pm.key, pm.label, pm.domain);
         }
       })();
     } catch (err) {
@@ -1648,10 +1640,11 @@ export function TripsOverview({
 
   const huntProviderDeals = async (key: string, label: string, domain: string) => {
     setProviderDealState((st) => ({ ...st, [key]: { loading: true, deals: st[key]?.deals ?? null } }));
-    try {
-      // EVERY provider hunt uses the REAL browser (Browserbase) — rendered
-      // pages carry prices AND images; the indexed hunt never had either.
-      const res = await providerDealsLive({
+    // EVERY provider hunt uses the REAL browser (Browserbase). Rendered pages
+    // are timing-sensitive, so give an empty first pass ONE retry before we
+    // conclude the portal really has nothing (concurrency made hunts flaky).
+    const runOnce = () =>
+      providerDealsLive({
         providerKey: key,
         provider: label,
         domain,
@@ -1660,6 +1653,11 @@ export function TripsOverview({
         checkOut: effCheckOut ?? trip?.endDate,
         adults: travelers,
       });
+    try {
+      let res = await runOnce();
+      if (!res.deals || res.deals.length === 0) {
+        res = await runOnce().catch(() => res);
+      }
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: res.deals ?? [] } }));
     } catch {
       setProviderDealState((st) => ({ ...st, [key]: { loading: false, deals: [] } }));
@@ -2109,40 +2107,6 @@ export function TripsOverview({
             </div>
             );
           })()}
-          {(["expedia"] as const).map((site) => {
-            const st = apifyLive[site];
-            if (!st) return null;
-            const opts = withinBudget(st.options);
-            if (!st.loading && opts.length === 0) return null;
-            const label = "Expedia · live";
-            return (
-              <div key={`apify-${site}`}>
-                <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-                  {label}
-                  {st.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {opts.length}</span>}
-                  <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
-                </p>
-                {opts.length > 0 && (
-                  <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-                    {opts.map((o, i) => (
-                      <StayCard
-                        key={`${site}-${i}-${o.name}`}
-                        o={o}
-                        checkIn={trip.startDate}
-                        checkOut={effCheckOut}
-                        adults={travelers}
-                        locking={lockingName === o.name}
-                        locked={lockedNames.has(o.name)}
-                        expanded={offersFor?.name === o.name}
-                        onDetails={(opt) => void openOffers(opt)}
-                        onLock={(opt) => void lockIn(opt, o.provider ?? label, opt.priceGbp)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
           {carousels.map((rail) => (
             <div key={rail.key}>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
