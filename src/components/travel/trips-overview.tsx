@@ -660,6 +660,7 @@ function StayCard({
   onLock,
   onDetails,
   locking,
+  locked = false,
   expanded,
   fluid = false,
 }: {
@@ -671,6 +672,7 @@ function StayCard({
   onLock: (o: StayOption) => void;
   onDetails: (o: StayOption) => void;
   locking: boolean;
+  locked?: boolean;
   expanded: boolean;
   /** Grid mode (fullscreen browser) — fill the cell instead of rail width. */
   fluid?: boolean;
@@ -795,11 +797,17 @@ function StayCard({
           </a>
           <button
             type="button"
-            disabled={locking}
+            disabled={locking || locked}
             onClick={() => onLock(o)}
-            className="flex flex-1 items-center justify-center gap-1 rounded-md border border-brass/40 bg-brass/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-50"
+            className={cn(
+              "flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors disabled:opacity-100",
+              locked
+                ? "border-emerald-soft/50 bg-emerald-soft/15 text-emerald-soft"
+                : "border-brass/40 bg-brass/10 text-brass hover:bg-brass/20 disabled:opacity-50",
+            )}
           >
-            <Lock className="h-2.5 w-2.5" /> lock
+            {locking ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : locked ? <Check className="h-2.5 w-2.5" /> : <Lock className="h-2.5 w-2.5" />}
+            {locked ? "locked" : "lock"}
           </button>
         </div>
         <button
@@ -1343,6 +1351,7 @@ export function TripsOverview({
   const search = useAction(api.travelActions.searchStays);
   const ppHotels = useAction(api.travelActions.ppHotels);
   const apifyHotels = useAction(api.travelActions.apifyHotels);
+  const resolveByName = useAction(api.travelActions.resolveStayByName);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
@@ -1399,10 +1408,17 @@ export function TripsOverview({
     clamped && trip?.startDate ? addDays(trip.startDate, 29) : trip?.endDate;
   const budget = budgetDraft ?? trip?.budgetGbp ?? 0;
   const perNightBudget = budget && nights ? Math.max(20, Math.floor(budget / nights)) : undefined;
+  // Every rail respects the budget: keep stays whose nightly rate fits (or whose
+  // price is unknown, so we don't hide a maybe-fine option).
+  const withinBudget = (opts: StayOption[]) =>
+    perNightBudget ? opts.filter((o) => o.priceGbp == null || o.priceGbp <= perNightBudget) : opts;
 
   const carousels = useMemo(() => {
     if (!results) return [];
-    const visible = showHostels ? results : results.filter((o) => !dormLikely(o));
+    const budgeted = perNightBudget
+      ? results.filter((o) => o.priceGbp == null || o.priceGbp <= perNightBudget)
+      : results;
+    const visible = showHostels ? budgeted : budgeted.filter((o) => !dormLikely(o));
     // EVERY provider gets a rail. Priced rails use Google's per-OTA offers;
     // providers Google didn't price fall back to the top picks, whose cards
     // deep-link that provider's search for the exact property + dates.
@@ -1429,7 +1445,7 @@ export function TripsOverview({
         items: c.items.sort((a, b) => (a.otaPrice ?? 9e9) - (b.otaPrice ?? 9e9)).slice(0, 20),
       })),
     ];
-  }, [results, showHostels]);
+  }, [results, showHostels, perNightBudget]);
 
   // globe data: all trips with coords, chronological arcs, focus = current/next
   const globeData = useMemo(() => {
@@ -1547,12 +1563,41 @@ export function TripsOverview({
     setOffersFor(o);
     setOffersData(null);
     if (!o.propertyToken) {
-      // pp-bridge results carry their gallery + per-OTA offers up front.
+      // Show the card's own gallery instantly, then enrich by name with the
+      // full Google-Hotels detail (10 photos, amenities, per-OTA perks).
       setOffersData({
         amenities: o.amenities ?? [],
         images: o.gallery ?? (o.image ? [o.image] : []),
         offers: (o.offers ?? []).map((x) => ({ source: x.source, priceGbp: x.priceGbp, perks: [] })),
       });
+      if (trip?.startDate && trip?.endDate) {
+        setOffersLoading(true);
+        try {
+          const rich = await resolveByName({
+            name: o.name,
+            city,
+            checkIn: trip.startDate,
+            checkOut: effCheckOut ?? trip.endDate,
+            adults: travelers,
+          });
+          if (rich.available && (rich.images.length > 0 || rich.offers.length > 0)) {
+            setOffersData({
+              amenities: rich.amenities.length ? rich.amenities : (o.amenities ?? []),
+              images: rich.images.length ? rich.images : (o.gallery ?? (o.image ? [o.image] : [])),
+              address: rich.address,
+              lat: rich.lat,
+              lng: rich.lng,
+              offers: rich.offers.length
+                ? rich.offers
+                : (o.offers ?? []).map((x) => ({ source: x.source, priceGbp: x.priceGbp, perks: [] })),
+            } as StayDetail);
+          }
+        } catch {
+          /* keep the instant gallery */
+        } finally {
+          setOffersLoading(false);
+        }
+      }
       return;
     }
     if (!trip?.startDate || !trip?.endDate) return;
@@ -1698,6 +1743,7 @@ export function TripsOverview({
   };
 
   const savedStays = (stays ?? []).filter((st) => st.saved !== false);
+  const lockedNames = new Set(savedStays.filter((st) => st.locked === true).map((st) => st.name));
   const bookingRows = [
     ...(flights ?? []).map((f) => {
       const seg0 = f.segments[0];
@@ -2032,16 +2078,19 @@ export function TripsOverview({
               }
             >
               <div className="space-y-3">
-          {(bookingLive.loading || bookingLive.options.length > 0) && (
+          {(() => {
+            const bkOpts = withinBudget(bookingLive.options);
+            if (!bookingLive.loading && bkOpts.length === 0) return null;
+            return (
             <div>
               <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
                 Booking.com · live
-                {bookingLive.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {bookingLive.options.length}</span>}
+                {bookingLive.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {bkOpts.length}</span>}
                 <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
               </p>
-              {bookingLive.options.length > 0 && (
+              {bkOpts.length > 0 && (
                 <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-                  {bookingLive.options.map((o, i) => (
+                  {bkOpts.map((o, i) => (
                     <StayCard
                       key={`bk-${i}-${o.name}`}
                       o={o}
@@ -2049,6 +2098,7 @@ export function TripsOverview({
                       checkOut={effCheckOut}
                       adults={travelers}
                       locking={lockingName === o.name}
+                      locked={lockedNames.has(o.name)}
                       expanded={offersFor?.name === o.name}
                       onDetails={(opt) => void openOffers(opt)}
                       onLock={(opt) => void lockIn(opt, "Booking.com", opt.priceGbp)}
@@ -2057,21 +2107,24 @@ export function TripsOverview({
                 </div>
               )}
             </div>
-          )}
+            );
+          })()}
           {(["expedia"] as const).map((site) => {
             const st = apifyLive[site];
-            if (!st || (!st.loading && st.options.length === 0)) return null;
+            if (!st) return null;
+            const opts = withinBudget(st.options);
+            if (!st.loading && opts.length === 0) return null;
             const label = "Expedia · live";
             return (
               <div key={`apify-${site}`}>
                 <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
                   {label}
-                  {st.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {st.options.length}</span>}
+                  {st.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {opts.length}</span>}
                   <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
                 </p>
-                {st.options.length > 0 && (
+                {opts.length > 0 && (
                   <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-                    {st.options.map((o, i) => (
+                    {opts.map((o, i) => (
                       <StayCard
                         key={`${site}-${i}-${o.name}`}
                         o={o}
@@ -2079,6 +2132,7 @@ export function TripsOverview({
                         checkOut={effCheckOut}
                         adults={travelers}
                         locking={lockingName === o.name}
+                        locked={lockedNames.has(o.name)}
                         expanded={offersFor?.name === o.name}
                         onDetails={(opt) => void openOffers(opt)}
                         onLock={(opt) => void lockIn(opt, o.provider ?? label, opt.priceGbp)}
@@ -2119,6 +2173,7 @@ export function TripsOverview({
                     checkOut={effCheckOut}
                     adults={travelers}
                     locking={lockingName === o.name}
+                    locked={lockedNames.has(o.name)}
                     expanded={offersFor?.name === o.name}
                     onDetails={(opt) => void openOffers(opt)}
                     onLock={(opt) => void lockIn(opt, rail.key !== "best" ? rail.label : undefined, otaPrice)}
@@ -2403,6 +2458,7 @@ export function TripsOverview({
                     checkOut={effCheckOut}
                     adults={travelers}
                     locking={lockingName === o.name}
+                    locked={lockedNames.has(o.name)}
                     expanded={offersFor?.name === o.name}
                     onDetails={(opt) => void openOffers(opt)}
                     onLock={(opt) => void lockIn(opt, rail.key !== "best" ? rail.label : undefined, otaPrice)}

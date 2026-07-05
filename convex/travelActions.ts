@@ -843,6 +843,13 @@ export const ppHotels = action({
         }
         return undefined;
       };
+      // Nights in the stay — used to derive a real stay TOTAL when the source
+      // only gives a nightly rate (hotel-goat/Google Hotels does). Without this
+      // a locked stay stored its nightly price as the whole-trip cost.
+      const stayNights = Math.max(
+        1,
+        Math.round((Date.parse(args.checkOut) - Date.parse(args.checkIn)) / 86_400_000),
+      );
       const options: StayOption[] = rows.slice(0, 100).map((r) => {
         const images: string[] = Array.isArray(r?.images)
           ? r.images.filter((u: unknown) => typeof u === "string").slice(0, 8)
@@ -861,7 +868,9 @@ export const ppHotels = action({
           name: typeof r?.name === "string" ? r.name : "Hotel",
           provider: args.site === "booking" ? "Booking.com" : offers[0]?.source,
           priceGbp: num(r?.price_per_night),
-          totalGbp: num(r?.price_total),
+          totalGbp:
+            num(r?.price_total) ??
+            (num(r?.price_per_night) != null ? Math.round(num(r?.price_per_night)! * stayNights) : undefined),
           image: images[0] ?? rImg,
           thumb: images[0] ?? rImg,
           gallery: images.length ? images : rImg ? [rImg] : [],
@@ -961,7 +970,7 @@ export const apifyHotels = action({
           name: typeof r?.name === "string" ? r.name : "Hotel",
           provider: providerLabel,
           priceGbp: night,
-          totalGbp: total,
+          totalGbp: total ?? (night != null ? Math.round(night * nights) : undefined),
           image: img,
           thumb: img,
           gallery: Array.isArray(r?.images) ? r.images.filter((u: unknown) => typeof u === "string").slice(0, 8) : img ? [img] : [],
@@ -1092,6 +1101,85 @@ export const searchStays = action({
  * applied, plus the rate's own perks (free breakfast / Wi-Fi / …) and its
  * free-cancellation flag. One credit per click, called on demand only.
  */
+/**
+ * resolveStayByName (2026-07-05) — rich detail for a stay we only know by name
+ * (the free hotel-goat/pp search returns photos but no perks/per-OTA prices).
+ * Finds the property's Google-Hotels token by name, then reuses
+ * resolveStayOffers for the full detail (10 images, amenities, per-OTA offers
+ * with free-breakfast/cancellation perks). Powers the informative overlay.
+ */
+export const resolveStayByName = action({
+  args: {
+    name: v.string(),
+    city: v.string(),
+    checkIn: v.string(),
+    checkOut: v.string(),
+    adults: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    available: boolean;
+    reason?: string;
+    amenities: string[];
+    images: string[];
+    address?: string;
+    lat?: number;
+    lng?: number;
+    offers: {
+      source: string;
+      link?: string;
+      priceGbp?: number;
+      totalGbp?: number;
+      freeCancellation?: boolean;
+      cancellationNote?: string;
+      perks: string[];
+    }[];
+  }> => {
+    const key = await getSecret(ctx, SECRET.serpapi);
+    if (!key) return { available: false, reason: "SERPAPI_KEY absent", amenities: [], images: [], offers: [] };
+    const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
+    const params = new URLSearchParams({
+      engine: "google_hotels",
+      q: `${args.name} ${args.city}`,
+      check_in_date: args.checkIn,
+      check_out_date: args.checkOut,
+      adults: String(adults),
+      currency: GBP,
+      gl: "uk",
+      hl: "en",
+      api_key: key,
+    });
+    try {
+      const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
+      const json: any = await res.json();
+      const props: any[] = Array.isArray(json?.properties) ? json.properties : [];
+      const token = props.find((p) => typeof p?.property_token === "string")?.property_token;
+      if (!token) {
+        // No token — hand back whatever the search gave (images at least).
+        const first = props[0] ?? {};
+        const images: string[] = Array.isArray(first?.images)
+          ? first.images.map((im: any) => im?.original_image ?? im?.thumbnail).filter((u: unknown) => typeof u === "string").slice(0, 10)
+          : [];
+        const amenities: string[] = Array.isArray(first?.amenities)
+          ? first.amenities.filter((a: unknown) => typeof a === "string").slice(0, 10)
+          : [];
+        return { available: images.length > 0, amenities, images, offers: [] };
+      }
+      return await ctx.runAction(api.travelActions.resolveStayOffers, {
+        propertyToken: token,
+        query: `${args.name} ${args.city}`,
+        checkIn: args.checkIn,
+        checkOut: args.checkOut,
+        adults,
+      });
+    } catch (e) {
+      return { available: false, reason: e instanceof Error ? e.message : String(e), amenities: [], images: [], offers: [] };
+    }
+  },
+});
+
 export const resolveStayOffers = action({
   args: {
     propertyToken: v.string(),
