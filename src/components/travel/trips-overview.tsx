@@ -198,6 +198,8 @@ function YearBand({
   selectedId: Id<"trips"> | null;
   onSelect: (id: Id<"trips">) => void;
 }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const year = new Date().getUTCFullYear();
   const y0 = Date.UTC(year, 0, 1);
   const y1 = Date.UTC(year + 1, 0, 1);
@@ -224,7 +226,7 @@ function YearBand({
           </div>
         ))}
         {/* today marker */}
-        {nowPct > 0 && nowPct < 100 && (
+        {mounted && nowPct > 0 && nowPct < 100 && (
           <div className="absolute top-0 h-6 w-px bg-amber" style={{ left: `${nowPct}%` }}>
             <span className="absolute -top-0.5 left-1 font-mono text-[8px] uppercase tracking-[0.1em] text-amber">now</span>
           </div>
@@ -1352,6 +1354,11 @@ export function TripsOverview({
   const [journeyOpen, setJourneyOpen] = useState(false);
   const [stage, setStage] = useState<TripStage>("setup");
   const [transportSkipped, setTransportSkipped] = useState(false);
+  // Gate time-relative text (countdown, NOW marker) behind mount so the
+  // server's cached day-count can't mismatch the client's fresh one — a
+  // hydration mismatch (#418) breaks click handlers and froze the stages.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [browseOpen, setBrowseOpen] = useState(false);
   type ProviderDeal = { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string };
   const [providerDealState, setProviderDealState] = useState<Record<string, { loading: boolean; deals: ProviderDeal[] | null }>>({});
@@ -1799,7 +1806,7 @@ export function TripsOverview({
                 </p>
                 <h3 className="mt-0.5 truncate font-display italic font-light text-[30px] leading-none text-paper">{city}</h3>
               </div>
-              {ph && (
+              {mounted && ph && (
                 <span className={cn("shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em]", BADGE_TONE[ph.tone])}>
                   <CalendarRange className="mr-1 inline h-3 w-3 -translate-y-px" />
                   {ph.label}
@@ -1920,14 +1927,19 @@ export function TripsOverview({
           {/* ── STAGE: stays — live search results + provider rails ──────────── */}
           {stage === "stays" && (
           <>
-          {results === null && !searching && (
+          {!(results && results.length > 0) && !searching && (
             <button
               type="button"
               disabled={!canSearch}
               onClick={() => void runSearch()}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
             >
-              <Search className="h-3 w-3" /> {canSearch ? "load live prices across all providers" : "set dates in Setup first"}
+              <Search className="h-3 w-3" />{" "}
+              {!canSearch
+                ? "set dates in Setup first"
+                : results === null
+                  ? "load live prices across all providers"
+                  : "no stays found — refresh prices"}
             </button>
           )}
 
