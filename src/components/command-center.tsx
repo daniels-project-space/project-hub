@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import {
@@ -158,6 +159,11 @@ export function CommandCenter() {
   const { get } = useSettings();
   const nwCurrency = get("nwCurrency", "GBP") as "GBP" | "USD";
 
+  // Gate current-time text behind mount: server-cached HTML would carry a
+  // different hour/day than the client's fresh clock, causing a hydration
+  // mismatch (#418) that can break interactivity across the dashboard.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const now = Date.now();
   const today = new Date();
   const greeting = timeGreeting();
@@ -218,7 +224,7 @@ export function CommandCenter() {
           Command Center
         </span>
         <span className="font-mono text-[9px] text-paper-faint/50 uppercase tracking-[0.18em]">
-          {today.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+          {mounted ? today.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : ""}
         </span>
       </div>
 
@@ -227,10 +233,10 @@ export function CommandCenter() {
         <div className="flex items-start justify-between gap-4 mb-5">
           <div className="min-w-0">
             <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-brass/75 mb-1">
-              {greeting},&nbsp;Daniel
+              {mounted ? greeting : "Hello"},&nbsp;Daniel
             </p>
             <h2 className="font-display text-[26px] md:text-[32px] leading-[1.05] tracking-tight text-paper">
-              {dateDisplay}
+              {mounted ? dateDisplay : " "}
             </h2>
           </div>
           <WeatherChip />
