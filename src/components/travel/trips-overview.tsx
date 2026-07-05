@@ -1910,11 +1910,14 @@ export function TripsOverview({
               <button
                 type="button"
                 disabled={!canSearch || searching}
-                onClick={() => void runSearch()}
+                onClick={() => {
+                  void runSearch();
+                  setStage("stays"); // results render on the Stays stage
+                }}
                 className="flex items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {searching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                {results ? "refresh prices" : "load live prices"}
+                find stays <ArrowRight className="h-3 w-3" />
               </button>
             </div>
             {!canSearch && <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-paper-faint">set both dates to enable live prices</p>}
