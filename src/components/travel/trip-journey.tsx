@@ -25,13 +25,18 @@ import {
   Globe2,
   Flag,
   Moon,
+  Plus,
+  X,
+  Search,
+  Loader2,
 } from "lucide-react";
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { Sheet } from "@/components/ui/sheet";
 import type { GlobePoint, GlobeArc } from "@/components/travel/trip-globe";
+import { searchPlaces, type GeoPlace } from "@/lib/travel/geocode";
 
 const TripGlobe = dynamic(() => import("@/components/travel/trip-globe").then((m) => m.TripGlobe), {
   ssr: false,
@@ -108,6 +113,8 @@ export function TripJourney({
     | undefined;
 
   const [focusId, setFocusId] = useState<string | null>(null);
+  const addLeg = useMutation(api.tripExtras.addLeg);
+  const removeLeg = useMutation(api.tripExtras.removeLeg);
 
   const { stops, segments, points, arcs, totals } = useMemo(() => {
     const lockedStays = (stays ?? []).filter((s) => s.locked !== false);
@@ -274,6 +281,51 @@ export function TripJourney({
           )}
         </div>
 
+        {/* ── editable route: build the trip on the map (drop stops in order) ── */}
+        {tripId && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.2em] text-paper-faint">
+              <MapPin className="h-3 w-3" /> route
+            </span>
+            {stops.map((st, i) => (
+              <span
+                key={st.id}
+                className={cn(
+                  "group flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors",
+                  focusId === st.id ? "border-brass/60 bg-brass/10 text-brass" : "border-rule-soft/60 bg-ink-2/40 text-paper-dim",
+                )}
+              >
+                {i > 0 && <span className="text-paper-faint/40">→</span>}
+                <button type="button" onClick={() => setFocusId(focusId === st.id ? null : st.id)}>
+                  {st.city}
+                  {st.nights ? <span className="text-paper-faint"> · {st.nights}nt</span> : ""}
+                </button>
+                {st.id !== "dest" && (
+                  <button
+                    type="button"
+                    onClick={() => void removeLeg({ legId: st.id as Id<"tripLegs"> })}
+                    className="text-paper-faint/50 hover:text-rose-soft"
+                    aria-label={`remove ${st.city}`}
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                )}
+              </span>
+            ))}
+            <AddStop
+              onAdd={(place) =>
+                void addLeg({
+                  tripId,
+                  city: place.name,
+                  lat: place.lat,
+                  lng: place.lng,
+                  countryCode: place.countryCode,
+                })
+              }
+            />
+          </div>
+        )}
+
         {/* ── node timeline ───────────────────────────────────────────────── */}
         <div>
           <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">Timeline</p>
@@ -349,5 +401,79 @@ export function TripJourney({
         )}
       </div>
     </Sheet>
+  );
+}
+
+// Compact place-search chip to drop a new stop onto the route.
+function AddStop({ onAdd }: { onAdd: (p: GeoPlace) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<GeoPlace[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (text: string) => {
+    setQ(text);
+    if (text.trim().length < 2) {
+      setHits([]);
+      return;
+    }
+    setBusy(true);
+    try {
+      setHits(await searchPlaces(text.trim(), 5));
+    } catch {
+      setHits([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1 rounded-full border border-dashed border-brass/40 px-2 py-0.5 font-mono text-[10px] text-brass hover:bg-brass/10 transition-colors"
+      >
+        <Plus className="h-2.5 w-2.5" /> add stop
+      </button>
+    );
+  }
+  return (
+    <span className="relative inline-flex">
+      <span className="flex items-center gap-1 rounded-full border border-brass/50 bg-ink-2/60 px-2 py-0.5">
+        <Search className="h-2.5 w-2.5 text-paper-faint" />
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => void run(e.target.value)}
+          onBlur={() => setTimeout(() => setOpen(false), 200)}
+          placeholder="city…"
+          className="w-24 bg-transparent font-mono text-[11px] text-paper outline-none placeholder:text-paper-faint/60"
+        />
+        {busy && <Loader2 className="h-2.5 w-2.5 animate-spin text-paper-faint" />}
+      </span>
+      {hits.length > 0 && (
+        <ul className="absolute left-0 top-full z-50 mt-1 max-h-48 w-52 overflow-y-auto rounded-lg border border-rule-soft/70 bg-ink-2 shadow-2xl">
+          {hits.map((h, i) => (
+            <li key={`${h.name}-${h.lat}-${i}`}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onAdd(h);
+                  setOpen(false);
+                  setQ("");
+                  setHits([]);
+                }}
+                className="flex w-full items-baseline gap-1.5 px-2.5 py-1.5 text-left hover:bg-brass/10 transition-colors"
+              >
+                <span className="text-[11px] text-paper">{h.name}</span>
+                <span className="font-mono text-[9px] text-paper-faint">{[h.admin1, h.country].filter(Boolean).join(" · ")}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
   );
 }
