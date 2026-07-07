@@ -418,4 +418,15 @@ export default defineSchema({
     locked: v.optional(v.boolean()),
     createdAt: v.number(),
   }).index("by_trip", ["tripId"]),
+
+  // Aggregated stay-search cache (2026-07-07). Keyed by destination+dates+guests;
+  // `options` is the JSON-serialised deduped StayOption[]. Searches read this
+  // instantly (stale-while-revalidate); a cron refreshes active trips so the
+  // common case never waits on a live scrape.
+  stayCache: defineTable({
+    cacheKey: v.string(), // `${cityLower}|${checkIn}|${checkOut}|${adults}`
+    options: v.string(), // JSON StayOption[]
+    count: v.number(),
+    fetchedAt: v.number(),
+  }).index("by_key", ["cacheKey"]),
 });

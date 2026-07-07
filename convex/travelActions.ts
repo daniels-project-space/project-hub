@@ -23,8 +23,9 @@
 
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { stayCacheKey, CACHE_TTL_MS } from "./travelCache";
 
 // ─── config ──────────────────────────────────────────────────────────────────
 
@@ -812,11 +813,25 @@ export const ppHotels = action({
     checkOut: v.string(),
     adults: v.optional(v.number()),
     site: v.optional(v.string()),
+    force: v.optional(v.boolean()), // bypass the cache (explicit "refresh prices")
   },
   handler: async (
     ctx,
     args,
-  ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
+  ): Promise<{ available: boolean; reason?: string; options: StayOption[]; cached?: boolean }> => {
+    // Cache-first for the default aggregate search (skip for site-specific ones).
+    const cacheable = !args.site || args.site === "hotel-goat";
+    const cacheKey = stayCacheKey(args.city, args.checkIn, args.checkOut, args.adults ?? 1);
+    if (cacheable && !args.force) {
+      const hit = await ctx.runQuery(internal.travelCache._getStayCache, { cacheKey });
+      if (hit && Date.now() - hit.fetchedAt < CACHE_TTL_MS && hit.count > 0) {
+        try {
+          return { available: true, options: JSON.parse(hit.options) as StayOption[], cached: true };
+        } catch {
+          /* fall through to a live fetch */
+        }
+      }
+    }
     const url = await getSecret(ctx, SECRET.ppUrl);
     const token = await getSecret(ctx, SECRET.ppToken);
     if (!url || !token) return { available: false, reason: "pp-bridge keys absent", options: [] };
@@ -889,6 +904,14 @@ export const ppHotels = action({
           offers,
         };
       });
+      if (cacheable && options.length > 0) {
+        await ctx.runMutation(internal.travelCache._putStayCache, {
+          cacheKey,
+          options: JSON.stringify(options),
+          count: options.length,
+          now: Date.now(),
+        });
+      }
       return { available: true, options };
     } catch (e) {
       return { available: false, reason: e instanceof Error ? e.message : String(e), options: [] };

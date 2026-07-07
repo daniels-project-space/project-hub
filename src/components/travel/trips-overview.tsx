@@ -1411,6 +1411,22 @@ export function TripsOverview({
   const withinBudget = (opts: StayOption[]) =>
     perNightBudget ? opts.filter((o) => o.priceGbp == null || o.priceGbp <= perNightBudget) : opts;
 
+  // Reactive cache read — shows a prior search's stays the instant the trip is
+  // opened (no scrape), then the user can refresh for live prices.
+  const cacheCity = stayStyle === "villas" ? `${city} villas` : city;
+  const cachedStays = useQuery(
+    api.travelCache.getCachedStays,
+    city && trip?.startDate && (effCheckOut ?? trip?.endDate)
+      ? { city: cacheCity, checkIn: trip.startDate, checkOut: (effCheckOut ?? trip.endDate)!, adults: travelers }
+      : "skip",
+  );
+  useEffect(() => {
+    // Pre-fill from cache only when we have nothing yet (never clobber a live search).
+    if (results === null && cachedStays && Array.isArray(cachedStays.options) && cachedStays.options.length > 0) {
+      setResults(cachedStays.options as StayOption[]);
+    }
+  }, [cachedStays, results]);
+
   const carousels = useMemo(() => {
     if (!results) return [];
     const budgeted = perNightBudget
@@ -1475,7 +1491,7 @@ export function TripsOverview({
     return { points, arcs, focus: focusTrip ? { lat: focusTrip.destLat!, lng: focusTrip.destLng! } : null };
   }, [trips]);
 
-  const runSearch = async () => {
+  const runSearch = async (force = false) => {
     if (!city || !trip?.startDate || !trip?.endDate || searching) return;
     setSearching(true);
     setSearchErr(null);
@@ -1483,12 +1499,14 @@ export function TripsOverview({
     try {
       // FREE path first: the Printing Press bridge (hotel-goat) returns full
       // results with per-OTA prices + galleries; serpapi remains the fallback.
+      // Cache-first (force=true on an explicit "refresh prices").
       let res: { available: boolean; reason?: string; options: StayOption[] };
       const pp = await ppHotels({
         city: stayStyle === "villas" ? `${city} villas` : city,
         checkIn: trip.startDate,
         checkOut: (effCheckOut ?? trip.endDate)!,
         adults: travelers,
+        force,
       }).catch(() => ({ available: false as const, options: [] as StayOption[] }));
       if (pp.available && pp.options.length >= 8) {
         const capped = perNightBudget
@@ -1978,7 +1996,7 @@ export function TripsOverview({
             <button
               type="button"
               disabled={!canSearch}
-              onClick={() => void runSearch()}
+              onClick={() => void runSearch(results !== null)}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.18em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
             >
               <Search className="h-3 w-3" />{" "}
@@ -1988,6 +2006,21 @@ export function TripsOverview({
                   ? "load live prices across all providers"
                   : "no stays found — refresh prices"}
             </button>
+          )}
+          {results && results.length > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint">
+                {cachedStays && !searching ? "cached · instant" : "live"} · {results.length} stays
+              </p>
+              <button
+                type="button"
+                disabled={searching}
+                onClick={() => void runSearch(true)}
+                className="flex items-center gap-1 rounded-md border border-rule-soft/50 bg-ink-2/40 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors disabled:opacity-40"
+              >
+                {searching ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Search className="h-2.5 w-2.5" />} refresh prices
+              </button>
+            </div>
           )}
 
           {/* aggregation buffer: search + enrichment + live hunts all at once */}
