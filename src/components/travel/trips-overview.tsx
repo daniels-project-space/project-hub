@@ -1461,6 +1461,79 @@ export function TripsOverview({
     ];
   }, [results, showHostels, perNightBudget]);
 
+  // ── metasearch dedupe (2026-07-07): ONE ranked list, each hotel carrying
+  // every provider's price. Merges the Google/hotel-goat spine + Booking-live +
+  // provider hunts by normalised name, so a hotel shows Booking £x · Expedia £y
+  // · Trip £z on a single card instead of repeating across per-provider rails.
+  const mergedStays = useMemo(() => {
+    if (!results) return [] as StayOption[];
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 42);
+    const cheapestOf = (o: StayOption) => {
+      const ps = [o.priceGbp, ...(o.offers ?? []).map((x) => x.priceGbp)].filter(
+        (n): n is number => typeof n === "number",
+      );
+      return ps.length ? Math.min(...ps) : Infinity;
+    };
+    type Offer = { source: string; priceGbp?: number };
+    const mergeOffers = (a: Offer[], b: Offer[]) => {
+      const m = new Map<string, Offer>();
+      for (const o of [...a, ...b]) {
+        if (!o.source) continue;
+        const k = o.source.toLowerCase();
+        const ex = m.get(k);
+        if (!ex || (typeof o.priceGbp === "number" && (ex.priceGbp == null || o.priceGbp < ex.priceGbp))) m.set(k, o);
+      }
+      return [...m.values()];
+    };
+    const map = new Map<string, StayOption>();
+    for (const o of results) {
+      const k = norm(o.name);
+      const ex = map.get(k);
+      if (!ex) map.set(k, { ...o, offers: [...(o.offers ?? [])] });
+      else {
+        ex.offers = mergeOffers(ex.offers ?? [], o.offers ?? []);
+        if (!ex.gallery?.length && o.gallery?.length) ex.gallery = o.gallery;
+        if (ex.priceGbp == null && o.priceGbp != null) ex.priceGbp = o.priceGbp;
+      }
+    }
+    for (const b of bookingLive.options) {
+      const k = norm(b.name);
+      const off: Offer = { source: "Booking.com", priceGbp: b.priceGbp };
+      const ex = map.get(k);
+      if (ex) ex.offers = mergeOffers(ex.offers ?? [], [off]);
+      else map.set(k, { ...b, offers: [off] });
+    }
+    for (const [key, st] of Object.entries(providerDealState)) {
+      const pm = PROVIDER_MATCH.find((p) => p.key === key);
+      if (!pm) continue;
+      for (const d of (st.deals ?? []) as Array<{ name: string; priceGbpNight?: number; priceGbpTotal?: number; image?: string; images?: string[]; link?: string; note?: string }>) {
+        if (!d.name) continue;
+        const k = norm(d.name);
+        const off: Offer = { source: pm.label, priceGbp: d.priceGbpNight };
+        const ex = map.get(k);
+        if (ex) ex.offers = mergeOffers(ex.offers ?? [], [off]);
+        else
+          map.set(k, {
+            name: d.name,
+            provider: pm.label,
+            priceGbp: d.priceGbpNight,
+            totalGbp: d.priceGbpTotal,
+            image: d.image,
+            thumb: d.image,
+            gallery: d.images ?? (d.image ? [d.image] : []),
+            link: d.link,
+            amenities: d.note ? [d.note] : undefined,
+            offers: [off],
+          } as StayOption);
+      }
+    }
+    let list = [...map.values()];
+    list = showHostels ? list : list.filter((o) => !dormLikely(o));
+    if (perNightBudget) list = list.filter((o) => o.priceGbp == null || o.priceGbp <= perNightBudget);
+    list.sort((a, b) => cheapestOf(a) - cheapestOf(b));
+    return list;
+  }, [results, bookingLive, providerDealState, showHostels, perNightBudget]);
+
   // globe data: all trips with coords, chronological arcs, focus = current/next
   const globeData = useMemo(() => {
     const dated = trips
@@ -2109,77 +2182,27 @@ export function TripsOverview({
               }
             >
               <div className="space-y-3">
-          {(() => {
-            const bkOpts = withinBudget(bookingLive.options);
-            if (!bookingLive.loading && bkOpts.length === 0) return null;
-            return (
-            <div>
-              <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-                Booking.com · live
-                {bookingLive.loading ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <span className="text-paper-faint/50">· {bkOpts.length}</span>}
-                <span className="flex items-center gap-1 text-emerald-soft/70"><PiggyBank className="h-2.5 w-2.5" /> cashback</span>
-              </p>
-              {bkOpts.length > 0 && (
-                <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-                  {bkOpts.map((o, i) => (
-                    <StayCard
-                      key={`bk-${i}-${o.name}`}
-                      o={o}
-                      checkIn={trip.startDate}
-                      checkOut={effCheckOut}
-                      adults={travelers}
-                      locking={lockingName === o.name}
-                      locked={lockedNames.has(o.name)}
-                      expanded={offersFor?.name === o.name}
-                      onDetails={(opt) => void openOffers(opt)}
-                      onLock={(opt) => void lockIn(opt, "Booking.com", opt.priceGbp)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            );
-          })()}
-          {carousels.map((rail) => (
-            <div key={rail.key}>
-              <p className="mb-1.5 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
-                {rail.label}
-                {!("fallback" in rail && rail.fallback) && <span className="text-paper-faint/50">· {rail.items.length}</span>}
-                {rail.key !== "best" && (
-                  <span className="flex items-center gap-1 text-emerald-soft/70">
-                    <PiggyBank className="h-2.5 w-2.5" /> cashback
-                  </span>
-                )}
-              </p>
-              {"fallback" in rail && rail.fallback ? (
-                <ProviderDealRail
-                  railKey={rail.key}
-                  label={rail.label}
-                  state={providerDealState[rail.key]}
-                  onHunt={() => void huntProviderDeals(rail.key, rail.label, (rail as { domain?: string }).domain ?? "")}
-                  onOpenDeal={(d) => setDealOpen(d)}
+          {mergedStays.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              {mergedStays.map((o, i) => (
+                <StayCard
+                  key={`m-${i}-${o.name}`}
+                  o={o}
+                  checkIn={trip.startDate}
+                  checkOut={effCheckOut}
+                  adults={travelers}
+                  locking={lockingName === o.name}
+                  locked={lockedNames.has(o.name)}
+                  expanded={offersFor?.name === o.name}
+                  onDetails={(opt) => void openOffers(opt)}
+                  onLock={(opt) => void lockIn(opt, undefined, o.priceGbp)}
+                  fluid
                 />
-              ) : (
-              <div className="no-scrollbar flex snap-x gap-2.5 overflow-x-auto pb-1">
-                {rail.items.map(({ o, otaPrice }, i) => (
-                  <StayCard
-                    key={`${rail.key}-${i}-${o.name}`}
-                    o={o}
-                    otaPrice={otaPrice}
-                    checkIn={trip.startDate}
-                    checkOut={effCheckOut}
-                    adults={travelers}
-                    locking={lockingName === o.name}
-                    locked={lockedNames.has(o.name)}
-                    expanded={offersFor?.name === o.name}
-                    onDetails={(opt) => void openOffers(opt)}
-                    onLock={(opt) => void lockIn(opt, rail.key !== "best" ? rail.label : undefined, otaPrice)}
-                  />
-                ))}
-              </div>
-              )}
+              ))}
             </div>
-          ))}
+          ) : searching ? (
+            <p className="py-4 text-center text-[12px] text-paper-faint">Comparing prices across all providers…</p>
+          ) : null}
               </div>
             </Section>
           )}
