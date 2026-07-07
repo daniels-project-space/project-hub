@@ -1235,6 +1235,81 @@ function TransferTile({
   );
 }
 
+// Paste a booking-confirmation email → parse it → add the real booking to the
+// trip. The manual (and most private) end of the email-to-itinerary feature;
+// the same action also backs any future Gmail/forwarding automation.
+function AddFromEmail({
+  tripId,
+  onIngest,
+}: {
+  tripId: Id<"trips"> | null;
+  onIngest: (a: { tripId: Id<"trips">; text: string }) => Promise<{ ok: boolean; kind?: string; summary?: string; reason?: string }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const submit = async () => {
+    if (!tripId || !text.trim() || busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await onIngest({ tripId, text: text.trim() });
+      if (r.ok) {
+        setMsg({ ok: true, text: `added ${r.kind}: ${r.summary ?? ""}` });
+        setText("");
+      } else {
+        setMsg({ ok: false, text: r.reason ?? "couldn't read a booking from that email" });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-rule-soft/60 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint hover:border-brass/40 hover:text-brass transition-colors"
+      >
+        <Plus className="h-3 w-3" /> add a booking from its confirmation email
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-xl border border-brass/30 bg-ink-2/40 px-3 py-2.5">
+      <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-paper-faint">
+        paste a confirmation email — I'll add the booking to this trip
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        placeholder="Paste the full booking-confirmation email here…"
+        className="w-full resize-y rounded-lg border border-rule-soft/60 bg-ink-3/50 px-2.5 py-2 font-mono text-[11px] text-paper outline-none placeholder:text-paper-faint/50 focus:border-brass/50"
+      />
+      {msg && <p className={cn("font-mono text-[10px]", msg.ok ? "text-emerald-soft" : "text-rose-soft")}>{msg.text}</p>}
+      <div className="flex items-center justify-end gap-2">
+        <button type="button" onClick={() => { setOpen(false); setMsg(null); }} className="font-mono text-[9px] uppercase tracking-[0.16em] text-paper-faint hover:text-paper">
+          cancel
+        </button>
+        <button
+          type="button"
+          disabled={!text.trim() || busy}
+          onClick={() => void submit()}
+          className="flex items-center gap-1.5 rounded-lg border border-brass/40 bg-brass/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-brass hover:bg-brass/20 disabled:opacity-40 transition-colors"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />} add to trip
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── guided trip stages (2026-07-04 redesign): one focused task at a time ────
 const TRIP_STAGES = [
   { key: "setup", label: "Setup", icon: MapPin, hint: "where · when · who · budget" },
@@ -1351,6 +1426,7 @@ export function TripsOverview({
   const search = useAction(api.travelActions.searchStays);
   const ppHotels = useAction(api.travelActions.ppHotels);
   const resolveByName = useAction(api.travelActions.resolveStayByName);
+  const ingestBookingEmail = useAction(api.travelActions.ingestBookingEmail);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
   const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
 
@@ -2378,6 +2454,8 @@ export function TripsOverview({
           {/* ── STAGE: plan — bookings summary + day-by-day ─────────────────── */}
           {stage === "plan" && (
           <>
+          {/* ── add a real booking from its confirmation email ──────────────── */}
+          <AddFromEmail tripId={tripId} onIngest={ingestBookingEmail} />
           {/* ── bookings ───────────────────────────────────────────────────── */}
           <div>
             <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">

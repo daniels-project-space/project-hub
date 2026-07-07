@@ -1010,6 +1010,99 @@ export const apifyHotels = action({
   },
 });
 
+/**
+ * ingestBookingEmail (2026-07-07) — the email→itinerary engine. Takes the raw
+ * text of a booking-confirmation email and extracts the booking with DeepSeek,
+ * then writes it to the trip (a confirmed hotel is locked; a flight is added as
+ * a segment). This is method-agnostic: a manual paste, a forwarded email webhook
+ * or a Gmail poller all feed the same parser.
+ */
+export const ingestBookingEmail = action({
+  args: { tripId: v.id("trips"), text: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ ok: boolean; kind?: string; summary?: string; reason?: string }> => {
+    const llmKey = await getSecret(ctx, SECRET.openrouter);
+    if (!llmKey) return { ok: false, reason: "OPENROUTER_API_KEY absent" };
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${llmKey}` },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash",
+          provider: { only: ["deepseek", "alibaba"] },
+          max_tokens: 1200,
+          messages: [
+            {
+              role: "user",
+              content:
+                `Extract the booking from this confirmation email. STRICT JSON only:\n` +
+                `{"kind":"hotel"|"flight"|"other","name":"<hotel or airline>","provider":"<site e.g. Booking.com>",` +
+                `"confirmation":"<ref or null>","priceGbp":<total price in GBP as a number or null>,` +
+                `"checkIn":"<YYYY-MM-DD or null>","checkOut":"<YYYY-MM-DD or null>","city":"<city or null>",` +
+                `"from":"<origin airport/city or null>","to":"<dest airport/city or null>",` +
+                `"depart":"<YYYY-MM-DD HH:MM or null>","carrier":"<airline or null>","flightNo":"<code or null>",` +
+                `"link":"<manage-booking url or null>"}\n` +
+                `Convert any currency to GBP (IDR 20000/GBP, USD 0.75/GBP, EUR 0.85/GBP). If it is not a travel booking, kind="other". ASCII only.\n` +
+                `EMAIL:\n${args.text.slice(0, 6000)}`,
+            },
+          ],
+        }),
+      });
+      const j: any = await res.json();
+      const raw: string = j?.choices?.[0]?.message?.content ?? "";
+      const m = raw.match(/\{[\s\S]*\}/);
+      const b: any = JSON.parse(m ? m[0] : raw);
+      const priceGbp = finiteOrUndef(b?.priceGbp);
+      const str = (x: unknown) => (typeof x === "string" && x.trim() && x !== "null" ? x.trim() : undefined);
+
+      if (b?.kind === "hotel" && str(b?.name)) {
+        await ctx.runMutation(api.tripExtras.saveStay, {
+          tripId: args.tripId,
+          name: b.name,
+          provider: str(b?.provider),
+          priceGbp,
+          link: str(b?.link),
+          checkIn: str(b?.checkIn),
+          checkOut: str(b?.checkOut),
+          saved: true,
+          locked: true, // a confirmation email = a committed booking
+        });
+        return {
+          ok: true,
+          kind: "hotel",
+          summary: `${b.name}${str(b?.checkIn) ? ` · ${b.checkIn}${str(b?.checkOut) ? `–${b.checkOut}` : ""}` : ""}${priceGbp ? ` · £${priceGbp}` : ""}${str(b?.confirmation) ? ` · ${b.confirmation}` : ""}`,
+        };
+      }
+      if (b?.kind === "flight" && (str(b?.from) || str(b?.to))) {
+        await ctx.runMutation(api.tripExtras.addFlight, {
+          tripId: args.tripId,
+          segments: [
+            {
+              from: str(b?.from) ?? "?",
+              to: str(b?.to) ?? "?",
+              depart: str(b?.depart),
+              carrier: str(b?.carrier),
+              flightNo: str(b?.flightNo),
+            },
+          ],
+          priceGbp,
+          bookLink: str(b?.link),
+        });
+        return {
+          ok: true,
+          kind: "flight",
+          summary: `${str(b?.carrier) ?? "Flight"} ${str(b?.from) ?? ""}→${str(b?.to) ?? ""}${str(b?.depart) ? ` · ${b.depart}` : ""}${priceGbp ? ` · £${priceGbp}` : ""}`,
+        };
+      }
+      return { ok: false, kind: b?.kind ?? "other", reason: "no hotel/flight booking found in that email" };
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+  },
+});
+
 export const searchStays = action({
   args: {
     query: v.string(),
