@@ -10,6 +10,14 @@ const stroke = {
 
 const ICONS: Record<string, ReactNode> = {
   // Platform / agents
+  jarvis: (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 13a4 4 0 0 0 8 0" />
+      <circle cx="9" cy="10" r="0.6" />
+      <circle cx="15" cy="10" r="0.6" />
+    </svg>
+  ),
   "remote-work-hub": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <circle cx="12" cy="12" r="2.5" />

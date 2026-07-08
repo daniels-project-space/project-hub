@@ -58,6 +58,16 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
+    slug: "jarvis",
+    name: "JARVIS",
+    short: "JV",
+    description: "Personal ops assistant — voice, memory, background agents.",
+    status: "live",
+    vercelUrl: "https://jarvis-orcin-six.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/jarvis",
+    category: "ai",
+  },
+  {
     slug: "app-factory",
     name: "App Factory",
     short: "AF",
