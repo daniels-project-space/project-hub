@@ -116,7 +116,7 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="12" cy="14" r="3" />
     </svg>
   ),
-  "factory-2": (
+  "app-factory-v2": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M2 20h20V10l-6 3.5V10l-6 3.5V10l-6 3.5z" />
       <circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none" />

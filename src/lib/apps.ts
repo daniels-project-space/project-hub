@@ -201,7 +201,7 @@ export const APPS: AppEntry[] = [
   },
 
   {
-    slug: "factory-2",
+    slug: "app-factory-v2",
     name: "App Factory v2",
     short: "AF",
     description: "Autonomous idea→app builder — Mastra agents on Claude Max, Convex state machine, Trigger pipeline, Playwright+vision validation, forge lane for OSS conversions.",
