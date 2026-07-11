@@ -200,13 +200,14 @@ export const APPS: AppEntry[] = [
     category: "creator",
   },
 
-  // Idea / not yet started
   {
     slug: "factory-2",
-    name: "Factory 2.0 · Forge Lab",
-    short: "F2",
-    description: "Next-gen autonomous factory.",
-    status: "idea",
+    name: "App Factory v2",
+    short: "AF",
+    description: "Autonomous idea→app builder — Mastra agents on Claude Max, Convex state machine, Trigger pipeline, Playwright+vision validation, forge lane for OSS conversions.",
+    status: "live",
+    vercelUrl: "https://app-factory-v2.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/app-factory-v2",
     category: "experiment",
   },
 ];
