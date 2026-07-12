@@ -89,6 +89,20 @@ export function TopBar() {
 
         {/* Right cluster */}
         <div className="flex items-center gap-1.5">
+          <BarBtn
+            icon={
+              <span className="w-3.5 h-3.5 grid place-items-center">
+                <span
+                  className="w-2 h-2 rounded-full bg-emerald-400"
+                  style={{ boxShadow: "0 0 8px rgba(52,211,153,0.9)" }}
+                />
+              </span>
+            }
+            label="JARVIS"
+            onClick={() =>
+              (window as unknown as { JARVIS?: { toggle(): void } }).JARVIS?.toggle()
+            }
+          />
           <div className="relative">
             <BarBtn
               icon={<LayoutGrid className="w-3.5 h-3.5" />}
