@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Fraunces, Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import { Providers } from "./providers";
 import "./globals.css";
@@ -59,6 +60,8 @@ export default function RootLayout({
           <div className="absolute inset-0 bg-grain opacity-[0.06] mix-blend-overlay" />
         </div>
         <Providers>{children}</Providers>
+        {/* JARVIS everywhere: mini orb + composer, wake word enabled */}
+        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js" strategy="lazyOnload" />
       </body>
     </html>
   );
