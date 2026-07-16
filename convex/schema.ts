@@ -84,7 +84,9 @@ export default defineSchema({
     position: v.number(),
     createdAt: v.number(),
     ownerId: v.optional(v.string()),
-  }).index("by_position", ["position"]),
+  })
+    .index("by_position", ["position"])
+    .index("by_done_position", ["done", "position"]),
 
   // --- Wealth tables (schema only — convex/wealth.ts owned by a later agent) ---
 

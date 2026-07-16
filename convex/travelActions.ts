@@ -1114,11 +1114,15 @@ export const searchStays = action({
     maxPricePerNight: v.optional(v.number()),
     // Vacation rentals (apartments/homes from Vrbo/Expedia/etc.) instead of hotels.
     vacationRentals: v.optional(v.boolean()),
+    // Callers that need a fast first paint can request one page and enrich
+    // later. Existing consumers retain the broader five-page search.
+    maxPages: v.optional(v.number()),
+    pageToken: v.optional(v.string()),
   },
   handler: async (
     ctx,
     args,
-  ): Promise<{ available: boolean; reason?: string; options: StayOption[] }> => {
+  ): Promise<{ available: boolean; reason?: string; options: StayOption[]; nextPageToken?: string }> => {
     const key = await getSecret(ctx, SECRET.serpapi);
     if (!key) return { available: false, reason: "SERPAPI_KEY absent", options: [] };
     const adults = args.adults && args.adults > 0 ? Math.floor(args.adults) : 1;
@@ -1140,11 +1144,12 @@ export const searchStays = action({
     if (args.vacationRentals) baseParams.vacation_rentals = "true";
 
     try {
-      // Paginate (up to 3 pages) to collect ~50 properties per search.
+      // Paginate for breadth, or return a fast first page for progressive UIs.
       const collected: any[] = [];
-      let nextToken: string | undefined;
+      let nextToken: string | undefined = args.pageToken;
       let firstError: string | undefined;
-      for (let page = 0; page < 5 && collected.length < 100; page++) {
+      const maxPages = Math.max(1, Math.min(5, Math.floor(args.maxPages ?? 5)));
+      for (let page = 0; page < maxPages && collected.length < 100; page++) {
         const params = new URLSearchParams(baseParams);
         if (nextToken) params.set("next_page_token", nextToken);
         const res = await fetch(`${SERPAPI_URL}?${params.toString()}`);
@@ -1199,7 +1204,7 @@ export const searchStays = action({
             : undefined,
         };
       });
-      return { available: true, options };
+      return { available: true, options, nextPageToken: nextToken };
     } catch (e) {
       return {
         available: false,
