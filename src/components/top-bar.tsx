@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useAction, useQuery } from "convex/react";
-import { LayoutGrid, Settings, Bell, Search, KeyRound } from "lucide-react";
+import { useQuery } from "convex/react";
+import { LayoutGrid, Settings, Bell, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "../../convex/_generated/api";
 import { APPS, type AppEntry } from "@/lib/apps";
@@ -32,20 +32,6 @@ const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
 export function TopBar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
-  const [trustState, setTrustState] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const requestJarvisTrustLink = useAction(api.jarvisPairingActions.requestLink);
-
-  const sendJarvisTrustLink = async () => {
-    if (trustState === "sending") return;
-    setTrustState("sending");
-    try {
-      await requestJarvisTrustLink({});
-      setTrustState("sent");
-    } catch {
-      setTrustState("error");
-    }
-    window.setTimeout(() => setTrustState("idle"), 6_000);
-  };
 
   return (
     <header className="border-b border-rule-soft/60 sticky top-0 z-20 backdrop-blur-xl bg-ink/75">
@@ -103,38 +89,6 @@ export function TopBar() {
 
         {/* Right cluster */}
         <div className="flex items-center gap-1.5">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => { void sendJarvisTrustLink(); }}
-              disabled={trustState === "sending"}
-              aria-label="Generate Jarvis browser trust link"
-              title="Send a one-use Jarvis trust link to your Telegram"
-              className={cn(
-                "flex h-8 items-center gap-1.5 rounded-md border px-2.5 transition-colors disabled:cursor-wait",
-                trustState === "sent"
-                  ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
-                  : trustState === "error"
-                    ? "border-rose-400/40 bg-rose-400/10 text-rose-300"
-                    : "border-brass/35 bg-brass/[0.07] text-brass hover:bg-brass/[0.13]",
-              )}
-            >
-              <KeyRound className="h-3.5 w-3.5" />
-              <span className="hidden font-mono text-[10px] uppercase tracking-[0.17em] lg:inline">
-                {trustState === "sending" ? "Sending" : trustState === "sent" ? "Sent" : "Jarvis link"}
-              </span>
-            </button>
-            {(trustState === "sent" || trustState === "error") && (
-              <div
-                role="status"
-                className="absolute right-0 top-[calc(100%+7px)] z-50 w-56 rounded-md border border-rule-soft/70 bg-ink-2/95 px-3 py-2 font-mono text-[10px] leading-4 text-paper-dim shadow-2xl backdrop-blur-xl"
-              >
-                {trustState === "sent"
-                  ? "One-use link sent securely to Telegram."
-                  : "Could not send the link. Try again shortly."}
-              </div>
-            )}
-          </div>
           <BarBtn
             icon={
               <span className="w-3.5 h-3.5 grid place-items-center">
