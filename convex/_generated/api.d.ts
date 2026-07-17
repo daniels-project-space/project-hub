@@ -27,6 +27,7 @@ import type * as travelActions from "../travelActions.js";
 import type * as travelCache from "../travelCache.js";
 import type * as tripExtras from "../tripExtras.js";
 import type * as trips from "../trips.js";
+import type * as vaultAuth from "../vaultAuth.js";
 import type * as wealth from "../wealth.js";
 import type * as wealthActions from "../wealthActions.js";
 import type * as widgets from "../widgets.js";
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   travelCache: typeof travelCache;
   tripExtras: typeof tripExtras;
   trips: typeof trips;
+  vaultAuth: typeof vaultAuth;
   wealth: typeof wealth;
   wealthActions: typeof wealthActions;
   widgets: typeof widgets;

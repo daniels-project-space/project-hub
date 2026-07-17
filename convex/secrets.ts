@@ -1,13 +1,15 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { requireVaultRead, requireVaultWrite } from "./vaultAuth";
 
 // CRITICAL: secrets values are written here. None of these queries should ever
 // be exposed to anonymous clients in production. Server-only callers should
 // use the action layer with auth on top once the hub has user accounts.
 
 export const listByService = query({
-  args: { service: v.string() },
-  handler: async (ctx, { service }) => {
+  args: { service: v.string(), vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { service, vaultToken }) => {
+    await requireVaultRead(ctx, { vaultToken }, service);
     return await ctx.db
       .query("secrets")
       .withIndex("by_service", (q) => q.eq("service", service))
@@ -16,8 +18,9 @@ export const listByService = query({
 });
 
 export const getOne = query({
-  args: { service: v.string(), keyName: v.string() },
-  handler: async (ctx, { service, keyName }) => {
+  args: { service: v.string(), keyName: v.string(), vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { service, keyName, vaultToken }) => {
+    await requireVaultRead(ctx, { vaultToken }, service);
     return await ctx.db
       .query("secrets")
       .withIndex("by_service_and_key", (q) =>
@@ -28,8 +31,9 @@ export const getOne = query({
 });
 
 export const summary = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { vaultToken }) => {
+    await requireVaultRead(ctx, { vaultToken }, "*");
     const all = await ctx.db.query("secrets").collect();
     const byService: Record<string, number> = {};
     for (const s of all) {
@@ -41,6 +45,7 @@ export const summary = query({
 
 export const bulkInsert = mutation({
   args: {
+    vaultToken: v.optional(v.string()),
     items: v.array(
       v.object({
         service: v.string(),
@@ -52,7 +57,8 @@ export const bulkInsert = mutation({
       }),
     ),
   },
-  handler: async (ctx, { items }) => {
+  handler: async (ctx, { items, vaultToken }) => {
+    await requireVaultWrite(ctx, { vaultToken }, [...new Set(items.map((item) => item.service))]);
     let inserted = 0;
     for (const item of items) {
       await ctx.db.insert("secrets", item);
@@ -63,16 +69,20 @@ export const bulkInsert = mutation({
 });
 
 export const deleteOne = mutation({
-  args: { id: v.id("secrets") },
-  handler: async (ctx, { id }) => {
+  args: { id: v.id("secrets"), vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { id, vaultToken }) => {
+    const row = await ctx.db.get(id);
+    if (!row) return { deleted: null };
+    await requireVaultWrite(ctx, { vaultToken }, [row.service]);
     await ctx.db.delete(id);
     return { deleted: id };
   },
 });
 
 export const truncate = mutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { vaultToken }) => {
+    await requireVaultWrite(ctx, { vaultToken }, ["*"]);
     const all = await ctx.db.query("secrets").collect();
     for (const row of all) await ctx.db.delete(row._id);
     return { deleted: all.length };

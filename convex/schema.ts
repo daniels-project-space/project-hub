@@ -46,6 +46,21 @@ export default defineSchema({
     .index("by_service", ["service"])
     .index("by_service_and_key", ["service", "keyName"]),
 
+  // Server-to-server vault clients. Each application receives an independent
+  // high-entropy bearer with an explicit service allowlist, limiting the blast
+  // radius of a compromised runtime. Tokens never ship to browser bundles.
+  vaultClients: defineTable({
+    name: v.string(),
+    token: v.string(),
+    services: v.array(v.string()),
+    canWrite: v.boolean(),
+    active: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_token", ["token"]),
+
   // --- Pass 1 widget data tables ---
 
   // Sticky notes (W3). Color-coded, pinnable, drag-reorderable.

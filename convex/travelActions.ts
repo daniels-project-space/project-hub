@@ -13,7 +13,7 @@
  * SECRET DISCIPLINE
  * -----------------
  * API keys live in the Convex `secrets` table and are read ONLY here, server-side,
- * via the public `api.secrets.getOne` query (returns the row or null; we read
+ * via the authenticated `api.secrets.getOne` query (returns the row or null; we read
  * `.value`). They never reach the client and are never echoed in return values.
  *
  * This module is intentionally NOT "use node": it needs no node crypto, so it
@@ -103,12 +103,14 @@ function mapsSearchUrl(query: string): string {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-/** Read a secret value (or null) from the vault via the public getOne query. */
+/** Read a secret value (or null) from the server-only vault query. */
 async function getSecret(
   ctx: any,
   pair: { service: string; keyName: string },
 ): Promise<string | null> {
-  const row = await ctx.runQuery(api.secrets.getOne, pair);
+  const vaultToken = process.env.VAULT_ACCESS_TOKEN;
+  if (!vaultToken) throw new Error("VAULT_ACCESS_TOKEN is not configured");
+  const row = await ctx.runQuery(api.secrets.getOne, { ...pair, vaultToken });
   const value = row?.value;
   return typeof value === "string" && value.length > 0 ? value : null;
 }
