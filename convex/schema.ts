@@ -23,6 +23,16 @@ export default defineSchema({
     value: v.any(),
   }).index("by_key", ["key"]),
 
+  // Audit/rate-limit records for the public Project Hub recovery button. The
+  // one-use capability itself is never stored here or returned to the browser;
+  // it is delivered only to Daniel's private Telegram chat.
+  jarvisPairingRequests: defineTable({
+    status: v.string(), // requested | delivered | failed
+    createdAt: v.number(),
+    completedAt: v.optional(v.number()),
+    errorCode: v.optional(v.string()),
+  }).index("by_created", ["createdAt"]),
+
   // Projects (placeholder list — eventually populated as apps migrate to Vercel).
   projects: defineTable({
     slug: v.string(),
