@@ -72,7 +72,13 @@ export const deleteOne = mutation({
   args: { id: v.id("secrets"), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { id, vaultToken }) => {
     const row = await ctx.db.get(id);
-    if (!row) return { deleted: null };
+    // Do not let an unauthenticated caller use the mutation as an ID-existence
+    // oracle. Scoped writers can delete records in their own services; only a
+    // root/all-services writer may confirm that an arbitrary ID is absent.
+    if (!row) {
+      await requireVaultWrite(ctx, { vaultToken }, ["*"]);
+      return { deleted: null };
+    }
     await requireVaultWrite(ctx, { vaultToken }, [row.service]);
     await ctx.db.delete(id);
     return { deleted: id };
