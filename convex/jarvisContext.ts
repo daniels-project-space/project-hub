@@ -1,4 +1,6 @@
 import { query } from "./_generated/server";
+import { v } from "convex/values";
+import { requireVaultRead } from "./vaultAuth";
 
 // A deliberately small cross-app read model for JARVIS. The previous caller
 // fetched every todo/event and ran the full wealth aggregation on every chat
@@ -6,8 +8,9 @@ import { query } from "./_generated/server";
 // remains the owner of the data without making conversational latency or reads
 // grow with the lifetime of the account.
 export const snapshot = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { vaultToken }) => {
+    await requireVaultRead(ctx, { vaultToken }, "jarvis-context");
     const now = Date.now();
     const [todos, events, liveWealth] = await Promise.all([
       ctx.db
