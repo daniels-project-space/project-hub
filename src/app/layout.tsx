@@ -61,7 +61,10 @@ export default function RootLayout({
         </div>
         <Providers>{children}</Providers>
         {/* JARVIS everywhere: canonical particle orb, captions, voice, and wake word */}
-        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=hub-orb-voice-20260718-1" strategy="lazyOnload" />
+        <Script
+          src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=hub-orb-voice-20260718-2"
+          strategy="beforeInteractive"
+        />
       </body>
     </html>
   );
