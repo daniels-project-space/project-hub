@@ -60,8 +60,8 @@ export default function RootLayout({
           <div className="absolute inset-0 bg-grain opacity-[0.06] mix-blend-overlay" />
         </div>
         <Providers>{children}</Providers>
-        {/* JARVIS everywhere: mini orb + composer, wake word enabled */}
-        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=canonical-2" strategy="lazyOnload" />
+        {/* JARVIS everywhere: canonical particle orb, captions, voice, and wake word */}
+        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=hub-orb-voice-20260718-1" strategy="lazyOnload" />
       </body>
     </html>
   );
