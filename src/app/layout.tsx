@@ -63,7 +63,7 @@ export default function RootLayout({
         {/* JARVIS everywhere: canonical particle orb, captions, voice, and wake word */}
         <Script
           src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=hub-orb-voice-20260718-2"
-          strategy="beforeInteractive"
+          strategy="afterInteractive"
         />
       </body>
     </html>
