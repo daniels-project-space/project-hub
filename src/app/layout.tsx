@@ -61,7 +61,7 @@ export default function RootLayout({
         </div>
         <Providers>{children}</Providers>
         {/* JARVIS everywhere: mini orb + composer, wake word enabled */}
-        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js" strategy="lazyOnload" />
+        <Script src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=canonical-2" strategy="lazyOnload" />
       </body>
     </html>
   );
