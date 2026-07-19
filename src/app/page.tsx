@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Pencil, Check, MousePointer2 } from "lucide-react";
+import { Pencil, Check } from "lucide-react";
 import { TopBar } from "@/components/top-bar";
 import { AppsRow } from "@/components/apps-row";
 import { SectionLabel } from "@/components/section-label";
@@ -9,13 +9,6 @@ import { CommandCenter } from "@/components/command-center";
 
 export default function HomePage() {
   const [editMode, setEditMode] = useState(false);
-
-  const startJarvisEdit = () => {
-    const jarvis = (window as unknown as {
-      JARVIS?: { edit(instruction?: string): boolean };
-    }).JARVIS;
-    jarvis?.edit("Help me edit the selected element on Project Hub.");
-  };
 
   return (
     <main
@@ -45,17 +38,6 @@ export default function HomePage() {
             }
             action={
               <span className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={startJarvisEdit}
-                  data-jarvis-id="control:jarvis-edit"
-                  data-jarvis-label="Select a page element for Jarvis"
-                  data-jarvis-source="src/app/page.tsx"
-                  className="flex items-center gap-1.5 rounded-md border border-cyan-300/25 bg-cyan-300/[0.04] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-200/70 transition-colors hover:border-cyan-300/50 hover:bg-cyan-300/[0.09] hover:text-cyan-100"
-                >
-                  <MousePointer2 className="h-3 w-3" />
-                  Jarvis edit
-                </button>
                 <button
                   type="button"
                   onClick={() => setEditMode((v) => !v)}
