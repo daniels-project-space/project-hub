@@ -20,11 +20,12 @@ import { CSS } from "@dnd-kit/utilities";
 import { Plus, X, Minus } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { WidgetRenderer, WIDGET_TYPES } from "./widget-renderer";
+import { WidgetRenderer, WIDGET_SOURCES, WIDGET_TYPES } from "./widget-renderer";
 import { DragHandle } from "@/components/ui/drag-handle";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Sheet } from "@/components/ui/sheet";
 import { WIDGET_META } from "./widget-meta";
+import { resolveJarvisWidgetTarget } from "@/lib/jarvis-host";
 
 type WidgetRow = {
   _id: Id<"widgets">;
@@ -87,7 +88,10 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
   // Local order mirror so drag feels instant; resynced when server data changes.
   const [order, setOrder] = useState<Id<"widgets">[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [hostVisible, setHostVisible] = useState<Set<string>>(() => new Set());
   useEffect(() => {
+    // Convex is the external layout source; resync the optimistic drag mirror.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (widgets) setOrder(widgets.map((w) => w._id));
   }, [widgets]);
 
@@ -104,6 +108,65 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
     if (missing.length === 0) return;
     void reconcile({ types: WIDGET_TYPES });
   }, [widgets, reconcile]);
+
+  // Jarvis can reveal a hidden widget from the host page. A local visibility
+  // bridge makes the tile appear in the same render frame; Convex then makes
+  // that choice durable across refreshes and devices.
+  useEffect(() => {
+    const onHostAction = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        action?: { action?: string; target?: string };
+        handled?: boolean;
+        result?: Promise<{ ok: boolean; detail: string }> | { ok: boolean; detail: string };
+      }>).detail;
+      const action = detail?.action;
+      if (!detail || action?.action !== "show_widget") return;
+      const type = resolveJarvisWidgetTarget(action.target ?? "");
+      if (!type || !WIDGET_TYPES.includes(type)) return;
+
+      detail.handled = true;
+      detail.result = (async () => {
+        if (!widgets) return { ok: false, detail: "The widget layout is still loading." };
+        setHostVisible((current) => new Set(current).add(type));
+        const existing = widgets.find((widget) => widget.type === type);
+        try {
+          if (existing && !existing.enabled) {
+            await setEnabled({ id: existing._id, enabled: true });
+          } else if (!existing) {
+            const position = widgets.reduce((max, widget) => Math.max(max, widget.position), -1) + 1;
+            await upsert({ type, position, enabled: true, config: {} });
+          }
+        } catch {
+          setHostVisible((current) => {
+            const next = new Set(current);
+            next.delete(type);
+            return next;
+          });
+          return { ok: false, detail: "I could not restore that widget." };
+        }
+
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        const element = document.getElementById(`w-${type}`);
+        if (!element) return { ok: false, detail: "The widget was restored but did not render." };
+        element.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        if (typeof element.animate === "function") {
+          element.animate(
+            [
+              { outlineColor: "rgba(103,232,249,0)", boxShadow: "0 0 0 0 rgba(34,211,238,0)" },
+              { outlineColor: "rgba(103,232,249,1)", boxShadow: "0 0 0 8px rgba(34,211,238,.13)" },
+              { outlineColor: "rgba(103,232,249,0)", boxShadow: "0 0 0 0 rgba(34,211,238,0)" },
+            ],
+            { duration: 1800, easing: "ease-out" },
+          );
+        }
+        return { ok: true, detail: `Showing ${WIDGET_META[type]?.label ?? type}.` };
+      })();
+    };
+    window.addEventListener("jarvis:host-action", onHostAction);
+    return () => window.removeEventListener("jarvis:host-action", onHostAction);
+  }, [setEnabled, upsert, widgets]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -140,7 +203,7 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
   const ordered = order
     .map((id) => byId.get(id))
     .filter((w): w is WidgetRow => Boolean(w));
-  const enabled = ordered.filter((w) => w.enabled);
+  const enabled = ordered.filter((w) => w.enabled || hostVisible.has(w.type));
 
   // Registry types not yet in the saved layout. The reconcile effect above is
   // persisting them; meanwhile we render them as VISIBLE synthetic tiles so a
@@ -197,13 +260,26 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
         onDragEnd={handleDragEnd}
       >
         <SortableContext items={order} strategy={rectSortingStrategy}>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div
+            className="grid grid-cols-1 md:grid-cols-4 gap-4"
+            data-jarvis-id="region:widget-grid"
+            data-jarvis-label="Dashboard widgets"
+            data-jarvis-source="src/components/dashboard-grid.tsx"
+            data-jarvis-editable
+          >
             {enabled.map((w) => (
               <SortableWidget
                 key={w._id}
                 row={w}
                 editMode={editMode}
-                onRemove={() => void setEnabled({ id: w._id, enabled: false })}
+                onRemove={() => {
+                  setHostVisible((current) => {
+                    const next = new Set(current);
+                    next.delete(w.type);
+                    return next;
+                  });
+                  void setEnabled({ id: w._id, enabled: false });
+                }}
                 onResize={(dw, dh) => onResize(w, dw, dh)}
               />
             ))}
@@ -215,6 +291,10 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
                 <div
                   key={`pending-${type}`}
                   id={`w-${type}`}
+                  data-jarvis-id={`widget:${type}`}
+                  data-jarvis-label={`${WIDGET_META[type]?.label ?? type} widget`}
+                  data-jarvis-source={WIDGET_SOURCES[type] ?? "src/components/widget-renderer.tsx"}
+                  data-jarvis-editable
                   className={`relative col-span-1 scroll-mt-20 ${COL[s.w]} ${MINH[s.h]}`}
                 >
                   <WidgetRenderer type={type} />
@@ -287,6 +367,10 @@ function SortableWidget({
     <div
       ref={setNodeRef}
       id={`w-${type}`}
+      data-jarvis-id={`widget:${type}`}
+      data-jarvis-label={`${WIDGET_META[type]?.label ?? type} widget`}
+      data-jarvis-source={WIDGET_SOURCES[type] ?? "src/components/widget-renderer.tsx"}
+      data-jarvis-editable
       style={style}
       className={`relative col-span-1 scroll-mt-20 ${COL[size.w]} ${MINH[size.h]} ${
         editMode ? "ring-1 ring-brass/30 rounded-lg" : ""

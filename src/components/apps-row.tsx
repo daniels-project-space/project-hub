@@ -33,7 +33,14 @@ export function AppsRow({ editMode = false }: { editMode?: boolean }) {
     );
 
   return (
-    <section id="apps-carousel" className="mb-12 scroll-mt-20">
+    <section
+      id="apps-carousel"
+      className="mb-12 scroll-mt-20"
+      data-jarvis-id="region:apps"
+      data-jarvis-label="Apps and workspaces"
+      data-jarvis-source="src/components/apps-row.tsx"
+      data-jarvis-editable
+    >
       <SectionLabel
         title="Apps · Workspaces"
         hint={

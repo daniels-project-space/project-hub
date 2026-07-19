@@ -62,7 +62,7 @@ export default function RootLayout({
         <Providers>{children}</Providers>
         {/* JARVIS everywhere: canonical particle orb, captions, voice, and wake word */}
         <Script
-          src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=hub-host-wake-edge-tts-20260718-3"
+          src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=host-actions-visual-edit-20260719-1"
           strategy="afterInteractive"
         />
       </body>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useEffect,
   useMemo,
@@ -34,10 +35,16 @@ export function TopBar() {
   const [appsOpen, setAppsOpen] = useState(false);
 
   return (
-    <header className="border-b border-rule-soft/60 sticky top-0 z-20 backdrop-blur-xl bg-ink/75">
+    <header
+      className="border-b border-rule-soft/60 sticky top-0 z-20 backdrop-blur-xl bg-ink/75"
+      data-jarvis-id="navigation:top-bar"
+      data-jarvis-label="Project Hub top navigation"
+      data-jarvis-source="src/components/top-bar.tsx"
+      data-jarvis-editable
+    >
       <div className="max-w-[1440px] mx-auto px-6 lg:px-10 h-14 flex items-center gap-4">
         {/* Brand */}
-        <a href="/" className="flex items-center gap-2 shrink-0">
+        <Link href="/" className="flex items-center gap-2 shrink-0">
           <span
             className="w-6 h-6 rounded-md grid place-items-center text-brass"
             style={{
@@ -63,7 +70,7 @@ export function TopBar() {
           <span className="font-display text-[15px] tracking-tight text-paper">
             Project Hub
           </span>
-        </a>
+        </Link>
 
         {/* Search */}
         <SiteSearch />
@@ -99,6 +106,7 @@ export function TopBar() {
               </span>
             }
             label="JARVIS"
+            jarvisId="control:jarvis"
             onClick={() =>
               (window as unknown as { JARVIS?: { toggle(): void } }).JARVIS?.toggle()
             }
@@ -107,6 +115,7 @@ export function TopBar() {
             <BarBtn
               icon={<LayoutGrid className="w-3.5 h-3.5" />}
               label="Apps"
+              jarvisId="control:apps"
               onClick={() => setAppsOpen((v) => !v)}
               active={appsOpen}
             />
@@ -114,6 +123,8 @@ export function TopBar() {
           </div>
           <BarIconBtn
             aria-label="Settings"
+            data-jarvis-id="control:settings"
+            data-jarvis-source="src/components/top-bar.tsx"
             onClick={() => setSettingsOpen(true)}
           >
             <Settings className="w-4 h-4" />
@@ -399,17 +410,23 @@ function BarBtn({
   label,
   onClick,
   active,
+  jarvisId,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick?: () => void;
   active?: boolean;
+  jarvisId?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-label={label}
       aria-expanded={active}
+      data-jarvis-id={jarvisId}
+      data-jarvis-label={label}
+      data-jarvis-source="src/components/top-bar.tsx"
       className={cn(
         "hidden sm:flex items-center gap-1.5 h-8 px-2.5 rounded-md border transition-colors",
         active

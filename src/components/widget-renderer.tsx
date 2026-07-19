@@ -44,6 +44,23 @@ const REGISTRY: Record<string, ComponentType> = {
 // REGISTRY above automatically extends this — no second list to keep in sync.
 export const WIDGET_TYPES: string[] = Object.keys(REGISTRY);
 
+// Exact implementation locations sent with visual-edit selections. Keeping
+// this beside the renderer registry makes the page-to-code link auditable.
+export const WIDGET_SOURCES: Record<string, string> = {
+  notes: "src/components/widgets/notes-widget.tsx",
+  calendar: "src/components/widgets/calendar-widget.tsx",
+  todo: "src/components/widgets/todo-widget.tsx",
+  wealth: "src/components/widgets/wealth-widget.tsx",
+  projects: "src/components/widgets/projects-widget.tsx",
+  expenses: "src/components/widgets/expenses-widget.tsx",
+  hunts: "src/components/widgets/hunts-widget.tsx",
+  idea: "src/components/widgets/idea-widget.tsx",
+  channelIdea: "src/components/widgets/channel-idea-widget.tsx",
+  remoteWorkHub: "src/components/widgets/remote-work-hub-widget.tsx",
+  travel: "src/components/widgets/travel-widget.tsx",
+  music: "src/components/widgets/music-widget.tsx",
+};
+
 // Membership test used by the reconcile path to know what's renderable.
 export function isKnownWidgetType(type: string): boolean {
   return Object.prototype.hasOwnProperty.call(REGISTRY, type);

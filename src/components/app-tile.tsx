@@ -47,6 +47,10 @@ export function AppTile({ app }: { app: AppEntry }) {
         target="_blank"
         rel="noreferrer"
         aria-label={`Open ${app.name}`}
+        data-jarvis-id={`app:${app.slug}`}
+        data-jarvis-label={app.name}
+        data-jarvis-source="src/components/app-tile.tsx"
+        data-jarvis-editable
         className="group focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/40 rounded-xl"
       >
         {inner}
@@ -54,7 +58,14 @@ export function AppTile({ app }: { app: AppEntry }) {
     );
   }
   return (
-    <div className="group" aria-label={`${app.name} (not yet deployed)`}>
+    <div
+      className="group"
+      aria-label={`${app.name} (not yet deployed)`}
+      data-jarvis-id={`app:${app.slug}`}
+      data-jarvis-label={app.name}
+      data-jarvis-source="src/components/app-tile.tsx"
+      data-jarvis-editable
+    >
       {inner}
     </div>
   );
