@@ -21,6 +21,7 @@ import {
   mutation,
   query,
 } from "./_generated/server";
+import { assertAllowedSecretReference } from "./vaultPolicy";
 
 const GBP = "GBP";
 
@@ -42,12 +43,14 @@ function assertFinite(name: string, value: number | undefined): void {
 export const readSecret = internalQuery({
   args: { service: v.string(), keyName: v.string() },
   handler: async (ctx, { service, keyName }) => {
+    assertAllowedSecretReference({ service, keyName });
     const row = await ctx.db
       .query("secrets")
       .withIndex("by_service_and_key", (q) =>
         q.eq("service", service).eq("keyName", keyName),
       )
       .first();
+    if (row) assertAllowedSecretReference(row);
     return row?.value ?? null;
   },
 });
@@ -1349,6 +1352,11 @@ export const importSnapshots = mutation({
 export const _seedBridgeToken = internalMutation({
   args: { token: v.string() },
   handler: async (ctx, { token }) => {
+    assertAllowedSecretReference({
+      service: "convex",
+      keyName: "BINANCE_BRIDGE_TOKEN",
+      aliases: [],
+    });
     const existing = await ctx.db
       .query("secrets")
       .withIndex("by_service_and_key", (q) =>

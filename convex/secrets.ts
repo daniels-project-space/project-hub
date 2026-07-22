@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { requireVaultRead, requireVaultWrite } from "./vaultAuth";
+import { requireVaultDelete, requireVaultRead, requireVaultWrite } from "./vaultAuth";
+import { assertAllowedSecretReference } from "./vaultPolicy";
 
 // CRITICAL: secrets values are written here. None of these queries should ever
 // be exposed to anonymous clients in production. Server-only callers should
@@ -9,24 +10,32 @@ import { requireVaultRead, requireVaultWrite } from "./vaultAuth";
 export const listByService = query({
   args: { service: v.string(), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { service, vaultToken }) => {
+    assertAllowedSecretReference({ service });
     await requireVaultRead(ctx, { vaultToken }, service);
-    return await ctx.db
+    const rows = await ctx.db
       .query("secrets")
       .withIndex("by_service", (q) => q.eq("service", service))
       .collect();
+    // Defensive handling for pre-policy rows: an otherwise harmless service
+    // must not become a route to a forbidden key or alias.
+    for (const row of rows) assertAllowedSecretReference(row);
+    return rows;
   },
 });
 
 export const getOne = query({
   args: { service: v.string(), keyName: v.string(), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { service, keyName, vaultToken }) => {
+    assertAllowedSecretReference({ service, keyName });
     await requireVaultRead(ctx, { vaultToken }, service);
-    return await ctx.db
+    const row = await ctx.db
       .query("secrets")
       .withIndex("by_service_and_key", (q) =>
         q.eq("service", service).eq("keyName", keyName),
       )
       .first();
+    if (row) assertAllowedSecretReference(row);
+    return row;
   },
 });
 
@@ -58,6 +67,11 @@ export const bulkInsert = mutation({
     ),
   },
   handler: async (ctx, { items, vaultToken }) => {
+    // Validate the whole batch before authentication or the first insert: a
+    // mixed request must never partially persist its otherwise-valid items.
+    for (const item of items) {
+      assertAllowedSecretReference(item);
+    }
     await requireVaultWrite(ctx, { vaultToken }, [...new Set(items.map((item) => item.service))]);
     let inserted = 0;
     for (const item of items) {
@@ -79,7 +93,7 @@ export const deleteOne = mutation({
       await requireVaultWrite(ctx, { vaultToken }, ["*"]);
       return { deleted: null };
     }
-    await requireVaultWrite(ctx, { vaultToken }, [row.service]);
+    await requireVaultDelete(ctx, { vaultToken }, row.service);
     await ctx.db.delete(id);
     return { deleted: id };
   },

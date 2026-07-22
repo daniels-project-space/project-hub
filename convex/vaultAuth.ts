@@ -1,5 +1,10 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  assertAllowedClientServicePolicy,
+  assertAllowedVaultService,
+  isOpenAiNamespace,
+} from "./vaultPolicy";
 
 type VaultCredentials = { vaultToken?: string };
 
@@ -24,10 +29,9 @@ function requireRoot(rootToken: string | undefined): void {
 }
 
 function serviceAllowed(services: string[], service: string): boolean {
-  return services.some((policy) => {
-    if (policy === "*" || policy === service) return true;
-    return policy.endsWith("*") && service.startsWith(policy.slice(0, -1));
-  });
+  // Existing wildcard rows are deliberately inert as well as impossible to
+  // create going forward. Only a concrete exact service is a capability.
+  return services.includes(service) && !service.includes("*");
 }
 
 async function findClient(ctx: any, vaultToken: string | undefined) {
@@ -43,6 +47,7 @@ export async function requireVaultRead(
   credentials: VaultCredentials,
   service: string,
 ): Promise<void> {
+  if (service !== "*") assertAllowedVaultService(service);
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
   const client = await findClient(ctx, credentials.vaultToken);
   if (client?.active && serviceAllowed(client.services, service)) return;
@@ -57,6 +62,7 @@ export async function requireVaultWrite(
   credentials: VaultCredentials,
   services: string[],
 ): Promise<void> {
+  for (const service of services) assertAllowedVaultService(service);
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
   const client = await findClient(ctx, credentials.vaultToken);
   if (client?.active && client.canWrite && services.every((service) => serviceAllowed(client.services, service))) {
@@ -64,6 +70,22 @@ export async function requireVaultWrite(
   }
   if (process.env.VAULT_ENFORCE_AUTH !== "true") return;
   throw new Error("Vault authentication required");
+}
+
+/**
+ * A root-only, value-blind cleanup path for pre-policy forbidden rows. Scoped
+ * clients never receive an OpenAI capability, including one that can delete.
+ */
+export async function requireVaultDelete(
+  ctx: any,
+  credentials: VaultCredentials,
+  service: string,
+): Promise<void> {
+  if (isOpenAiNamespace(service)) {
+    requireRoot(credentials.vaultToken);
+    return;
+  }
+  await requireVaultWrite(ctx, credentials, [service]);
 }
 
 export const upsertClient = mutation({
@@ -81,6 +103,7 @@ export const upsertClient = mutation({
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name)) throw new Error("Invalid vault client name");
     if (args.token.length < 32 || args.token.length > 256) throw new Error("Invalid vault client token");
     if (services.length === 0 || services.length > 100) throw new Error("Invalid vault service policy");
+    for (const service of services) assertAllowedClientServicePolicy(service);
     const now = Date.now();
     const existing = await ctx.db
       .query("vaultClients")

@@ -39,7 +39,7 @@ describe("JARVIS cross-app context", () => {
       rootToken: ROOT_TOKEN,
       name: "other-app",
       token: OTHER_TOKEN,
-      services: ["openai"],
+      services: ["other-app-service"],
     });
     await c.mutation(api.todos.add, { text: "private work item" });
 
