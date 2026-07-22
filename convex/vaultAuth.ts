@@ -1,4 +1,6 @@
 import { mutation, query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 
 type VaultCredentials = { vaultToken?: string };
@@ -36,6 +38,55 @@ async function findClient(ctx: any, vaultToken: string | undefined) {
     .query("vaultClients")
     .withIndex("by_token", (q: any) => q.eq("token", vaultToken))
     .first();
+}
+
+function isWellFormedStrictClient(client: Doc<"vaultClients">): boolean {
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(client.name)) return false;
+  if (client.token.length < 32 || client.token.length > 256) return false;
+  if (client.active !== true || client.canWrite !== true) return false;
+  if (!Number.isFinite(client.createdAt) || !Number.isFinite(client.updatedAt)) return false;
+  if (client.services.length === 0 || client.services.length > 100) return false;
+
+  const uniqueServices = new Set(client.services);
+  if (uniqueServices.size !== client.services.length) return false;
+
+  // Strict capabilities never interpret wildcards or prefixes. Rejecting a
+  // mixed exact/wildcard policy as malformed avoids authorization depending on
+  // which policy happens to be evaluated first.
+  return client.services.every((service) =>
+    /^[a-z0-9][a-z0-9-]{0,62}$/.test(service),
+  );
+}
+
+/**
+ * Authorization for narrow rotation writers. Unlike requireVaultWrite, this
+ * helper deliberately has no VAULT_ENFORCE_AUTH rollout bridge.
+ */
+export async function requireStrictVaultWrite(
+  ctx: Pick<QueryCtx, "db">,
+  credentials: VaultCredentials,
+  service: string,
+): Promise<void> {
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(service)) {
+    throw new Error("Vault authentication required");
+  }
+  if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
+
+  const token = credentials.vaultToken;
+  if (!token || token.length < 32 || token.length > 256) {
+    throw new Error("Vault authentication required");
+  }
+
+  const clients = await ctx.db
+    .query("vaultClients")
+    .withIndex("by_token", (q) => q.eq("token", token))
+    .collect();
+  if (clients.length !== 1) throw new Error("Vault authentication required");
+
+  const [client] = clients;
+  if (!isWellFormedStrictClient(client) || !client.services.includes(service)) {
+    throw new Error("Vault authentication required");
+  }
 }
 
 export async function requireVaultRead(
