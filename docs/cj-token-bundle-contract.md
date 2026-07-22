@@ -1,9 +1,10 @@
 # CJ token-bundle control-plane contract
 
 This server-to-server contract uses Convex's standard HTTP API. The bearer is
-passed only inside `args`; it must belong to the dedicated active `cj` writer
-client (or the root capability). Do not place it in a browser bundle or log the
-request body.
+passed only inside `args`; it must be the root capability or belong to one
+unique active client with `canWrite: true` and `services: ["cj"]` exactly.
+Multi-service and wildcard policies are intentionally rejected. Do not place
+the bearer in a browser bundle or log the request body.
 
 Preflight, before consuming CJ's one-time refresh operation:
 

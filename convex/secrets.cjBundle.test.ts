@@ -132,6 +132,7 @@ describe("CJ token-bundle strict authorization", () => {
     const wildcard = "wildcard-client-".padEnd(40, "x");
     const prefix = "prefix-client-".padEnd(40, "p");
     const mixedWildcard = "mixed-wildcard-client-".padEnd(40, "m");
+    const multiService = "multi-service-client-".padEnd(40, "v");
     const duplicatePolicy = "duplicate-policy-client-".padEnd(40, "d");
     const duplicateClient = "duplicate-client-".padEnd(40, "u");
 
@@ -141,6 +142,11 @@ describe("CJ token-bundle strict authorization", () => {
     await insertClient(c, { name: "wildcard", token: wildcard, services: ["*"] });
     await insertClient(c, { name: "prefix", token: prefix, services: ["c*"] });
     await insertClient(c, { name: "mixed-wildcard", token: mixedWildcard, services: ["cj", "*"] });
+    await insertClient(c, {
+      name: "multi-service",
+      token: multiService,
+      services: ["cj", "dropship"],
+    });
     await insertClient(c, { name: "duplicate-policy", token: duplicatePolicy, services: ["cj", "cj"] });
     await insertClient(c, { name: "duplicate-one", token: duplicateClient, services: ["cj"] });
     await insertClient(c, { name: "duplicate-two", token: duplicateClient, services: ["cj"] });
@@ -154,6 +160,7 @@ describe("CJ token-bundle strict authorization", () => {
       wildcard,
       prefix,
       mixedWildcard,
+      multiService,
       duplicatePolicy,
       duplicateClient,
     ];
@@ -162,6 +169,13 @@ describe("CJ token-bundle strict authorization", () => {
         c.query(api.secrets.preflightCjTokenBundle, {
           service: "cj",
           vaultToken,
+        }),
+      ).rejects.toThrow("Vault authentication required");
+      await expect(
+        c.mutation(api.secrets.compareAndSwapCjTokenBundle, {
+          service: "cj",
+          vaultToken,
+          bundle: nextBundle("unauthorized"),
         }),
       ).rejects.toThrow("Vault authentication required");
     }

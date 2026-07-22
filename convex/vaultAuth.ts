@@ -58,6 +58,13 @@ function isWellFormedStrictClient(client: Doc<"vaultClients">): boolean {
   );
 }
 
+function isStrictlyScopedToService(
+  client: Doc<"vaultClients">,
+  service: string,
+): boolean {
+  return client.services.length === 1 && client.services[0] === service;
+}
+
 /**
  * Authorization for narrow rotation writers. Unlike requireVaultWrite, this
  * helper deliberately has no VAULT_ENFORCE_AUTH rollout bridge.
@@ -84,7 +91,7 @@ export async function requireStrictVaultWrite(
   if (clients.length !== 1) throw new Error("Vault authentication required");
 
   const [client] = clients;
-  if (!isWellFormedStrictClient(client) || !client.services.includes(service)) {
+  if (!isWellFormedStrictClient(client) || !isStrictlyScopedToService(client, service)) {
     throw new Error("Vault authentication required");
   }
 }
