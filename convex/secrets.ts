@@ -93,7 +93,7 @@ export const deleteOne = mutation({
       await requireVaultWrite(ctx, { vaultToken }, ["*"]);
       return { deleted: null };
     }
-    await requireVaultDelete(ctx, { vaultToken }, row.service);
+    await requireVaultDelete(ctx, { vaultToken }, row);
     await ctx.db.delete(id);
     return { deleted: id };
   },

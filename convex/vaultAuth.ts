@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import {
   assertAllowedClientServicePolicy,
   assertAllowedVaultService,
-  isOpenAiNamespace,
+  isOpenAiSecretReference,
 } from "./vaultPolicy";
 
 type VaultCredentials = { vaultToken?: string };
@@ -80,13 +80,13 @@ export async function requireVaultWrite(
 export async function requireVaultDelete(
   ctx: MutationCtx,
   credentials: VaultCredentials,
-  service: string,
+  reference: { service: string; keyName?: string; aliases?: string[] },
 ): Promise<void> {
-  if (isOpenAiNamespace(service)) {
+  if (isOpenAiSecretReference(reference)) {
     requireRoot(credentials.vaultToken);
     return;
   }
-  await requireVaultWrite(ctx, credentials, [service]);
+  await requireVaultWrite(ctx, credentials, [reference.service]);
 }
 
 export const upsertClient = mutation({

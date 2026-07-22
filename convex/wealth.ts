@@ -1364,6 +1364,10 @@ export const _seedBridgeToken = internalMutation({
       )
       .first();
     if (existing) {
+      // A legacy row can carry a forbidden key or alias despite this fixed
+      // lookup. Reject it before rotating the token so the old value remains
+      // untouched.
+      assertAllowedSecretReference(existing);
       await ctx.db.patch(existing._id, { value: token });
       return { created: false, id: existing._id };
     }
@@ -1434,6 +1438,10 @@ export const ingest = mutation({
         q.eq("service", "convex").eq("keyName", "BINANCE_BRIDGE_TOKEN"),
       )
       .first();
+    // Validate the complete stored reference before comparing its value or
+    // touching any asset state. A service-only check would miss legacy keys or
+    // aliases that point into a forbidden namespace.
+    if (secret) assertAllowedSecretReference(secret);
     if (!secret?.value || a.token !== secret.value) {
       throw new ConvexError("unauthorized: bad bridge token");
     }

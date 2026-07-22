@@ -128,6 +128,82 @@ describe("zero-OpenAI vault boundary", () => {
     });
   });
 
+  it("keeps scoped clients out of forbidden key and alias cleanup while allowing root cleanup and normal operations", async () => {
+    const c = t();
+    await c.mutation(api.vaultAuth.upsertClient, {
+      rootToken: ROOT_TOKEN,
+      name: "stripe-writer",
+      token: CLIENT_TOKEN,
+      services: ["stripe"],
+      canWrite: true,
+    });
+    const [forbiddenKeyId, forbiddenAliasId] = await c.run(async (ctx) => {
+      const keyId = await ctx.db.insert("secrets", secret("stripe", "OPEN AI API KEY"));
+      const aliasId = await ctx.db.insert("secrets", secret("stripe", "API_KEY", ["Chat GPT"]));
+      return [keyId, aliasId];
+    });
+
+    for (const id of [forbiddenKeyId, forbiddenAliasId]) {
+      await expect(
+        c.mutation(api.secrets.deleteOne, { vaultToken: CLIENT_TOKEN, id }),
+      ).rejects.toThrow("Vault authentication required");
+    }
+
+    await c.mutation(api.secrets.bulkInsert, {
+      vaultToken: CLIENT_TOKEN,
+      items: [secret("stripe", "LIVE_API_KEY")],
+    });
+    expect(
+      await c.query(api.secrets.getOne, {
+        vaultToken: CLIENT_TOKEN,
+        service: "stripe",
+        keyName: "LIVE_API_KEY",
+      }),
+    ).toMatchObject({ service: "stripe", keyName: "LIVE_API_KEY" });
+    const normalId = await c.run(async (ctx) =>
+      ctx.db
+        .query("secrets")
+        .withIndex("by_service_and_key", (q) => q.eq("service", "stripe").eq("keyName", "LIVE_API_KEY"))
+        .first()
+        .then((row) => row!._id),
+    );
+    await expect(
+      c.mutation(api.secrets.deleteOne, { vaultToken: CLIENT_TOKEN, id: normalId }),
+    ).resolves.toEqual({ deleted: normalId });
+
+    for (const id of [forbiddenKeyId, forbiddenAliasId]) {
+      await expect(
+        c.mutation(api.secrets.deleteOne, { vaultToken: ROOT_TOKEN, id }),
+      ).resolves.toEqual({ deleted: id });
+    }
+  });
+
+  it("rejects a forbidden fetched bridge row before token rotation or asset writes", async () => {
+    const c = t();
+    const oldToken = "o".repeat(40);
+    await c.mutation(api.wealth.upsertAsset, {
+      category: "crypto",
+      label: "Binance",
+      lastValueGBP: 77,
+    });
+    const bridgeId = await c.run(async (ctx) =>
+      ctx.db.insert("secrets", {
+        ...secret("convex", "BINANCE_BRIDGE_TOKEN", ["Open AI bridge"]),
+        value: oldToken,
+      }),
+    );
+
+    await expect(
+      c.mutation(internal.wealth._seedBridgeToken, { token: "n".repeat(40) }),
+    ).rejects.toThrow(/OpenAI credential namespaces are not permitted/);
+    await expect(
+      c.mutation(api.wealth.ingest, { token: oldToken, spotGbp: 123, positions: [] }),
+    ).rejects.toThrow(/OpenAI credential namespaces are not permitted/);
+
+    expect(await c.run((ctx) => ctx.db.get(bridgeId))).toMatchObject({ value: oldToken });
+    expect(await c.query(api.wealth.getWealth, {})).toMatchObject({ assetCount: 1, totalGBP: 77 });
+  });
+
   it("permits explicit non-OpenAI services and the fixed bridge-token seed", async () => {
     const c = t();
     await c.mutation(api.secrets.bulkInsert, {

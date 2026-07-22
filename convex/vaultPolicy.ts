@@ -25,13 +25,26 @@ export function assertAllowedSecretReference(reference: {
   keyName?: string;
   aliases?: string[];
 }): void {
-  assertAllowedVaultService(reference.service);
-  if (
-    (reference.keyName !== undefined && isOpenAiNamespace(reference.keyName)) ||
-    reference.aliases?.some(isOpenAiNamespace)
-  ) {
+  if (isOpenAiSecretReference(reference)) {
     throw new Error("OpenAI credential namespaces are not permitted");
   }
+}
+
+/**
+ * A full persisted reference may be forbidden even when its service is not.
+ * Keep this value-blind so callers can use it to authorize cleanup without
+ * ever inspecting a credential value.
+ */
+export function isOpenAiSecretReference(reference: {
+  service: string;
+  keyName?: string;
+  aliases?: string[];
+}): boolean {
+  return (
+    isOpenAiNamespace(reference.service) ||
+    (reference.keyName !== undefined && isOpenAiNamespace(reference.keyName)) ||
+    reference.aliases?.some(isOpenAiNamespace) === true
+  );
 }
 
 /** Client capabilities must name one concrete, non-OpenAI service. */
