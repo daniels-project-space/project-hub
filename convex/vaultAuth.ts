@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import {
   assertAllowedClientServicePolicy,
@@ -77,7 +78,7 @@ export async function requireVaultWrite(
  * clients never receive an OpenAI capability, including one that can delete.
  */
 export async function requireVaultDelete(
-  ctx: any,
+  ctx: MutationCtx,
   credentials: VaultCredentials,
   service: string,
 ): Promise<void> {
