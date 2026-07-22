@@ -1423,6 +1423,11 @@ export const ingest = mutation({
   },
   handler: async (ctx, a) => {
     // ── Token guard (constant-effort compare against the vault secret) ──
+    assertAllowedSecretReference({
+      service: "convex",
+      keyName: "BINANCE_BRIDGE_TOKEN",
+      aliases: [],
+    });
     const secret = await ctx.db
       .query("secrets")
       .withIndex("by_service_and_key", (q) =>
