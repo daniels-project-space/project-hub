@@ -149,6 +149,17 @@ describe("zero-OpenAI vault boundary", () => {
       ).rejects.toThrow("Vault authentication required");
     }
 
+    // A concrete permitted capability can safely query an absent non-OpenAI
+    // reference. The null result establishes absence without returning any
+    // credential value.
+    await expect(
+      c.query(api.secrets.getOne, {
+        vaultToken: CLIENT_TOKEN,
+        service: "stripe",
+        keyName: "MISSING_STRIPE_KEY",
+      }),
+    ).resolves.toBeNull();
+
     await c.mutation(api.secrets.bulkInsert, {
       vaultToken: CLIENT_TOKEN,
       items: [secret("stripe", "LIVE_API_KEY")],
