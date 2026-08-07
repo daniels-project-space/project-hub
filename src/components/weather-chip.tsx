@@ -166,22 +166,29 @@ export function WeatherChip() {
   const { get } = useSettings();
   const tempUnit = get("tempUnit", "C") as "C" | "F";
 
-  // Seed from the last good reading for an instant paint (no flicker).
-  const [reading, setReading] = useState<Reading | null>(() =>
-    readJSON<Reading>(WEATHER_KEY),
-  );
-  const [status, setStatus] = useState<Status>(() =>
-    readJSON<Reading>(WEATHER_KEY) ? "ok" : "loading",
-  );
-  // 7-day forecast for the overlay. Seeded from cache for an instant paint.
-  const [daily, setDaily] = useState<DailyForecast | null>(() =>
-    readJSON<DailyForecast>(DAILY_KEY),
-  );
+  // Use a deterministic empty snapshot for SSR and the first browser render.
+  // Browser cache is applied immediately after hydration; reading it in the
+  // state initializer made returning users hydrate different weather markup.
+  const [reading, setReading] = useState<Reading | null>(null);
+  const [status, setStatus] = useState<Status>("loading");
+  const [daily, setDaily] = useState<DailyForecast | null>(null);
   // Overlay open state. The chip is the trigger; the sheet shows the week.
   const [weekOpen, setWeekOpen] = useState(false);
   // Cache the resolved geo across re-fetches (e.g. unit flips) so we don't
   // re-prompt the browser permission each time the unit changes.
   const geoRef = useRef<Geo | null>(null);
+
+  useEffect(() => {
+    const cachedReading = readJSON<Reading>(WEATHER_KEY);
+    const cachedDaily = readJSON<DailyForecast>(DAILY_KEY);
+    /* eslint-disable react-hooks/set-state-in-effect -- localStorage is intentionally applied only after hydration */
+    if (cachedReading) {
+      setReading(cachedReading);
+      setStatus("ok");
+    }
+    if (cachedDaily) setDaily(cachedDaily);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
 
   async function load(unit: "C" | "F") {
     try {

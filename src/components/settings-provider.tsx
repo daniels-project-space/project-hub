@@ -94,24 +94,37 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const remote = useQuery(api.settings.all);
   const setRemote = useMutation(api.settings.set);
 
-  // Seed from localStorage for instant paint before Convex resolves.
-  const [local, setLocal] = useState<SettingsValues>(() => readLocal());
+  // The server and the browser's first render must use the same snapshot.
+  // Reading localStorage (or applying a fast Convex response) during the first
+  // client render reordered the app carousel before hydration had finished.
+  const [clientState, setClientState] = useState<{
+    ready: boolean;
+    local: SettingsValues;
+  }>({ ready: false, local: {} });
+  const { ready: clientReady, local } = clientState;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser-only state is intentionally applied after hydration
+    setClientState({ ready: true, local: readLocal() });
+  }, []);
 
   // Merge order: defaults < remote (Convex truth) < local optimistic.
   // Once remote resolves it becomes authoritative, but the user's just-made
   // optimistic local writes still win until the round-trip lands.
   const values = useMemo<SettingsValues>(
-    () => ({ ...SETTINGS_DEFAULTS, ...(remote ?? {}), ...local }),
-    [remote, local],
+    () =>
+      clientReady
+        ? { ...SETTINGS_DEFAULTS, ...(remote ?? {}), ...local }
+        : SETTINGS_DEFAULTS,
+    [clientReady, remote, local],
   );
 
   // Mirror resolved Convex truth into localStorage so the next cold paint is
   // already correct (without clobbering pending local writes we just keep both).
   useEffect(() => {
-    if (remote === undefined) return;
+    if (!clientReady || remote === undefined) return;
     const merged = { ...remote, ...local };
     writeLocal(merged);
-  }, [remote, local]);
+  }, [clientReady, remote, local]);
 
   // Apply accent on load + whenever it changes.
   const accent = values.accent;
@@ -122,10 +135,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const set = useCallback(
     (key: string, value: unknown) => {
       // 1) optimistic local + localStorage immediately
-      setLocal((prev) => {
-        const next = { ...prev, [key]: value };
+      setClientState((prev) => {
+        const next = { ...prev.local, [key]: value };
         writeLocal({ ...SETTINGS_DEFAULTS, ...(remote ?? {}), ...next });
-        return next;
+        return { ready: true, local: next };
       });
       // 2) persist to Convex (fire-and-forget; errors are non-fatal for UI)
       void setRemote({ key, value });

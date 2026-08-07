@@ -33,13 +33,14 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.5.12",
     "@vitejs/plugin-react": "^6.0.2",
     "convex-test": "^0.0.53",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.7",
-    "@types/ws": "^8.5.12"
+    "vitest": "^4.1.7"
   }
 }

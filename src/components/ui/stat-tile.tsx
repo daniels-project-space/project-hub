@@ -52,17 +52,13 @@ export function StatTile({
   className?: string;
 }) {
   const interactive = typeof onClick === "function";
-  const Tag = interactive ? "button" : "div";
 
   return (
-    <Tag
-      {...(interactive
-        ? { type: "button" as const, onClick, "aria-label": label }
-        : {})}
+    <div
       className={cn(
         "group relative overflow-hidden rounded-lg border border-rule-soft/60 px-3 py-2.5 text-left w-full",
         interactive &&
-          "cursor-pointer transition-colors hover:border-brass/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/60",
+          "transition-colors hover:border-brass/50 focus-within:ring-1 focus-within:ring-brass/60",
         className,
       )}
       style={{
@@ -70,29 +66,29 @@ export function StatTile({
           "linear-gradient(160deg, oklch(0.21 0.006 245 / 0.6), oklch(0.18 0.006 245 / 0.5))",
       }}
     >
+      {/* Keep the drill target and inline controls as siblings. Rendering the
+          whole tile as a button produced invalid nested <button> markup when a
+          value had an edit pencil; browsers repair that markup before React
+          hydrates it, which caused the dashboard-wide hydration fallback. */}
+      {interactive && (
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className="absolute inset-0 z-0 cursor-pointer rounded-lg focus:outline-none"
+        />
+      )}
       {/* Per-tile hide control — tiny, top-right, low-opacity, reveals on hover.
-          stopPropagation so it never triggers the tile's onClick/drill. */}
+          It is a sibling of the drill target, so it cannot trigger the drill. */}
       {onHide && (
-        <span
-          role="button"
-          tabIndex={0}
+        <button
+          type="button"
           aria-label={`Hide ${label}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onHide();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.stopPropagation();
-              e.preventDefault();
-              onHide();
-            }
-          }}
-          className="absolute right-1 top-1 z-10 cursor-pointer rounded p-0.5 text-paper-faint opacity-0 transition-opacity hover:text-paper focus:opacity-100 focus:outline-none group-hover:opacity-60"
+          onClick={onHide}
+          className="absolute right-1 top-1 z-20 cursor-pointer rounded p-0.5 text-paper-faint opacity-0 transition-opacity hover:text-paper focus:opacity-100 focus:outline-none group-hover:opacity-60"
         >
           <EyeOff className="h-3 w-3" />
-        </span>
+        </button>
       )}
       {/* faint sparkline ghost behind the number */}
       {chart && chart.length > 1 && (
@@ -108,7 +104,13 @@ export function StatTile({
           />
         </div>
       )}
-      <div className="relative">
+      <div
+        className={cn(
+          "relative z-10",
+          interactive &&
+            "pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto [&_input]:pointer-events-auto [&_select]:pointer-events-auto [&_textarea]:pointer-events-auto",
+        )}
+      >
         <div className="flex items-center justify-between gap-1.5">
           <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">
             {label}
@@ -127,6 +129,6 @@ export function StatTile({
           <p className="mt-1 font-mono text-[10px] text-paper-faint">{sub}</p>
         )}
       </div>
-    </Tag>
+    </div>
   );
 }
