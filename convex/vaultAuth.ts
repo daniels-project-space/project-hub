@@ -3,6 +3,9 @@ import { v } from "convex/values";
 
 type VaultCredentials = { vaultToken?: string };
 
+const HIGGSFIELD_SERVICE = "higgsfield";
+const MEDIA_ENGINE_CREDENTIAL_CLIENT = "media-engine";
+
 function constantTimeEqual(left: string | undefined, right: string | undefined): boolean {
   const a = left ?? "";
   const b = right ?? "";
@@ -16,7 +19,7 @@ function constantTimeEqual(left: string | undefined, right: string | undefined):
   return mismatch === 0 && a.length > 0;
 }
 
-function requireRoot(rootToken: string | undefined): void {
+export function requireVaultRoot(rootToken: string | undefined): void {
   const expected = process.env.VAULT_ROOT_TOKEN;
   if (!expected || !constantTimeEqual(rootToken, expected)) {
     throw new Error("Vault authentication required");
@@ -28,6 +31,15 @@ function serviceAllowed(services: string[], service: string): boolean {
     if (policy === "*" || policy === service) return true;
     return policy.endsWith("*") && service.startsWith(policy.slice(0, -1));
   });
+}
+
+/**
+ * The durable Higgsfield refresh credential is intentionally stricter than
+ * the generic vault policy language. A wildcard (including a prefix wildcard)
+ * would let a future service name silently inherit the renderer capability.
+ */
+function hasExplicitHiggsfieldScope(services: string[]): boolean {
+  return services.includes(HIGGSFIELD_SERVICE) && services.every((policy) => !policy.includes("*"));
 }
 
 async function findClient(ctx: any, vaultToken: string | undefined) {
@@ -44,11 +56,14 @@ export async function requireVaultRead(
   service: string,
 ): Promise<void> {
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
+  // A Higgsfield OAuth refresh token is intentionally never exposed through
+  // the legacy generic secret API. Even a wildcard reader must use the one
+  // fixed-key capability below, which is bound to the Media Engine client.
+  if (service === HIGGSFIELD_SERVICE) {
+    throw new Error("Higgsfield credentials require the fixed bundle endpoint");
+  }
   const client = await findClient(ctx, credentials.vaultToken);
   if (client?.active && serviceAllowed(client.services, service)) return;
-  // Deployment bridge only: callers are migrated and verified before this is
-  // flipped. Production is not considered secure until enforcement is true.
-  if (process.env.VAULT_ENFORCE_AUTH !== "true") return;
   throw new Error("Vault authentication required");
 }
 
@@ -58,12 +73,58 @@ export async function requireVaultWrite(
   services: string[],
 ): Promise<void> {
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
+  // Prevent generic insert/delete paths from bypassing the fixed-key CAS
+  // contract for the durable OAuth refresh session.
+  if (services.includes(HIGGSFIELD_SERVICE)) {
+    throw new Error("Higgsfield credentials require the fixed bundle endpoint");
+  }
   const client = await findClient(ctx, credentials.vaultToken);
   if (client?.active && client.canWrite && services.every((service) => serviceAllowed(client.services, service))) {
     return;
   }
-  if (process.env.VAULT_ENFORCE_AUTH !== "true") return;
   throw new Error("Vault authentication required");
+}
+
+async function requireHiggsfieldCredentialBundle(
+  ctx: any,
+  credentials: VaultCredentials,
+  write: boolean,
+): Promise<void> {
+  if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
+  const client = await findClient(ctx, credentials.vaultToken);
+  if (
+    client?.active &&
+    client.name === MEDIA_ENGINE_CREDENTIAL_CLIENT &&
+    hasExplicitHiggsfieldScope(client.services) &&
+    (!write || client.canWrite)
+  ) {
+    return;
+  }
+  // This capability never inherits the migration bridge: the refresh token is
+  // durable and must remain protected on every deployment.
+  throw new Error("Vault authentication required");
+}
+
+/**
+ * The only scoped read capability for the Media Engine's Higgsfield OAuth
+ * bundle. Generic Higgsfield reads are root-only.
+ */
+export async function requireHiggsfieldCredentialBundleRead(
+  ctx: any,
+  credentials: VaultCredentials,
+): Promise<void> {
+  return await requireHiggsfieldCredentialBundle(ctx, credentials, false);
+}
+
+/**
+ * The only scoped write capability for the Media Engine's Higgsfield OAuth
+ * bundle. Its caller still has to satisfy the fixed-key CAS precondition.
+ */
+export async function requireHiggsfieldCredentialBundleWrite(
+  ctx: any,
+  credentials: VaultCredentials,
+): Promise<void> {
+  return await requireHiggsfieldCredentialBundle(ctx, credentials, true);
 }
 
 export const upsertClient = mutation({
@@ -75,7 +136,7 @@ export const upsertClient = mutation({
     canWrite: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    requireRoot(args.rootToken);
+    requireVaultRoot(args.rootToken);
     const name = args.name.trim().toLowerCase();
     const services = [...new Set(args.services.map((service) => service.trim()).filter(Boolean))];
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name)) throw new Error("Invalid vault client name");
@@ -105,7 +166,7 @@ export const upsertClient = mutation({
 export const revokeClient = mutation({
   args: { rootToken: v.string(), name: v.string() },
   handler: async (ctx, args) => {
-    requireRoot(args.rootToken);
+    requireVaultRoot(args.rootToken);
     const existing = await ctx.db
       .query("vaultClients")
       .withIndex("by_name", (q: any) => q.eq("name", args.name.trim().toLowerCase()))
@@ -119,7 +180,7 @@ export const revokeClient = mutation({
 export const listClients = query({
   args: { rootToken: v.string() },
   handler: async (ctx, args) => {
-    requireRoot(args.rootToken);
+    requireVaultRoot(args.rootToken);
     const clients = await ctx.db.query("vaultClients").collect();
     return clients.map(({ token: _token, ...client }: any) => client);
   },

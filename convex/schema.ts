@@ -38,6 +38,10 @@ export default defineSchema({
     service: v.string(),
     keyName: v.string(),
     value: v.string(),
+    // Monotonic compare-and-swap version for credentials that must be rotated
+    // without a delete/insert window. Optional keeps all imported vault rows
+    // valid; callers treat an absent revision as the initial revision (0).
+    revision: v.optional(v.number()),
     description: v.optional(v.string()),
     scopes: v.array(v.string()),
     aliases: v.array(v.string()),
