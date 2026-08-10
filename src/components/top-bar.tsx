@@ -31,10 +31,23 @@ const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
 ];
 
 type CodingProvider = "codex" | "claude";
+type LocalHandoverRunnerStatus = {
+  connected: boolean;
+  lastHeartbeatAt?: number;
+  version?: string;
+  policyRevision?: number;
+  managedSessions?: number;
+  deferredSessions?: number;
+  quotaState?: "available" | "threshold" | "unavailable";
+  remainingPercent?: number;
+};
 type LocalHandoverStatus = {
   provider: CodingProvider;
   targetRuntime: "vps_codex" | "vps_claude";
   updatedAt: number;
+  handoverRevision: number;
+  automatic: { codexWeeklyRemainingPercent: number };
+  runner: LocalHandoverRunnerStatus;
 };
 
 type JarvisHandoverBridge = {
@@ -61,10 +74,55 @@ function parseLocalHandoverStatus(value: unknown): LocalHandoverStatus | null {
   const updatedAt = typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt)
     ? Math.max(0, record.updatedAt)
     : 0;
+  const handoverRevision = typeof record.handoverRevision === "number"
+    && Number.isSafeInteger(record.handoverRevision)
+    && record.handoverRevision >= 0
+    ? record.handoverRevision
+    : 0;
+  const automaticRecord = record.automatic && typeof record.automatic === "object"
+    ? record.automatic as Record<string, unknown>
+    : null;
+  const threshold = typeof automaticRecord?.codexWeeklyRemainingPercent === "number"
+    && Number.isSafeInteger(automaticRecord.codexWeeklyRemainingPercent)
+    && automaticRecord.codexWeeklyRemainingPercent >= 1
+    && automaticRecord.codexWeeklyRemainingPercent <= 100
+    ? automaticRecord.codexWeeklyRemainingPercent
+    : 1;
+  const runnerRecord = record.runner && typeof record.runner === "object"
+    ? record.runner as Record<string, unknown>
+    : null;
+  const connected = runnerRecord?.connected === true;
+  const runner: LocalHandoverRunnerStatus = {
+    connected,
+    ...(typeof runnerRecord?.lastHeartbeatAt === "number" && Number.isFinite(runnerRecord.lastHeartbeatAt)
+      ? { lastHeartbeatAt: runnerRecord.lastHeartbeatAt }
+      : {}),
+    ...(typeof runnerRecord?.version === "string" && runnerRecord.version.length <= 80
+      ? { version: runnerRecord.version }
+      : {}),
+    ...(typeof runnerRecord?.policyRevision === "number" && Number.isSafeInteger(runnerRecord.policyRevision)
+      ? { policyRevision: runnerRecord.policyRevision }
+      : {}),
+    ...(typeof runnerRecord?.managedSessions === "number" && Number.isSafeInteger(runnerRecord.managedSessions)
+      ? { managedSessions: runnerRecord.managedSessions }
+      : {}),
+    ...(typeof runnerRecord?.deferredSessions === "number" && Number.isSafeInteger(runnerRecord.deferredSessions)
+      ? { deferredSessions: runnerRecord.deferredSessions }
+      : {}),
+    ...(runnerRecord?.quotaState === "available" || runnerRecord?.quotaState === "threshold" || runnerRecord?.quotaState === "unavailable"
+      ? { quotaState: runnerRecord.quotaState }
+      : {}),
+    ...(typeof runnerRecord?.remainingPercent === "number" && Number.isFinite(runnerRecord.remainingPercent)
+      ? { remainingPercent: runnerRecord.remainingPercent }
+      : {}),
+  };
   return {
     provider,
     targetRuntime: provider === "claude" ? "vps_claude" : "vps_codex",
     updatedAt,
+    handoverRevision,
+    automatic: { codexWeeklyRemainingPercent: threshold },
+    runner,
   };
 }
 
@@ -211,6 +269,7 @@ function CodingProviderToggle() {
           const parsed = parseLocalHandoverStatus(next);
           if (!parsed) throw new Error("Jarvis returned an invalid handover status");
           if (cancelled) return;
+          attempts = 0;
           setStatus(parsed);
           setError(null);
           setLoading(false);
@@ -227,9 +286,14 @@ function CodingProviderToggle() {
     };
     window.addEventListener("jarvis:ready", onJarvisReady);
     sync();
+    // The VPS runner can switch Codex -> Claude without an in-browser action.
+    // Polling this compact status keeps an already-open Hub truthful about the
+    // durable policy and whether the runner has applied it.
+    const refreshTimer = setInterval(sync, 20_000);
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
+      clearInterval(refreshTimer);
       window.removeEventListener("jarvis:ready", onJarvisReady);
     };
   }, []);
@@ -255,9 +319,20 @@ function CodingProviderToggle() {
   };
 
   const unavailable = loading || !status;
+  const runnerLabel = loading
+    ? "Connecting"
+    : error
+      ? "Unavailable"
+      : !status?.runner.connected
+        ? "Runner offline"
+        : status.runner.policyRevision !== status.handoverRevision
+          ? "Awaiting runner"
+          : (status.runner.deferredSessions ?? 0) > 0
+            ? `${status.runner.deferredSessions} awaiting close`
+            : `${status.runner.managedSessions ?? 0} managed`;
   const title = error
     ?? (status
-      ? `Local VPS handover target: ${status.provider === "claude" ? "Claude" : "Codex"}`
+      ? `VPS handoff target: ${status.provider === "claude" ? "Claude" : "Codex"}. Codex auto-fails over at ${status.automatic.codexWeeklyRemainingPercent}% weekly remaining. ${runnerLabel}.`
       : "Connecting to Jarvis for the local VPS handover target");
 
   return (
@@ -269,10 +344,11 @@ function CodingProviderToggle() {
       data-jarvis-label="Local VPS handover provider"
       data-jarvis-source="src/components/top-bar.tsx"
       title={title}
-      className="flex h-8 items-center rounded-md border border-rule-soft/70 bg-ink-2/45 p-0.5"
+      className="flex h-8 shrink-0 items-center rounded-md border border-brass/45 bg-brass/[0.07] p-0.5 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.04)]"
     >
-      <span className="hidden xl:inline px-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-paper-faint">
-        Handoff
+      <span className="px-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-brass">
+        <span className="xl:hidden">VPS</span>
+        <span className="hidden xl:inline">VPS Handoff</span>
       </span>
       {(["codex", "claude"] as const).map((provider) => {
         const selected = status?.provider === provider;
@@ -284,7 +360,7 @@ function CodingProviderToggle() {
             disabled={unavailable || switching}
             onClick={() => void setProvider(provider)}
             className={cn(
-              "h-6 rounded px-1.5 font-mono text-[9px] uppercase tracking-[0.13em] transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-2",
+              "h-6 rounded px-1.5 font-mono text-[9px] uppercase tracking-[0.13em] transition-colors disabled:cursor-not-allowed disabled:opacity-70 sm:px-2",
               selected
                 ? "bg-brass/20 text-brass shadow-[inset_0_0_0_1px_rgb(232_178_90_/_0.35)]"
                 : "text-paper-dim hover:bg-ink-2 hover:text-paper",
@@ -294,8 +370,11 @@ function CodingProviderToggle() {
           </button>
         );
       })}
+      <span className="hidden 2xl:inline px-1 font-mono text-[8px] uppercase tracking-[0.1em] text-paper-faint">
+        {runnerLabel}
+      </span>
       <span className="sr-only" aria-live="polite">
-        {error ?? (status ? `Local VPS handover target is ${status.provider}` : "Loading local VPS handover target")}
+        {error ?? (status ? `VPS handover target is ${status.provider}. ${runnerLabel}.` : "Loading local VPS handover target")}
       </span>
     </div>
   );
