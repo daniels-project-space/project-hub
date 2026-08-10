@@ -189,18 +189,21 @@ function CodingProviderToggle() {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
-    const sync = () => {
+    const retry = (message: string) => {
+      if (attempts < 12) {
+        attempts += 1;
+        retryTimer = setTimeout(sync, Math.min(2_000, 250 * 2 ** Math.min(attempts, 3)));
+        return;
+      }
+      if (!cancelled) {
+        setLoading(false);
+        setError(message);
+      }
+    };
+    function sync() {
       const bridge = jarvisHandoverBridge();
       if (!bridge) {
-        if (attempts < 12) {
-          attempts += 1;
-          retryTimer = setTimeout(sync, 250);
-          return;
-        }
-        if (!cancelled) {
-          setLoading(false);
-          setError("Jarvis is still connecting");
-        }
+        retry("Jarvis is still connecting");
         return;
       }
       void bridge.getCodingProviderStatus()
@@ -213,13 +216,12 @@ function CodingProviderToggle() {
           setLoading(false);
         })
         .catch(() => {
-          if (cancelled) return;
-          setLoading(false);
-          setError("Jarvis could not load the handover target");
+          retry("Jarvis could not load the handover target");
         });
-    };
+    }
     const onJarvisReady = () => {
       attempts = 0;
+      if (retryTimer) clearTimeout(retryTimer);
       setLoading(true);
       sync();
     };
