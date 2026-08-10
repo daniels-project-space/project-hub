@@ -84,6 +84,15 @@ export const APPS: AppEntry[] = [
     category: "creator",
   },
   {
+    slug: "travel-film-editor",
+    name: "Travel Film Editor",
+    short: "TF",
+    description: "AI-assisted travel-film assembly and review.",
+    status: "wip",
+    githubUrl: "https://github.com/daniels-project-space/travel-film-editor",
+    category: "creator",
+  },
+  {
     slug: "aria",
     name: "ARIA",
     short: "Aⓡ",

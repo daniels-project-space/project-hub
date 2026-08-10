@@ -48,6 +48,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M16 10l5-3v10l-5-3z" />
     </svg>
   ),
+  "travel-film-editor": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <path d="M3 7h13v11H3zM16 10l5-3v10l-5-3z" />
+      <path d="M3 10h13M7 7v3M12 7v3M7 15h5" />
+    </svg>
+  ),
   aria: (
     <svg viewBox="0 0 24 24" {...stroke}>
       <circle cx="12" cy="12" r="9" />
