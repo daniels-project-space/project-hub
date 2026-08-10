@@ -10,6 +10,8 @@ export type AppEntry = {
   description: string;
   status: AppStatus;
   vercelUrl?: string;
+  /** Defaults to a new tab. Use the current tab for app-style workspaces. */
+  openInNewTab?: boolean;
   githubUrl?: string;
   category: "platform" | "creator" | "ops" | "ai" | "experiment";
 };
@@ -90,6 +92,7 @@ export const APPS: AppEntry[] = [
     description: "AI-assisted travel-film assembly and review.",
     status: "wip",
     vercelUrl: "https://travel-film-editor.vercel.app",
+    openInNewTab: false,
     githubUrl: "https://github.com/daniels-project-space/travel-film-editor",
     category: "creator",
   },

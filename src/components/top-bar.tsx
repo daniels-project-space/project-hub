@@ -570,7 +570,11 @@ function AppsMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
 
   const onPick = (a: AppEntry) => {
     if (a.vercelUrl) {
-      window.open(a.vercelUrl, "_blank", "noopener,noreferrer");
+      if (a.openInNewTab === false) {
+        window.location.assign(a.vercelUrl);
+      } else {
+        window.open(a.vercelUrl, "_blank", "noopener,noreferrer");
+      }
     } else {
       document
         .getElementById("apps-carousel")

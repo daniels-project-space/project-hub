@@ -31,6 +31,7 @@ function ProjectRow({ app }: { app: AppEntry }) {
   const statusText = STATUS_LABEL[app.status];
   const href = app.vercelUrl ?? app.githubUrl ?? "#";
   const isClickable = href !== "#";
+  const openInNewTab = app.openInNewTab !== false;
 
   const inner = (
     <div className="group flex items-center gap-3 px-5 py-2.5 hover:bg-paper/[0.03] transition-colors">
@@ -81,8 +82,8 @@ function ProjectRow({ app }: { app: AppEntry }) {
     return (
       <a
         href={href}
-        target="_blank"
-        rel="noreferrer"
+        target={openInNewTab ? "_blank" : undefined}
+        rel={openInNewTab ? "noreferrer" : undefined}
         className="block border-b border-rule-soft/30 last:border-b-0"
       >
         {inner}

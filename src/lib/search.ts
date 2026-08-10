@@ -21,7 +21,8 @@ export type SearchResult = {
   title: string;
   sub?: string; // secondary line (status / description)
   // Navigation payload — interpreted by `navigateToResult`.
-  url?: string; // App → open in new tab
+  url?: string; // App → launch URL
+  openInNewTab?: boolean;
   widgetType?: string; // Widget → scroll to w-${type}
   scrollWidget?: string; // owning widget id target (e.g. "projects" → w-projects)
   appSlug?: string;
@@ -56,6 +57,7 @@ function appResult(a: AppEntry): SearchResult {
     title: a.name,
     sub: a.status === "live" ? "live" : a.status,
     url: a.vercelUrl,
+    openInNewTab: a.openInNewTab,
     appSlug: a.slug,
   };
 }
@@ -186,10 +188,14 @@ export function groupResults(
 
 // Execute navigation for a chosen result. Returns true if it handled it.
 export function navigateToResult(r: SearchResult): void {
-  // App → open vercelUrl in a new tab if present, else scroll to carousel.
+  // App → launch its configured URL if present, else scroll to carousel.
   if (r.kind === "App") {
     if (r.url) {
-      window.open(r.url, "_blank", "noopener,noreferrer");
+      if (r.openInNewTab === false) {
+        window.location.assign(r.url);
+      } else {
+        window.open(r.url, "_blank", "noopener,noreferrer");
+      }
     } else {
       document
         .getElementById("apps-carousel")

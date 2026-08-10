@@ -12,6 +12,7 @@ const STATUS_DOT: Record<AppEntry["status"], string> = {
 export function AppTile({ app }: { app: AppEntry }) {
   const href = app.vercelUrl ?? app.githubUrl ?? "#";
   const isExternal = href !== "#";
+  const openInNewTab = app.openInNewTab !== false;
 
   const inner = (
     <div className="flex flex-col items-center gap-2 shrink-0 w-[80px]">
@@ -44,8 +45,8 @@ export function AppTile({ app }: { app: AppEntry }) {
     return (
       <Link
         href={href}
-        target="_blank"
-        rel="noreferrer"
+        target={openInNewTab ? "_blank" : undefined}
+        rel={openInNewTab ? "noreferrer" : undefined}
         aria-label={`Open ${app.name}`}
         data-jarvis-id={`app:${app.slug}`}
         data-jarvis-label={app.name}
