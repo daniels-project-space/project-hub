@@ -569,7 +569,7 @@ function AppsMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
 
   const onPick = (a: AppEntry) => {
-    if (a.status === "live" && a.vercelUrl) {
+    if (a.vercelUrl) {
       window.open(a.vercelUrl, "_blank", "noopener,noreferrer");
     } else {
       document
@@ -591,7 +591,7 @@ function AppsMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
               {g.label}
             </div>
             {g.apps.map((a) => {
-              const launchable = a.status === "live" && a.vercelUrl;
+              const launchable = Boolean(a.vercelUrl);
               return (
                 <button
                   key={a.slug}
