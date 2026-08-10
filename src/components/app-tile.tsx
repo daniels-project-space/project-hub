@@ -10,8 +10,8 @@ const STATUS_DOT: Record<AppEntry["status"], string> = {
 };
 
 export function AppTile({ app }: { app: AppEntry }) {
-  const isExternal = !!app.vercelUrl;
-  const href = app.vercelUrl ?? "#";
+  const href = app.vercelUrl ?? app.githubUrl ?? "#";
+  const isExternal = href !== "#";
 
   const inner = (
     <div className="flex flex-col items-center gap-2 shrink-0 w-[80px]">
