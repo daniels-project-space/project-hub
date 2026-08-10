@@ -30,6 +30,44 @@ const DASHBOARD_LINKS: Array<{ label: string; href: string }> = [
   { label: "r2", href: "https://dash.cloudflare.com/64d5a03b934b831bb62fec6893871fd8/r2/default/buckets" },
 ];
 
+type CodingProvider = "codex" | "claude";
+type LocalHandoverStatus = {
+  provider: CodingProvider;
+  targetRuntime: "vps_codex" | "vps_claude";
+  updatedAt: number;
+};
+
+type JarvisHandoverBridge = {
+  getCodingProviderStatus: () => Promise<LocalHandoverStatus>;
+  setCodingProvider: (provider: CodingProvider) => Promise<LocalHandoverStatus>;
+};
+
+function jarvisHandoverBridge(): JarvisHandoverBridge | null {
+  if (typeof window === "undefined") return null;
+  const candidate = (window as Window & { JARVIS?: Partial<JarvisHandoverBridge> }).JARVIS;
+  if (
+    !candidate
+    || typeof candidate.getCodingProviderStatus !== "function"
+    || typeof candidate.setCodingProvider !== "function"
+  ) return null;
+  return candidate as JarvisHandoverBridge;
+}
+
+function parseLocalHandoverStatus(value: unknown): LocalHandoverStatus | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const provider = record.provider;
+  if (provider !== "codex" && provider !== "claude") return null;
+  const updatedAt = typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt)
+    ? Math.max(0, record.updatedAt)
+    : 0;
+  return {
+    provider,
+    targetRuntime: provider === "claude" ? "vps_claude" : "vps_codex",
+    updatedAt,
+  };
+}
+
 export function TopBar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
@@ -96,6 +134,7 @@ export function TopBar() {
 
         {/* Right cluster */}
         <div className="flex items-center gap-1.5">
+          <CodingProviderToggle />
           <div className="relative">
             <BarBtn
               icon={<LayoutGrid className="w-3.5 h-3.5" />}
@@ -137,6 +176,126 @@ export function TopBar() {
         onClose={() => setSettingsOpen(false)}
       />
     </header>
+  );
+}
+
+function CodingProviderToggle() {
+  const [status, setStatus] = useState<LocalHandoverStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const sync = () => {
+      const bridge = jarvisHandoverBridge();
+      if (!bridge) {
+        if (attempts < 12) {
+          attempts += 1;
+          retryTimer = setTimeout(sync, 250);
+          return;
+        }
+        if (!cancelled) {
+          setLoading(false);
+          setError("Jarvis is still connecting");
+        }
+        return;
+      }
+      void bridge.getCodingProviderStatus()
+        .then((next) => {
+          const parsed = parseLocalHandoverStatus(next);
+          if (!parsed) throw new Error("Jarvis returned an invalid handover status");
+          if (cancelled) return;
+          setStatus(parsed);
+          setError(null);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setLoading(false);
+          setError("Jarvis could not load the handover target");
+        });
+    };
+    const onJarvisReady = () => {
+      attempts = 0;
+      setLoading(true);
+      sync();
+    };
+    window.addEventListener("jarvis:ready", onJarvisReady);
+    sync();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener("jarvis:ready", onJarvisReady);
+    };
+  }, []);
+
+  const setProvider = async (provider: CodingProvider) => {
+    if (switching || status?.provider === provider) return;
+    const bridge = jarvisHandoverBridge();
+    if (!bridge) {
+      setError("Jarvis is still connecting");
+      return;
+    }
+    setSwitching(true);
+    setError(null);
+    try {
+      const next = parseLocalHandoverStatus(await bridge.setCodingProvider(provider));
+      if (!next) throw new Error("Jarvis returned an invalid handover status");
+      setStatus(next);
+    } catch {
+      setError("Jarvis could not save the handover target");
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const unavailable = loading || !status;
+  const title = error
+    ?? (status
+      ? `Local VPS handover target: ${status.provider === "claude" ? "Claude" : "Codex"}`
+      : "Connecting to Jarvis for the local VPS handover target");
+
+  return (
+    <div
+      role="group"
+      aria-label="Local VPS handover provider"
+      aria-busy={loading || switching}
+      data-jarvis-id="control:local-handover"
+      data-jarvis-label="Local VPS handover provider"
+      data-jarvis-source="src/components/top-bar.tsx"
+      title={title}
+      className="flex h-8 items-center rounded-md border border-rule-soft/70 bg-ink-2/45 p-0.5"
+    >
+      <span className="hidden xl:inline px-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-paper-faint">
+        Handoff
+      </span>
+      {(["codex", "claude"] as const).map((provider) => {
+        const selected = status?.provider === provider;
+        return (
+          <button
+            key={provider}
+            type="button"
+            aria-pressed={selected}
+            disabled={unavailable || switching}
+            onClick={() => void setProvider(provider)}
+            className={cn(
+              "h-6 rounded px-1.5 font-mono text-[9px] uppercase tracking-[0.13em] transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:px-2",
+              selected
+                ? "bg-brass/20 text-brass shadow-[inset_0_0_0_1px_rgb(232_178_90_/_0.35)]"
+                : "text-paper-dim hover:bg-ink-2 hover:text-paper",
+            )}
+          >
+            {switching && selected ? "Saving" : provider}
+          </button>
+        );
+      })}
+      <span className="sr-only" aria-live="polite">
+        {error ?? (status ? `Local VPS handover target is ${status.provider}` : "Loading local VPS handover target")}
+      </span>
+    </div>
   );
 }
 
