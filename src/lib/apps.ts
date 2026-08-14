@@ -90,7 +90,7 @@ export const APPS: AppEntry[] = [
     name: "Travel Film Editor",
     short: "TF",
     description: "AI-assisted travel-film assembly and review.",
-    status: "wip",
+    status: "live",
     vercelUrl: "https://travel-film-editor.vercel.app",
     openInNewTab: false,
     githubUrl: "https://github.com/daniels-project-space/travel-film-editor",
