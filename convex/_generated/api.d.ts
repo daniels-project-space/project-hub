@@ -17,6 +17,7 @@ import type * as expenses from "../expenses.js";
 import type * as huntActions from "../huntActions.js";
 import type * as hunts from "../hunts.js";
 import type * as ideas from "../ideas.js";
+import type * as jarvisActions from "../jarvisActions.js";
 import type * as jarvisContext from "../jarvisContext.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
@@ -48,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   huntActions: typeof huntActions;
   hunts: typeof hunts;
   ideas: typeof ideas;
+  jarvisActions: typeof jarvisActions;
   jarvisContext: typeof jarvisContext;
   notes: typeof notes;
   projects: typeof projects;

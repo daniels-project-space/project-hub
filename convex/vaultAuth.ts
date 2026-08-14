@@ -6,6 +6,15 @@ type VaultCredentials = { vaultToken?: string };
 const HIGGSFIELD_SERVICE = "higgsfield";
 const MEDIA_ENGINE_CREDENTIAL_CLIENT = "media-engine";
 
+/**
+ * Jarvis has two intentionally separate Hub capabilities: the existing
+ * `jarvis-context` snapshot reader and this narrow action facade. Keeping the
+ * name and service singleton prevents an action bearer from quietly inheriting
+ * a broad vault policy (or the context-only scope) during later provisioning.
+ */
+export const JARVIS_ACTIONS_VAULT_CLIENT = "jarvis-actions";
+export const JARVIS_ACTIONS_VAULT_SERVICE = "jarvis-actions";
+
 function constantTimeEqual(left: string | undefined, right: string | undefined): boolean {
   const a = left ?? "";
   const b = right ?? "";
@@ -48,6 +57,45 @@ async function findClient(ctx: any, vaultToken: string | undefined) {
     .query("vaultClients")
     .withIndex("by_token", (q: any) => q.eq("token", vaultToken))
     .first();
+}
+
+/**
+ * Unlike the generic vault helpers, this is deliberately *not* compatible
+ * with the root bearer or wildcard service policies. The Jarvis actions
+ * facade can only be reached through its one purpose-specific client record.
+ */
+async function requireJarvisActionsCapability(
+  ctx: any,
+  credentials: VaultCredentials,
+  write: boolean,
+): Promise<void> {
+  const client = await findClient(ctx, credentials.vaultToken);
+  if (
+    client?.active &&
+    client.name === JARVIS_ACTIONS_VAULT_CLIENT &&
+    client.services.length === 1 &&
+    client.services[0] === JARVIS_ACTIONS_VAULT_SERVICE &&
+    (!write || client.canWrite)
+  ) {
+    return;
+  }
+  throw new Error("Vault authentication required");
+}
+
+/** Read-only access for Jarvis's bounded to-do/widget façade. */
+export async function requireJarvisActionsRead(
+  ctx: any,
+  credentials: VaultCredentials,
+): Promise<void> {
+  return await requireJarvisActionsCapability(ctx, credentials, false);
+}
+
+/** Mutation access for Jarvis's bounded to-do façade. */
+export async function requireJarvisActionsWrite(
+  ctx: any,
+  credentials: VaultCredentials,
+): Promise<void> {
+  return await requireJarvisActionsCapability(ctx, credentials, true);
 }
 
 export async function requireVaultRead(
