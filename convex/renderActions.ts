@@ -24,6 +24,63 @@ async function readSecret(ctx: any, service: string, keyName: string): Promise<s
 
 type Rendered = { text: string; anchors: { href: string; text: string; img?: string }[]; images: string[] };
 
+/**
+ * Parse the model's `{"deals":[...]}` reply, tolerating a truncated tail.
+ *
+ * OTA anchor URLs are enormous, so even a generous token budget can cut the
+ * reply mid-array. A whole hunt used to be thrown away for one clipped entry;
+ * now we keep every listing that did come back complete.
+ */
+function parseDeals(raw: string): any[] {
+  const text = raw.replace(/^```(?:json)?/i, "").replace(/```\s*$/, "").trim();
+  const start = text.indexOf("{");
+  if (start === -1) return [];
+  const body = text.slice(start);
+
+  const direct = (() => {
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  })();
+  if (direct && Array.isArray(direct.deals)) return direct.deals;
+
+  // Truncated: walk the deals array and keep each balanced {...} element.
+  const arrayStart = body.indexOf("[", body.indexOf('"deals"'));
+  if (arrayStart === -1) return [];
+  const out: any[] = [];
+  let depth = 0;
+  let objStart = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = arrayStart; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        try {
+          out.push(JSON.parse(body.slice(objStart, i + 1)));
+        } catch {
+          /* skip the malformed element, keep the rest */
+        }
+        objStart = -1;
+      }
+    } else if (ch === "]" && depth === 0) break;
+  }
+  return out;
+}
+
 /** Render a URL on the self-hosted render-service and return text + links + images. */
 async function renderPage(renderUrl: string, renderToken: string, url: string): Promise<Rendered> {
   const controller = new AbortController();
@@ -159,7 +216,8 @@ export const providerDealsLive = action({
         body: JSON.stringify({
           model: "deepseek/deepseek-v4-flash",
           provider: { only: ["deepseek", "alibaba"] },
-          max_tokens: 5500, // v4-flash reasoning + long OTA urls — smaller budgets truncate the JSON
+          max_tokens: 9000, // v4-flash reasoning + long OTA urls; parseDeals salvages a clipped tail
+          response_format: { type: "json_object" },
           messages: [
             {
               role: "user",
@@ -180,9 +238,7 @@ export const providerDealsLive = action({
       });
       const j: any = await res.json();
       const text: string = j?.choices?.[0]?.message?.content ?? "";
-      const m = text.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(m ? m[0] : text);
-      const deals = (Array.isArray(parsed?.deals) ? parsed.deals : [])
+      const deals = parseDeals(text)
         .filter((d: any) => typeof d?.name === "string")
         .slice(0, 12)
         .map((d: any) => {
