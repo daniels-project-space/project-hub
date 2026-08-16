@@ -1,172 +1,54 @@
 "use node";
 
 /**
- * Browserbase-powered LIVE provider scrapes (2026-07-04). The portals Google
- * never indexes with prices (lastminute, Stayforlong, Trivago) are JS-only
- * sites — a real remote browser renders them, we read the RENDERED text +
- * links + images over raw CDP (no playwright bundle; just `ws`), and DeepSeek
- * structures the listings. Daniel pays for Browserbase — this is what it's
- * for. One session per hunt, released immediately after.
+ * LIVE provider scrapes (self-hosted renderer, 2026-08-16).
  *
- * SECRETS: browserbase/BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID,
- * openrouter/OPENROUTER_API_KEY — all read from the vault at runtime.
+ * Replaces the Browserbase CDP path. The portals Google never indexes with
+ * prices (lastminute, Stayforlong, Trivago) are JS-only sites, so a real
+ * browser still has to render them — it now runs on Daniel's own VPS
+ * (`render-service`, headless Chrome behind a token-gated HTTPS endpoint)
+ * instead of a metered third party. The rendered text/anchors/images come back
+ * in exactly the shape the old CDP extraction produced, so the DeepSeek
+ * structuring prompt below is unchanged.
+ *
+ * SECRETS: renderservice/RENDER_URL + RENDER_TOKEN, openrouter/OPENROUTER_API_KEY,
+ * serpapi/SERPAPI_KEY — all read from the vault at runtime.
  */
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
-import WebSocket from "ws";
-
-const BB_API = "https://api.browserbase.com/v1";
 
 async function readSecret(ctx: any, service: string, keyName: string): Promise<string | null> {
   return await ctx.runQuery(internal.wealth.readSecret, { service, keyName });
 }
 
-/** Minimal CDP client over the Browserbase connect websocket. */
-class Cdp {
-  private ws: WebSocket;
-  private nextId = 1;
-  private pending = new Map<number, (v: any) => void>();
+type Rendered = { text: string; anchors: { href: string; text: string; img?: string }[]; images: string[] };
 
-  constructor(ws: WebSocket) {
-    this.ws = ws;
-    ws.on("message", (raw: WebSocket.RawData) => {
-      try {
-        const msg = JSON.parse(String(raw));
-        if (msg.id && this.pending.has(msg.id)) {
-          this.pending.get(msg.id)!(msg);
-          this.pending.delete(msg.id);
-        }
-      } catch {
-        /* ignore non-JSON frames */
-      }
-    });
-  }
-
-  send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<any> {
-    const id = this.nextId++;
-    const payload: Record<string, unknown> = { id, method, params };
-    if (sessionId) payload.sessionId = sessionId;
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`CDP timeout: ${method}`));
-      }, 20_000);
-      this.pending.set(id, (msg) => {
-        clearTimeout(t);
-        if (msg.error) reject(new Error(`${method}: ${msg.error.message ?? "CDP error"}`));
-        else resolve(msg.result);
-      });
-      this.ws.send(JSON.stringify(payload));
-    });
-  }
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Render a URL in a Browserbase session and return rendered text + links + images. */
-async function renderPage(
-  apiKey: string,
-  projectId: string,
-  url: string,
-): Promise<{ text: string; anchors: { href: string; text: string; img?: string }[]; images: string[] }> {
-  // 1. session
-  const sres = await fetch(`${BB_API}/sessions`, {
-    method: "POST",
-    headers: { "X-BB-API-Key": apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId }),
-  });
-  const session: any = await sres.json();
-  if (!session?.id || !session?.connectUrl) {
-    throw new Error(`browserbase session failed: ${JSON.stringify(session).slice(0, 200)}`);
-  }
-  const ws = new WebSocket(session.connectUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
+/** Render a URL on the self-hosted render-service and return text + links + images. */
+async function renderPage(renderUrl: string, renderToken: string, url: string): Promise<Rendered> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 115_000);
   try {
-    await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve());
-      ws.once("error", (e) => reject(e));
-    });
-    const cdp = new Cdp(ws);
-    const targets = await cdp.send("Target.getTargets");
-    const page = (targets?.targetInfos ?? []).find((t: any) => t.type === "page");
-    if (!page) throw new Error("no page target");
-    const attach = await cdp.send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
-    const sid = attach?.sessionId as string;
-    await cdp.send("Page.enable", {}, sid);
-    await cdp.send("Page.navigate", { url }, sid);
-    // JS-heavy portals hydrate slowly; poll readyState then give hydration time.
-    for (let i = 0; i < 20; i++) {
-      await sleep(1000);
-      const st = await cdp
-        .send("Runtime.evaluate", { expression: "document.readyState", returnByValue: true }, sid)
-        .catch(() => null);
-      if (st?.result?.value === "complete" && i >= 5) break;
-    }
-    // Listing cards lazy-load on scroll — walk down the page to force them in.
-    // Price/image hydration on OTA result pages lags the scroll — give it room.
-    await sleep(4000);
-    for (const frac of [0.35, 0.7, 1, 0.5]) {
-      await cdp
-        .send(
-          "Runtime.evaluate",
-          { expression: `window.scrollTo(0, document.body.scrollHeight * ${frac})`, returnByValue: true },
-          sid,
-        )
-        .catch(() => null);
-      await sleep(1300);
-    }
-    const extract = await cdp.send(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          const NL = String.fromCharCode(10);
-          const MARKERS = [String.fromCharCode(163), "$", String.fromCharCode(8364), "IDR", "night", "Night"];
-          const full = document.body ? document.body.innerText : "";
-          const priceLines = full.split(NL).filter(function (l) {
-            return MARKERS.some(function (m) { return l.indexOf(m) !== -1; });
-          }).slice(0, 120).join(NL);
-          const text = (priceLines + NL + "----" + NL + full).slice(0, 14000);
-          const anchors = Array.from(document.querySelectorAll("a[href]"))
-            .map(function (a) {
-              var card = a.closest("article, li, section, div");
-              var im = card ? card.querySelector("img[src]") : null;
-              return {
-                href: a.href,
-                text: (a.innerText || "").trim().slice(0, 120),
-                img: im && im.src && im.src.indexOf("http") === 0 ? im.src : "",
-              };
-            })
-            .filter(function (a) { return a.text.length > 3 && a.href.indexOf("http") === 0; })
-            .sort(function (x, y) { return (y.img ? 1 : 0) - (x.img ? 1 : 0); })
-            .slice(0, 60);
-          const images = Array.from(document.querySelectorAll("img[src]"))
-            .map(function (i) { return i.src; })
-            .filter(function (u) { return u.indexOf("http") === 0 && !/logo|icon|sprite|svg/i.test(u); })
-            .slice(0, 30);
-          return JSON.stringify({ text: text, anchors: anchors, images: images });
-        })()`,
-        returnByValue: true,
+    const res = await fetch(renderUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${renderToken}`,
+        "content-type": "application/json",
       },
-      sid,
-    );
-    const parsed = JSON.parse(extract?.result?.value ?? "{}");
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    });
+    const body: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`render-service ${res.status}: ${String(body?.error ?? "").slice(0, 160)}`);
+    }
     return {
-      text: parsed.text ?? "",
-      anchors: Array.isArray(parsed.anchors) ? parsed.anchors : [],
-      images: Array.isArray(parsed.images) ? parsed.images : [],
+      text: typeof body?.text === "string" ? body.text : "",
+      anchors: Array.isArray(body?.anchors) ? body.anchors : [],
+      images: Array.isArray(body?.images) ? body.images : [],
     };
   } finally {
-    try {
-      ws.close();
-    } catch {
-      /* noop */
-    }
-    // release the session so it never idles against the plan
-    void fetch(`${BB_API}/sessions/${session.id}`, {
-      method: "POST",
-      headers: { "X-BB-API-Key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, status: "REQUEST_RELEASE" }),
-    }).catch(() => undefined);
+    clearTimeout(timer);
   }
 }
 
@@ -192,6 +74,11 @@ function providerUrl(key: string, city: string, checkIn?: string, checkOut?: str
   }
 }
 
+/** Portals that answer a bot challenge instead of listings when rendered from a
+ *  datacentre IP. We do not attempt to defeat those challenges — the hunt just
+ *  reports itself unavailable and the caller falls back to the SerpAPI path. */
+const BOT_WALL = /show us your human side|security verification|are you a robot|unusual traffic|pardon our interruption|access denied|captcha/i;
+
 export const providerDealsLive = action({
   args: {
     providerKey: v.string(), // "trivago" | "lastminute" | "stayforlong" | ...
@@ -210,9 +97,12 @@ export const providerDealsLive = action({
     reason?: string;
     deals: { name: string; priceNight?: string; priceTotal?: string; priceGbpNight?: number; priceGbpTotal?: number; link?: string; image?: string; images?: string[]; note?: string }[];
   }> => {
-    const apiKey = await readSecret(ctx, "browserbase", "BROWSERBASE_API_KEY");
-    const projectId = await readSecret(ctx, "browserbase", "BROWSERBASE_PROJECT_ID");
-    if (!apiKey || !projectId) return { available: false, reason: "browserbase keys absent", deals: [] };
+    // Vault first (consistent with every other secret here); Convex env vars are
+    // accepted as a fallback so the endpoint can be configured from the Convex
+    // dashboard without a vault mutation.
+    const renderUrl = (await readSecret(ctx, "renderservice", "RENDER_URL")) ?? process.env.RENDER_URL ?? null;
+    const renderToken = (await readSecret(ctx, "renderservice", "RENDER_TOKEN")) ?? process.env.RENDER_TOKEN ?? null;
+    if (!renderUrl || !renderToken) return { available: false, reason: "render-service not configured", deals: [] };
 
     // Guessed slugs 404 for regions ("Bali" isn't a lastminute city page). The
     // universal entry: ask Google (indexed) for the portal's OWN page for this
@@ -248,13 +138,17 @@ export const providerDealsLive = action({
         }
       }
     }
-    let rendered: Awaited<ReturnType<typeof renderPage>>;
+
+    let rendered: Rendered;
     try {
-      rendered = await renderPage(apiKey, projectId, url);
+      rendered = await renderPage(renderUrl, renderToken, url);
     } catch (e) {
       return { available: false, reason: `render failed: ${e instanceof Error ? e.message : String(e)}`, deals: [] };
     }
     if (!rendered.text.trim()) return { available: true, deals: [] };
+    if (BOT_WALL.test(rendered.text.slice(0, 1200))) {
+      return { available: false, reason: `${args.provider} served a bot challenge`, deals: [] };
+    }
 
     const llmKey = await readSecret(ctx, "openrouter", "OPENROUTER_API_KEY");
     if (!llmKey) return { available: true, deals: [] };

@@ -14,7 +14,7 @@
  *    cashback portal (now incl. Hotels.com). Cards expand into an OFFERS
  *    panel via resolveStayOffers: per-provider DIRECT links to the exact
  *    property page with dates/guests prefilled (the "auto-fill and open it
- *    for me" ask — no Browserbase needed), each labeled with its provider and
+ *    for me" ask — no live render needed), each labeled with its provider and
  *    carrying that rate's own perks + free-cancellation flag.
  *  - Lock-in stays, booking timeline with symbols/times, transfers chain.
  */
@@ -1428,7 +1428,7 @@ export function TripsOverview({
   const resolveByName = useAction(api.travelActions.resolveStayByName);
   const ingestBookingEmail = useAction(api.travelActions.ingestBookingEmail);
   const resolveOffers = useAction(api.travelActions.resolveStayOffers);
-  const providerDealsLive = useAction(api.browserbaseActions.providerDealsLive);
+  const providerDealsLive = useAction(api.renderActions.providerDealsLive);
 
   const [results, setResults] = useState<StayOption[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -1676,7 +1676,7 @@ export function TripsOverview({
       const opts = (res.options ?? []) as StayOption[];
       setResults(opts);
       // AUTOMATIC full comparison (2026-07-04, per Daniel): provider price
-      // enrichment + the three Browserbase live hunts fire with the search.
+      // enrichment + the three live render hunts fire with the search.
       setEnriched(false);
       // Booking.com LIVE (residential-proxy render — real 40+ results, correct
       // total-and-nightly prices, no login) as its own rail.
@@ -1690,8 +1690,10 @@ export function TripsOverview({
       })
         .then((b) => setBookingLive({ loading: false, options: (b.options ?? []) as StayOption[] }))
         .catch(() => setBookingLive({ loading: false, options: [] }));
-      // Every uncovered provider — Expedia included — hunts via the free
-      // Browserbase renderer (real deals from each portal's SEO/property pages).
+      // Every uncovered provider hunts via the self-hosted render-service (real
+      // deals from each portal's SEO/property pages). Expedia and Hotels.com
+      // answer a bot challenge from the VPS IP, so those two come back
+      // unavailable and fall through to the SerpAPI/offer path.
       // Apify's Expedia actor needs the paid Pro rental, so it's not auto-fired.
       void (async () => {
         const enrichedList = (await deepCompare(opts)) ?? opts;
@@ -1699,8 +1701,8 @@ export function TripsOverview({
           if (pm.key === "booking") return false; // always priced via Google
           return !enrichedList.some((o) => (o.offers ?? []).some((x) => pm.test.test(x.source)));
         });
-        // Serialise in small batches — Browserbase caps concurrent sessions, and
-        // firing all at once was making several hunts come back empty.
+        // Serialise in small batches — the render-service caps concurrency at 2,
+        // and firing all at once was making several hunts come back empty.
         for (let i = 0; i < toHunt.length; i += 2) {
           await Promise.all(
             toHunt.slice(i, i + 2).map((pm) => huntProviderDeals(pm.key, pm.label, pm.domain)),
@@ -1807,7 +1809,7 @@ export function TripsOverview({
 
   const huntProviderDeals = async (key: string, label: string, domain: string) => {
     setProviderDealState((st) => ({ ...st, [key]: { loading: true, deals: st[key]?.deals ?? null } }));
-    // EVERY provider hunt uses the REAL browser (Browserbase). Rendered pages
+    // EVERY provider hunt uses the REAL browser (self-hosted). Rendered pages
     // are timing-sensitive, so give an empty first pass ONE retry before we
     // conclude the portal really has nothing (concurrency made hunts flaky).
     const runOnce = () =>
