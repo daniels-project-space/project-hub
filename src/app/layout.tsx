@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Script from "next/script";
 import { Fraunces, Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import { Providers } from "./providers";
 import "./globals.css";
@@ -60,12 +59,6 @@ export default function RootLayout({
           <div className="absolute inset-0 bg-grain opacity-[0.06] mix-blend-overlay" />
         </div>
         <Providers>{children}</Providers>
-        {/* JARVIS everywhere: canonical particle orb, captions, voice, and wake word */}
-        <Script
-          src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=local-handover-20260810-2"
-          strategy="afterInteractive"
-          data-jarvis-app="project-hub"
-        />
       </body>
     </html>
   );
