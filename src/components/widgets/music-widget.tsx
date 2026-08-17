@@ -1,11 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "convex/react";
-import { Music } from "lucide-react";
+import { Music, Maximize2 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import { WidgetSlot } from "../widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MiniChart } from "@/components/ui/mini-chart";
+import { Sheet } from "@/components/ui/sheet";
+import { StatTile } from "@/components/ui/stat-tile";
+import { Badge } from "@/components/ui/badge";
 
 // AI Music Income — first income made through AI. Mirrors music-house's
 // DistroKid analytics (polled into convex/wealth.ts aiIncome cache every 6h;
@@ -28,6 +32,18 @@ function fmtDay(ts: number): string {
 
 export function MusicWidget() {
   const ai = useQuery(api.wealth.getAiIncome);
+  const [expanded, setExpanded] = useState(false);
+
+  const expandAction = ai ? (
+    <button
+      type="button"
+      aria-label="Expand"
+      onClick={() => setExpanded(true)}
+      className="p-1 rounded text-paper-faint hover:text-brass transition-colors"
+    >
+      <Maximize2 className="w-3.5 h-3.5" />
+    </button>
+  ) : undefined;
 
   if (ai === undefined) {
     return (
@@ -69,6 +85,7 @@ export function MusicWidget() {
         size="small"
         label="AI Music Income"
         status={feedStale ? "feed stale" : `upd ${ago(ai.fetchedAt)}`}
+        action={expandAction}
       >
         <div className="p-4 space-y-2">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint flex items-center gap-1.5">
@@ -83,6 +100,7 @@ export function MusicWidget() {
             DistroKid shows any.
           </p>
         </div>
+        <MusicHistorySheet ai={ai} open={expanded} onClose={() => setExpanded(false)} />
       </WidgetSlot>
     );
   }
@@ -97,6 +115,7 @@ export function MusicWidget() {
       size="small"
       label="AI Music Income"
       status={feedStale ? "feed stale" : `upd ${ago(ai.fetchedAt)}`}
+      action={expandAction}
     >
       <div className="p-4 space-y-3">
         <div className="flex items-end justify-between">
@@ -159,6 +178,138 @@ export function MusicWidget() {
           Real balance counts toward net worth (AI Income). Stores pay ~2–3 months behind; estimate = streams × $0.0035.
         </p>
       </div>
+      <MusicHistorySheet ai={ai} open={expanded} onClose={() => setExpanded(false)} />
     </WidgetSlot>
+  );
+}
+
+// ─── Expanded detail view ────────────────────────────────────────────────────
+// There is no per-track breakdown in convex (aiIncome only stores aggregate
+// streamsTotal/balance snapshots) — the fullest available detail is a bigger
+// chart, low/high/change stats, and the complete poll-history table instead
+// of just the compact card's tail-end sparkline.
+function MusicHistorySheet({
+  ai,
+  open,
+  onClose,
+}: {
+  ai: {
+    streamsTotal: number;
+    balanceUsd: number;
+    estUsd: number;
+    balanceGbp: number;
+    history: { fetchedAt: number; streamsTotal: number; balance: number }[];
+    fetchedAt: number;
+  };
+  open: boolean;
+  onClose: () => void;
+}) {
+  const series = ai.history.map((h) => h.streamsTotal);
+  const labels = ai.history.map((h) => fmtDay(h.fetchedAt));
+  const streamsLow = series.length ? Math.min(...series) : 0;
+  const streamsHigh = series.length ? Math.max(...series) : 0;
+  const delta = series.length >= 2 ? series[series.length - 1] - series[0] : 0;
+  const up = delta >= 0;
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="AI Music Income · History"
+      side="center"
+      className="max-w-2xl w-[min(94vw,680px)]"
+    >
+      <div className="space-y-5">
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint flex items-center gap-1.5">
+              <Music className="w-3 h-3" /> music-house · DistroKid
+            </p>
+            <p className="mt-1 font-display italic font-light text-[40px] leading-none tabular-nums text-paper">
+              {ai.streamsTotal.toLocaleString()}
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-paper-faint">
+              {ai.history.length} data point{ai.history.length === 1 ? "" : "s"} · upd {ago(ai.fetchedAt)}
+            </p>
+          </div>
+          {delta !== 0 && (
+            <Badge tone={up ? "emerald" : "rose"} className="text-[11px] px-2.5 py-1">
+              {up ? "▲" : "▼"} {up ? "+" : ""}
+              {delta.toLocaleString()}
+            </Badge>
+          )}
+        </div>
+
+        {series.length >= 2 ? (
+          <div className="rounded-lg border border-rule-soft/60 p-3">
+            <MiniChart
+              data={series}
+              labels={labels}
+              width={620}
+              height={260}
+              axis
+              endDot
+              baseline
+              className="w-full"
+              valueFormat={(n) => n.toLocaleString()}
+            />
+          </div>
+        ) : (
+          <p className="font-mono text-[10px] text-paper-faint py-8 text-center">
+            Graph appears after the second 2-day pull.
+          </p>
+        )}
+
+        <div className="grid grid-cols-3 gap-2.5">
+          <StatTile label="Low" value={streamsLow.toLocaleString()} tone="rose" />
+          <StatTile label="High" value={streamsHigh.toLocaleString()} tone="emerald" />
+          <StatTile
+            label="Change"
+            value={`${up ? "+" : ""}${delta.toLocaleString()}`}
+            tone={up ? "emerald" : "rose"}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5 pt-1 border-t border-rule-soft/40">
+          <StatTile
+            label="Bank (real)"
+            value={`$${ai.balanceUsd.toFixed(2)}`}
+            sub={`£${ai.balanceGbp.toFixed(2)}`}
+            tone="emerald"
+          />
+          <StatTile label="Est. from streams" value={`$${ai.estUsd.toFixed(2)}`} />
+        </div>
+
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint mb-2">
+            Poll history
+          </p>
+          <div className="max-h-64 overflow-y-auto no-scrollbar space-y-1.5">
+            {[...ai.history].reverse().map((h) => (
+              <div
+                key={h.fetchedAt}
+                className="flex items-center justify-between rounded-lg border border-rule-soft/50 px-3 py-2"
+                style={{
+                  background:
+                    "linear-gradient(160deg, oklch(0.21 0.006 245 / 0.5), oklch(0.18 0.006 245 / 0.4))",
+                }}
+              >
+                <span className="font-mono text-[10px] text-paper-faint">{fmtDay(h.fetchedAt)}</span>
+                <span className="font-mono text-[11px] tabular-nums text-paper">
+                  {h.streamsTotal.toLocaleString()} streams
+                </span>
+                <span className="font-mono text-[11px] tabular-nums text-emerald-soft">
+                  ${h.balance.toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p className="font-mono text-[9px] text-paper-faint leading-relaxed">
+          Real balance counts toward net worth (AI Income). Stores pay ~2–3 months behind; estimate = streams × $0.0035.
+        </p>
+      </div>
+    </Sheet>
   );
 }

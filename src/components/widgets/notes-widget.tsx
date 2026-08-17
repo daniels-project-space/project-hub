@@ -24,6 +24,7 @@ import { WidgetSlot } from "../widget-slot";
 import { EditableValue } from "@/components/ui/editable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DragHandle } from "@/components/ui/drag-handle";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import {
   Plus,
@@ -31,6 +32,7 @@ import {
   Pin,
   Search,
   X,
+  Maximize2,
 } from "lucide-react";
 
 // ── Color palette mapped to design tokens ──────────────────────────────────
@@ -344,6 +346,7 @@ export function NotesWidget() {
 
   const [search, setSearch] = useState("");
   const [addColor, setAddColor] = useState<NoteColor>("amber");
+  const [expandOpen, setExpandOpen] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -443,7 +446,20 @@ export function NotesWidget() {
   const pinnedCount = sorted.filter((n) => n.pinned).length;
 
   return (
-    <WidgetSlot size="medium" label="Notes">
+    <WidgetSlot
+      size="medium"
+      label="Notes"
+      action={
+        <button
+          type="button"
+          aria-label="Expand notes"
+          onClick={() => setExpandOpen(true)}
+          className="p-1 rounded text-paper-faint hover:text-paper"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      }
+    >
       <div className="flex flex-col gap-3 p-3 h-full">
         {/* Search bar — only show when there are enough notes to warrant it */}
         {sorted.length > 3 && (
@@ -525,6 +541,206 @@ export function NotesWidget() {
           </p>
         )}
       </div>
+
+      <ExpandedNotesSheet
+        open={expandOpen}
+        onClose={() => setExpandOpen(false)}
+        notes={sorted}
+        onUpdate={handleUpdate}
+        onDelete={handleDelete}
+        onTogglePin={handleTogglePin}
+        onColorChange={handleColorChange}
+        onAdd={handleAdd}
+      />
     </WidgetSlot>
+  );
+}
+
+// ── Expanded detail view (Sheet) ────────────────────────────────────────────
+// Full-size note grid + editor, opened by clicking the header's expand icon.
+// Mirrors wealth-widget's HistorySheet convention (large centered Sheet,
+// same header/typography language). Reuses the same handlers as the compact
+// card so edits, pin/color changes, deletes and quick-add stay in sync — no
+// drag-reorder here (that stays in the compact cube grid) to avoid running
+// two dnd-kit contexts against the same note ids at once.
+function ExpandedNotesSheet({
+  open,
+  onClose,
+  notes,
+  onUpdate,
+  onDelete,
+  onTogglePin,
+  onColorChange,
+  onAdd,
+}: {
+  open: boolean;
+  onClose: () => void;
+  notes: NoteDoc[];
+  onUpdate: (id: Id<"notes">, text: string) => void;
+  onDelete: (id: Id<"notes">) => void;
+  onTogglePin: (id: Id<"notes">, pinned: boolean) => void;
+  onColorChange: (id: Id<"notes">, color: string) => void;
+  onAdd: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const submit = () => {
+    const t = draft.trim();
+    if (!t) return;
+    onAdd(t);
+    setDraft("");
+  };
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`Notes · ${notes.length} total`}
+      side="center"
+      className="max-w-3xl w-[min(94vw,860px)]"
+    >
+      <div className="space-y-4">
+        {/* Quick-add — same affordance as the compact card's dashed cube */}
+        <div className="flex items-center gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/40 px-2.5 py-1.5">
+          <Plus className="w-3.5 h-3.5 text-paper-faint shrink-0" />
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="New note… (Enter to add)"
+            className="flex-1 bg-transparent outline-none text-sm text-paper placeholder:text-paper-faint"
+          />
+          {draft && (
+            <button
+              type="button"
+              onClick={submit}
+              className="shrink-0 rounded bg-brass/20 border border-brass/30 px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-brass hover:bg-brass/30 transition-colors"
+            >
+              Add
+            </button>
+          )}
+        </div>
+
+        {notes.length === 0 ? (
+          <EmptyState
+            icon={<Pin className="w-5 h-5" />}
+            title="No notes yet"
+            hint="Add one above"
+          />
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {notes.map((note) => (
+              <ExpandedNoteCard
+                key={note._id}
+                note={note}
+                onUpdate={onUpdate}
+                onDelete={onDelete}
+                onTogglePin={onTogglePin}
+                onColorChange={onColorChange}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+// Static (non-draggable) card used inside the expanded Sheet — same visual
+// language as the compact NoteCard (post-it tint, rotation, pin/color/trash),
+// minus the drag handle and dnd-kit sortable wiring.
+function ExpandedNoteCard({
+  note,
+  onUpdate,
+  onDelete,
+  onTogglePin,
+  onColorChange,
+}: {
+  note: NoteDoc;
+  onUpdate: (id: Id<"notes">, text: string) => void;
+  onDelete: (id: Id<"notes">) => void;
+  onTogglePin: (id: Id<"notes">, pinned: boolean) => void;
+  onColorChange: (id: Id<"notes">, color: string) => void;
+}) {
+  const [showPalette, setShowPalette] = useState(false);
+  const c = colorFor(note.color);
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-2.5 flex flex-col gap-1.5 min-h-[140px]",
+        "shadow-[0_6px_18px_-8px_rgba(0,0,0,0.55)]",
+        c.bg,
+        c.border,
+        rotationFor(note._id),
+      )}
+    >
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          title="Change colour"
+          onClick={() => setShowPalette((v) => !v)}
+          className={cn(
+            "w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-paper/10 hover:scale-125 transition-transform",
+            c.dot,
+          )}
+        />
+        <span className="flex-1" />
+        <button
+          type="button"
+          title={note.pinned ? "Unpin" : "Pin"}
+          onClick={() => onTogglePin(note._id, !note.pinned)}
+          className={cn(
+            "transition-colors",
+            note.pinned ? "text-brass" : "text-paper-faint hover:text-brass",
+          )}
+        >
+          <Pin className="w-3 h-3" fill={note.pinned ? "currentColor" : "none"} />
+        </button>
+        <button
+          type="button"
+          title="Delete note"
+          onClick={() => onDelete(note._id)}
+          className="text-paper-faint hover:text-rose-soft transition-colors"
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      </div>
+
+      {showPalette && (
+        <div className="flex gap-1 flex-wrap">
+          {NOTE_COLORS.map((nc) => (
+            <button
+              key={nc.id}
+              type="button"
+              title={nc.label}
+              onClick={() => {
+                onColorChange(note._id, nc.id);
+                setShowPalette(false);
+              }}
+              className={cn(
+                "w-3.5 h-3.5 rounded-full ring-1 ring-paper/10 hover:scale-125 transition-transform",
+                nc.dot,
+                note.color === nc.id && "ring-2 ring-paper/60 scale-125",
+              )}
+            />
+          ))}
+        </div>
+      )}
+
+      <EditableValue
+        value={note.text}
+        onCommit={(t) => onUpdate(note._id, t)}
+        placeholder="Empty note…"
+        multiline
+        className="flex-1 text-[12px] leading-snug text-paper/90 w-full"
+        inputClassName="text-[12px] leading-snug min-h-[88px]"
+      />
+    </div>
   );
 }

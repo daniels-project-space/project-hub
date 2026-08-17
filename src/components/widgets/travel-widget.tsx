@@ -45,6 +45,8 @@ import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { WidgetSlot } from "../widget-slot";
 import { BudgetControl, nightsBetween } from "@/components/travel/budget-control";
+import { Badge } from "@/components/ui/badge";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { TripMap, type TripMarker } from "@/components/travel/trip-map";
 import {
@@ -105,6 +107,18 @@ const gbp = (n: number) =>
     currency: "GBP",
     maximumFractionDigits: 0,
   }).format(n);
+
+// convex/trips.ts's getFull returns full tripItems Docs, but the shared
+// TripItem type (itinerary-timeline.tsx) only declares the fields the
+// compact drag timeline needs. The expanded detail sheet below surfaces the
+// richer fields the schema already carries (description/address/rating/
+// sortOrder) — same runtime objects, wider local type.
+type FullTripItem = TripItem & {
+  description?: string;
+  address?: string;
+  rating?: number;
+  sortOrder?: number;
+};
 
 // Minimal SpeechRecognition typing (avoids `any`; guarded for SSR/unsupported).
 type SpeechRecognitionLike = {
@@ -560,6 +574,8 @@ export function TravelWidget() {
   // Local override of which trip is shown; null → derive from data.
   const [override, setOverride] = useState<Id<"trips"> | null>(null);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  // Click-to-expand: full day-by-day itinerary detail sheet (header action).
+  const [expandOpen, setExpandOpen] = useState(false);
 
   // Selected trip: explicit override → active → most recent (list is desc).
   const selectedId: Id<"trips"> | null = useMemo(() => {
@@ -748,7 +764,20 @@ export function TravelWidget() {
   };
 
   return (
-    <WidgetSlot size="full" label="Travel">
+    <WidgetSlot
+      size="full"
+      label="Travel"
+      action={
+        <button
+          type="button"
+          aria-label="Expand itinerary"
+          onClick={() => setExpandOpen(true)}
+          className="p-1 rounded text-paper-faint hover:text-paper"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      }
+    >
       <div className="p-4 space-y-3">
         {/* Header: selector + mode switch + save */}
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -910,6 +939,145 @@ export function TravelWidget() {
           </>
         )}
       </div>
+
+      {/* Click-to-expand: full day-by-day itinerary detail (Sheet,
+          wealth-widget HistorySheet convention). Surfaces per-item
+          description/address/rating/tags that the compact drag timeline
+          (max-h-72, ItineraryTimeline) doesn't show. */}
+      <Sheet
+        open={expandOpen}
+        onClose={() => setExpandOpen(false)}
+        title={trip ? `${trip.title} — Full Itinerary` : "Trip — Full Itinerary"}
+        side="right"
+      >
+        {!trip ? (
+          <p className="font-mono text-[12px] text-paper-faint py-10 text-center">
+            Select or plan a trip to see its full itinerary.
+          </p>
+        ) : (
+          <div className="space-y-5">
+            <div className="space-y-1">
+              <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+                {trip.destCity ?? trip.title}
+                {trip.destCountryCode ? ` · ${trip.destCountryCode}` : ""}
+              </p>
+              <p className="font-display italic text-[20px] leading-snug text-paper">
+                {trip.title}
+              </p>
+              <p className="font-mono text-[11px] text-paper-faint">
+                {trip.startDate ?? "?"} → {trip.endDate ?? "?"}
+                {trip.originCity ? `  ·  from ${trip.originCity}` : ""}
+              </p>
+              <p className="font-mono text-[11px] text-paper-faint">
+                Budget {trip.budgetGbp != null ? gbp(trip.budgetGbp) : "—"} · Spent{" "}
+                {gbp(spent)}
+              </p>
+            </div>
+
+            {days.length === 0 ? (
+              <p className="font-mono text-[11px] text-paper-faint">
+                No itinerary yet.
+              </p>
+            ) : (
+              days
+                .slice()
+                .sort((a, b) => a.dayIndex - b.dayIndex)
+                .map((d) => {
+                  const dayItems = (items as FullTripItem[])
+                    .filter((it) => it.dayId === d._id)
+                    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+                  return (
+                    <div
+                      key={d._id}
+                      className="rounded-lg border border-rule-soft/50 p-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-brass/85">
+                          Day {d.dayIndex + 1}
+                          {d.date ? ` · ${d.date}` : ""}
+                        </span>
+                        <span className="font-mono text-[10px] text-paper-faint">
+                          {dayItems.length} item{dayItems.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      {d.summary && (
+                        <p className="font-mono text-[11px] leading-snug text-paper-dim">
+                          {d.summary}
+                        </p>
+                      )}
+                      {dayItems.length === 0 ? (
+                        <p className="font-mono text-[10px] text-paper-faint">
+                          No items.
+                        </p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {dayItems.map((it) => (
+                            <li
+                              key={it._id}
+                              className="rounded-md border border-rule-soft/40 px-2.5 py-2 space-y-1"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[11px] text-paper">
+                                  {it.title}
+                                </span>
+                                {it.status && (
+                                  <Badge
+                                    tone={
+                                      it.status === "done"
+                                        ? "emerald"
+                                        : it.status === "skip"
+                                          ? "rose"
+                                          : "default"
+                                    }
+                                  >
+                                    {it.status}
+                                  </Badge>
+                                )}
+                                <span className="ml-auto font-mono text-[10px] text-paper-faint whitespace-nowrap">
+                                  {it.startTime ?? ""}
+                                  {it.endTime ? `–${it.endTime}` : ""}
+                                </span>
+                              </div>
+                              {it.description && (
+                                <p className="font-mono text-[10px] leading-snug text-paper-dim">
+                                  {it.description}
+                                </p>
+                              )}
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[9px] text-paper-faint">
+                                {it.address && <span>{it.address}</span>}
+                                {it.priceGbp != null && <span>{gbp(it.priceGbp)}</span>}
+                                {it.rating != null && <span>★ {it.rating}</span>}
+                                {it.link && (
+                                  <a
+                                    href={it.link}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-brass hover:underline"
+                                  >
+                                    link
+                                  </a>
+                                )}
+                              </div>
+                              {it.tags && it.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                  {it.tags.map((t) => (
+                                    <Badge key={t} tone="default">
+                                      {t}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })
+            )}
+          </div>
+        )}
+      </Sheet>
     </WidgetSlot>
   );
 }

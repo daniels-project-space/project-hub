@@ -139,6 +139,7 @@ export const ALL_WIDGET_TYPES: string[] = [
   "channelIdea",
   "remoteWorkHub",
   "travel",
+  "music",
 ];
 
 // ---------------------------------------------------------------------------

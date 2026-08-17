@@ -126,7 +126,11 @@ function parseLocalHandoverStatus(value: unknown): LocalHandoverStatus | null {
   };
 }
 
-export function TopBar() {
+export function TopBar({
+  onOpenLayoutEditor,
+}: {
+  onOpenLayoutEditor?: () => void;
+} = {}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
 
@@ -232,6 +236,7 @@ export function TopBar() {
       <SettingsPanel
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        onOpenLayoutEditor={onOpenLayoutEditor}
       />
     </header>
   );

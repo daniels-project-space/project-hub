@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pencil, Check } from "lucide-react";
 import { TopBar } from "@/components/top-bar";
 import { AppsRow } from "@/components/apps-row";
@@ -9,6 +9,17 @@ import { CommandCenter } from "@/components/command-center";
 
 export default function HomePage() {
   const [editMode, setEditMode] = useState(false);
+  const widgetsSectionRef = useRef<HTMLElement | null>(null);
+
+  // Entry point for Settings → "Customize layout…": jump into the SAME edit
+  // mode the inline Edit button drives, then scroll the grid into view.
+  const openLayoutEditor = () => {
+    setEditMode(true);
+    widgetsSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
 
   return (
     <main
@@ -20,7 +31,7 @@ export default function HomePage() {
       data-jarvis-source="src/app/page.tsx"
       data-jarvis-editable
     >
-      <TopBar />
+      <TopBar onOpenLayoutEditor={openLayoutEditor} />
 
       <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-8">
         {/* Carousel is the top content now (hero text removed). */}
@@ -28,7 +39,7 @@ export default function HomePage() {
 
         <CommandCenter />
 
-        <section className="mb-12">
+        <section className="mb-12" ref={widgetsSectionRef}>
           <SectionLabel
             title="Widgets"
             hint={

@@ -1,13 +1,16 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Receipt, Plus, Trash2 } from "lucide-react";
+import { Receipt, Plus, Trash2, Maximize2, Repeat } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { WidgetSlot } from "../widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditableValue } from "@/components/ui/editable-value";
+import { Sheet } from "@/components/ui/sheet";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -109,8 +112,23 @@ export function ExpensesWidget() {
     return total * (dayOfMonth / daysInMonth);
   }, [total]);
 
+  const [expandOpen, setExpandOpen] = useState(false);
+
   return (
-    <WidgetSlot size="medium" label="Expenses · Subscriptions">
+    <WidgetSlot
+      size="medium"
+      label="Expenses · Subscriptions"
+      action={
+        <button
+          type="button"
+          aria-label="Expand expenses"
+          onClick={() => setExpandOpen(true)}
+          className="p-1 rounded text-paper-faint hover:text-paper"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      }
+    >
       <div className="flex flex-col gap-2 p-2">
         {/* Headline — monthly outflow (negative, rose) */}
         <div className="rounded-lg border border-rose-soft/25 bg-rose-soft/[0.06] px-3 py-2.5">
@@ -184,6 +202,149 @@ export function ExpensesWidget() {
           </ul>
         )}
       </div>
+
+      <ExpandedExpensesSheet
+        open={expandOpen}
+        onClose={() => setExpandOpen(false)}
+        expenses={expenses}
+        total={total}
+        accrued={accrued}
+        updateExpense={updateExpense}
+        removeExpense={removeExpense}
+      />
     </WidgetSlot>
+  );
+}
+
+// ── Expanded detail view (Sheet) ────────────────────────────────────────────
+// Fuller ledger: grouped by category with per-category subtotals, recurring /
+// due-day badges, and the same inline-edit + delete affordances as the
+// compact list. Mirrors wealth-widget's HistorySheet convention.
+function ExpandedExpensesSheet({
+  open,
+  onClose,
+  expenses,
+  total,
+  accrued,
+  updateExpense,
+  removeExpense,
+}: {
+  open: boolean;
+  onClose: () => void;
+  expenses: Expense[] | undefined;
+  total: number;
+  accrued: number;
+  updateExpense: (args: { id: Id<"expenses">; name?: string; amountGBP?: number }) => unknown;
+  removeExpense: (args: { id: Id<"expenses"> }) => unknown;
+}) {
+  const groups = useMemo(() => {
+    const byCat = new Map<string, Expense[]>();
+    for (const e of expenses ?? []) {
+      const key = e.category?.trim() || "Uncategorized";
+      const list = byCat.get(key) ?? [];
+      list.push(e);
+      byCat.set(key, list);
+    }
+    return [...byCat.entries()]
+      .map(([category, items]) => ({
+        category,
+        items,
+        subtotal: items.reduce((s, e) => s + (Number.isFinite(e.amountGBP) ? e.amountGBP : 0), 0),
+      }))
+      .sort((a, b) => b.subtotal - a.subtotal);
+  }, [expenses]);
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`Expenses · ${expenses?.length ?? 0} total`}
+      side="center"
+      className="max-w-2xl w-[min(94vw,640px)]"
+    >
+      <div className="space-y-5">
+        {/* header: total + accrued (same figures as the compact card) */}
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+              Monthly outflow
+            </p>
+            <p className="mt-1 font-display italic font-light text-[36px] leading-none tabular-nums text-rose-soft">
+              −{gbp(total)}
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-paper-faint">
+              {gbp(accrued)} accrued so far this month
+            </p>
+          </div>
+          <Badge tone="rose">{groups.length} categor{groups.length === 1 ? "y" : "ies"}</Badge>
+        </div>
+
+        {/* category breakdown */}
+        {groups.length === 0 ? (
+          <EmptyState icon={<Receipt className="w-6 h-6" />} title="No expenses yet" />
+        ) : (
+          <div className="space-y-3">
+            {groups.map(({ category, items, subtotal }) => (
+              <Card key={category} className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-dim">
+                    {category}
+                  </p>
+                  <p className="font-mono text-[12px] tabular-nums text-rose-soft">
+                    −{gbp(subtotal)}
+                  </p>
+                </div>
+                <ul className="flex flex-col gap-1">
+                  {items.map((exp) => (
+                    <li
+                      key={exp._id}
+                      className="group flex items-center gap-2 rounded-lg border border-rule-soft/40 bg-ink-2/60 px-2 py-1.5"
+                    >
+                      <div className="flex-1 min-w-0 text-sm text-paper truncate">
+                        <EditableValue
+                          value={exp.name}
+                          onCommit={(name) => name.trim() && updateExpense({ id: exp._id, name: name.trim() })}
+                          placeholder="Name…"
+                          className="w-full text-sm"
+                        />
+                      </div>
+                      {exp.recurring && (
+                        <span title="Recurring" className="shrink-0 text-paper-faint">
+                          <Repeat className="w-3 h-3" />
+                        </span>
+                      )}
+                      {exp.dueDay && (
+                        <Badge tone="default">day {exp.dueDay}</Badge>
+                      )}
+                      <div className="shrink-0 font-mono text-[13px] text-rose-soft tabular-nums">
+                        <EditableValue
+                          value={String(exp.amountGBP)}
+                          type="number"
+                          onCommit={(v) => {
+                            const a = parseFloat(v);
+                            if (Number.isFinite(a) && a > 0) updateExpense({ id: exp._id, amountGBP: a });
+                          }}
+                          placeholder="0"
+                          className={cn("text-right", "before:content-['£'] before:opacity-60")}
+                          inputClassName="w-20 text-right"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeExpense({ id: exp._id })}
+                        aria-label="Delete expense"
+                        className="shrink-0 opacity-0 group-hover:opacity-100 text-paper-faint hover:text-rose-soft transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </Sheet>
   );
 }

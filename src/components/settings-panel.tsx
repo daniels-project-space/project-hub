@@ -1,20 +1,33 @@
 "use client";
 
+import { useMutation, useQuery } from "convex/react";
 import { Sheet } from "@/components/ui/sheet";
 import {
   useSettings,
   ACCENT_PRESETS,
 } from "@/components/settings-provider";
+import { WIDGET_TYPES } from "@/components/widget-renderer";
+import { WIDGET_META } from "@/components/widget-meta";
+import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 
 // Settings drawer. Every control reads from useSettings() and writes via set(),
 // which persists to BOTH Convex and localStorage. The accent control recolors
 // the app live (SettingsProvider writes --color-brass on change).
+type SettingsWidgetRow = {
+  _id: Id<"widgets">;
+  type: string;
+  enabled: boolean;
+};
+
 export function SettingsPanel({
   open,
   onClose,
+  onOpenLayoutEditor,
 }: {
   open: boolean;
   onClose: () => void;
+  onOpenLayoutEditor?: () => void;
 }) {
   const { get, set } = useSettings();
 
@@ -22,6 +35,13 @@ export function SettingsPanel({
   const blurAmounts = get<boolean>("blurAmountsDefault", false);
   const nwCurrency = get<"GBP" | "USD">("nwCurrency", "GBP");
   const accent = get<string>("accent", "brass");
+
+  // Widget visibility — reads/writes the SAME `widgets` table dashboard-grid.tsx
+  // drives. Only the enabled toggle lives here; drag/resize/add stay in
+  // dashboard-grid.tsx's edit mode, reached via "Customize layout…" below.
+  const widgets = useQuery(api.widgets.list) as SettingsWidgetRow[] | undefined;
+  const setWidgetEnabled = useMutation(api.widgets.setEnabled);
+  const widgetByType = new Map((widgets ?? []).map((w) => [w.type, w]));
 
   return (
     <Sheet open={open} onClose={onClose} title="Settings" side="right">
@@ -98,7 +118,55 @@ export function SettingsPanel({
           </div>
         </Row>
 
-        {/* 5 — Resources */}
+        {/* 5 — Widgets */}
+        <div className="flex flex-col gap-3 border-t border-rule-soft/40 pt-5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
+            Widgets
+          </span>
+          <div className="flex flex-col gap-3">
+            {WIDGET_TYPES.map((type) => {
+              const row = widgetByType.get(type);
+              const label = WIDGET_META[type]?.label ?? type;
+              return (
+                <Row key={type} label={label}>
+                  <Switch
+                    checked={row ? row.enabled : true}
+                    onChange={(v) => {
+                      if (!row) return;
+                      void setWidgetEnabled({ id: row._id, enabled: v });
+                    }}
+                    ariaLabel={`Show ${label} widget`}
+                  />
+                </Row>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            data-jarvis-id="control:settings-customize-layout"
+            data-jarvis-label="Customize dashboard layout"
+            data-jarvis-source="src/components/settings-panel.tsx"
+            onClick={() => {
+              onOpenLayoutEditor?.();
+              onClose();
+            }}
+            className="group flex items-center justify-between gap-3 rounded-md border border-rule-soft/60 bg-paper/[0.025] hover:bg-paper/[0.05] hover:border-paper/[0.14] transition-colors px-3 py-2.5"
+          >
+            <span className="flex flex-col leading-tight text-left">
+              <span className="font-sans text-[13px] text-paper">
+                Customize layout…
+              </span>
+              <span className="font-mono text-[10px] text-paper-faint mt-0.5">
+                Drag, resize, add or remove widgets
+              </span>
+            </span>
+            <span className="font-mono text-[11px] text-paper-faint group-hover:text-paper transition-colors">
+              ↗
+            </span>
+          </button>
+        </div>
+
+        {/* 6 — Resources */}
         <div className="flex flex-col gap-2 border-t border-rule-soft/40 pt-5">
           <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">
             Resources

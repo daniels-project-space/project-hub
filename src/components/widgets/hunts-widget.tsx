@@ -29,6 +29,7 @@ import {
   Pause,
   CheckCircle2,
   Search,
+  Maximize2,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id, Doc } from "../../../convex/_generated/dataModel";
@@ -36,6 +37,7 @@ import { WidgetSlot } from "../widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { MiniChart } from "@/components/ui/mini-chart";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 // Row types are schema-derived (Doc<>), which resolves from schema.ts without
@@ -91,6 +93,9 @@ export function HuntsWidget() {
   const [hQuery, setHQuery] = useState("");
   const [hSchedule, setHSchedule] = useState(SCHEDULES[0].value);
 
+  // Click-to-expand: full alerts + hunts detail sheet (header action).
+  const [expandOpen, setExpandOpen] = useState(false);
+
   // sparkline series from the live-prices cache (a market "pulse" for the card)
   const sparkData = useMemo(() => {
     if (!livePrices || livePrices.length === 0) return [];
@@ -127,6 +132,16 @@ export function HuntsWidget() {
       size="medium"
       label="Hunts · Alerts"
       status={`${activeCount} active`}
+      action={
+        <button
+          type="button"
+          aria-label="Expand"
+          onClick={() => setExpandOpen(true)}
+          className="p-1 rounded text-paper-faint hover:text-paper"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      }
     >
       <div className="p-4 space-y-4">
         {/* market pulse sparkline */}
@@ -352,6 +367,117 @@ export function HuntsWidget() {
           )}
         </section>
       </div>
+
+      {/* Click-to-expand: full alerts + hunts detail (Sheet, wealth-widget
+          HistorySheet convention). Shows every alert/hunt (not just active)
+          with created/schedule/criteria detail the compact card omits. */}
+      <Sheet
+        open={expandOpen}
+        onClose={() => setExpandOpen(false)}
+        title="Hunts · Alerts — Full View"
+        side="right"
+      >
+        <div className="space-y-6">
+          <section className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Bell className="w-3.5 h-3.5 text-brass/80" />
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-brass/85">
+                All Alerts ({(alerts ?? []).length})
+              </span>
+            </div>
+            {(alerts ?? []).length === 0 ? (
+              <p className="font-mono text-[10px] text-paper-faint px-1">
+                No alerts yet.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {(alerts ?? []).map((a: AlertRow) => (
+                  <li
+                    key={a._id}
+                    className="rounded-lg border border-rule-soft/50 px-3 py-2 space-y-1"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[12px] text-paper">
+                        {a.symbol}
+                      </span>
+                      <Badge tone={a.kind === "above" ? "emerald" : "rose"}>
+                        {a.kind} {a.threshold}
+                        {a.currency && a.currency !== "GBP" ? ` ${a.currency}` : ""}
+                      </Badge>
+                      {!a.active && <Badge tone="default">paused</Badge>}
+                      <span className="ml-auto font-mono text-[9px] text-paper-faint whitespace-nowrap">
+                        created {relTime(a.createdAt)}
+                      </span>
+                    </div>
+                    {a.lastTriggeredAt && (
+                      <p className="font-mono text-[10px] text-amber">
+                        ⚑ last triggered {relTime(a.lastTriggeredAt)}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Target className="w-3.5 h-3.5 text-brass/80" />
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-brass/85">
+                All Hunts ({(hunts ?? []).length})
+              </span>
+            </div>
+            {(hunts ?? []).length === 0 ? (
+              <p className="font-mono text-[10px] text-paper-faint px-1">
+                No hunts yet.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {(hunts ?? []).map((h: HuntRow) => (
+                  <li
+                    key={h._id}
+                    className="rounded-lg border border-rule-soft/50 px-3 py-2.5 space-y-1.5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[12px] text-paper">
+                        {h.query}
+                      </span>
+                      {!h.active && (
+                        <Badge tone="emerald">
+                          <CheckCircle2 className="w-3 h-3" /> done
+                        </Badge>
+                      )}
+                      <span className="ml-auto font-mono text-[9px] text-paper-faint whitespace-nowrap">
+                        {h.runs ?? 0}/{h.maxRuns ?? 30} runs
+                      </span>
+                    </div>
+                    {h.criteria && (
+                      <p className="font-mono text-[10px] text-paper-dim">
+                        criteria: {h.criteria}
+                      </p>
+                    )}
+                    <p className="font-mono text-[9px] text-paper-faint">
+                      schedule:{" "}
+                      {SCHEDULES.find((s) => s.value === h.schedule)?.label ??
+                        h.schedule ??
+                        "—"}{" "}
+                      · created {relTime(h.createdAt)}
+                    </p>
+                    {h.lastResult && (
+                      <p className="font-mono text-[10px] leading-snug text-paper-dim">
+                        <span className="text-paper-faint">
+                          {relTime(h.lastCheckedAt)}:{" "}
+                        </span>
+                        {h.lastResult}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </Sheet>
     </WidgetSlot>
   );
 }

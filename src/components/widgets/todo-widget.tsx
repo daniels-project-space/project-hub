@@ -23,6 +23,7 @@ import {
   CalendarDays,
   Tag,
   ChevronDown,
+  Maximize2,
 } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -32,6 +33,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { DragHandle } from "@/components/ui/drag-handle";
 import { EditableValue } from "@/components/ui/editable-value";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { APPS } from "@/lib/apps";
 
@@ -458,6 +460,7 @@ export function TodoWidget() {
   const [filter, setFilter] = useState<FilterMode>("all");
   // Local order mirror for instant drag feedback (manual mode only)
   const [localIds, setLocalIds] = useState<Id<"todos">[]>([]);
+  const [expandOpen, setExpandOpen] = useState(false);
 
   // Sync localIds when todos load / change (manual mode)
   const prevIdsKey = todos?.map((t) => t._id).join(",") ?? "";
@@ -577,126 +580,252 @@ export function TodoWidget() {
   // Render
   // ---------------------------------------------------------------------------
   return (
-    <WidgetSlot size="medium" label="To-Do">
+    <WidgetSlot
+      size="medium"
+      label="To-Do"
+      action={
+        <button
+          type="button"
+          aria-label="Expand to-do list"
+          onClick={() => setExpandOpen(true)}
+          className="p-1 rounded text-paper-faint hover:text-paper"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      }
+    >
       <div className="flex flex-col gap-2 p-2">
-        {/* Sort controls */}
-        <div className="flex items-center gap-1 flex-wrap">
-          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint mr-1">sort</span>
-          {(["manual", "due", "priority", "project"] as SortMode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setSortMode(m)}
-              className={cn(
-                "rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.15em] transition-colors",
-                sortMode === m
-                  ? "bg-brass/20 border border-brass/40 text-brass"
-                  : "text-paper-faint hover:text-paper border border-transparent",
-              )}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-
-        {/* Filter chips */}
-        <div className="flex items-center gap-1 flex-wrap">
-          {([
-            ["all", `all (${todos?.length ?? 0})`],
-            ["active", `active (${activeCount})`],
-            ["done", `done (${doneCount})`],
-          ] as [FilterMode, string][]).map(([val, label]) => (
-            <button
-              key={val}
-              type="button"
-              onClick={() => setFilter(val)}
-              className={cn(
-                "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
-                filter === val
-                  ? "bg-brass/20 border-brass/40 text-brass"
-                  : "border-rule-soft/40 text-paper-faint hover:text-paper",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-          {allTags.map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              onClick={() => setFilter(filter === `tag:${tag}` ? "all" : `tag:${tag}`)}
-              className={cn(
-                "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
-                filter === `tag:${tag}`
-                  ? "bg-brass/20 border-brass/40 text-brass"
-                  : "border-rule-soft/40 text-paper-faint hover:text-paper",
-              )}
-            >
-              #{tag}
-            </button>
-          ))}
-          {allProjects.map((slug) => {
-            const app = APPS.find((a) => a.slug === slug);
-            return (
-              <button
-                key={slug}
-                type="button"
-                onClick={() => setFilter(filter === `proj:${slug}` ? "all" : `proj:${slug}`)}
-                className={cn(
-                  "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
-                  filter === `proj:${slug}`
-                    ? "bg-brass/20 border-brass/40 text-brass"
-                    : "border-rule-soft/40 text-paper-faint hover:text-paper",
-                )}
-              >
-                {app?.short ?? slug}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Quick-add */}
-        <QuickAdd onAdd={handleAdd} />
-
-        {/* Todo list */}
-        {todos === undefined ? (
-          <div className="py-6 flex items-center justify-center">
-            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint animate-pulse">
-              loading…
-            </span>
-          </div>
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            icon={<ListChecks className="w-6 h-6" />}
-            title={filter === "all" ? "No tasks yet" : "Nothing here"}
-            hint={filter === "all" ? "Add a task above" : "Try a different filter"}
-          />
-        ) : (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext
-              items={filtered.map((t) => t._id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <ul className="flex flex-col gap-1">
-                {filtered.map((todo) => (
-                  <TodoRow
-                    key={todo._id}
-                    todo={todo}
-                    sortMode={sortMode}
-                    onToggle={() => updateTodo({ id: todo._id, done: !todo.done })}
-                    onDelete={() => removeTodo({ id: todo._id })}
-                    onUpdateText={(text) => updateTodo({ id: todo._id, text })}
-                    onUpdatePriority={(priority) => updateTodo({ id: todo._id, priority })}
-                    onUpdateDue={(dueDate) => updateTodo({ id: todo._id, dueDate })}
-                    onUpdateTags={(tags) => updateTodo({ id: todo._id, tags })}
-                    onUpdateProject={(projectSlug) => updateTodo({ id: todo._id, projectSlug })}
-                  />
-                ))}
-              </ul>
-            </SortableContext>
-          </DndContext>
-        )}
+        <TodoBody
+          sortMode={sortMode}
+          setSortMode={setSortMode}
+          filter={filter}
+          setFilter={setFilter}
+          todos={todos}
+          activeCount={activeCount}
+          doneCount={doneCount}
+          allTags={allTags}
+          allProjects={allProjects}
+          filtered={filtered}
+          sensors={sensors}
+          handleDragEnd={handleDragEnd}
+          handleAdd={handleAdd}
+          updateTodo={updateTodo}
+          removeTodo={removeTodo}
+        />
       </div>
+
+      <ExpandedTodoSheet
+        open={expandOpen}
+        onClose={() => setExpandOpen(false)}
+        sortMode={sortMode}
+        setSortMode={setSortMode}
+        filter={filter}
+        setFilter={setFilter}
+        todos={todos}
+        activeCount={activeCount}
+        doneCount={doneCount}
+        allTags={allTags}
+        allProjects={allProjects}
+        filtered={filtered}
+        sensors={sensors}
+        handleDragEnd={handleDragEnd}
+        handleAdd={handleAdd}
+        updateTodo={updateTodo}
+        removeTodo={removeTodo}
+      />
     </WidgetSlot>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared body — sort controls, filter chips, quick-add, sortable list. Used
+// by BOTH the compact card and the expanded Sheet so add/complete/reorder
+// interactions are identical (implemented once) in both places.
+// ---------------------------------------------------------------------------
+type TodoBodyProps = {
+  sortMode: SortMode;
+  setSortMode: (m: SortMode) => void;
+  filter: FilterMode;
+  setFilter: (f: FilterMode) => void;
+  todos: Todo[] | undefined;
+  activeCount: number;
+  doneCount: number;
+  allTags: string[];
+  allProjects: string[];
+  filtered: Todo[];
+  sensors: ReturnType<typeof useSensors>;
+  handleDragEnd: (event: DragEndEvent) => void;
+  handleAdd: (
+    text: string,
+    priority: number,
+    dueDate: number | undefined,
+    tags: string[],
+    projectSlug: string | undefined,
+  ) => void;
+  updateTodo: (args: Partial<Todo> & { id: Id<"todos"> }) => unknown;
+  removeTodo: (args: { id: Id<"todos"> }) => unknown;
+};
+
+function TodoBody({
+  sortMode,
+  setSortMode,
+  filter,
+  setFilter,
+  todos,
+  activeCount,
+  doneCount,
+  allTags,
+  allProjects,
+  filtered,
+  sensors,
+  handleDragEnd,
+  handleAdd,
+  updateTodo,
+  removeTodo,
+}: TodoBodyProps) {
+  return (
+    <>
+      {/* Sort controls */}
+      <div className="flex items-center gap-1 flex-wrap">
+        <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-paper-faint mr-1">sort</span>
+        {(["manual", "due", "priority", "project"] as SortMode[]).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setSortMode(m)}
+            className={cn(
+              "rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.15em] transition-colors",
+              sortMode === m
+                ? "bg-brass/20 border border-brass/40 text-brass"
+                : "text-paper-faint hover:text-paper border border-transparent",
+            )}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter chips */}
+      <div className="flex items-center gap-1 flex-wrap">
+        {([
+          ["all", `all (${todos?.length ?? 0})`],
+          ["active", `active (${activeCount})`],
+          ["done", `done (${doneCount})`],
+        ] as [FilterMode, string][]).map(([val, label]) => (
+          <button
+            key={val}
+            type="button"
+            onClick={() => setFilter(val)}
+            className={cn(
+              "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
+              filter === val
+                ? "bg-brass/20 border-brass/40 text-brass"
+                : "border-rule-soft/40 text-paper-faint hover:text-paper",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        {allTags.map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            onClick={() => setFilter(filter === `tag:${tag}` ? "all" : `tag:${tag}`)}
+            className={cn(
+              "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
+              filter === `tag:${tag}`
+                ? "bg-brass/20 border-brass/40 text-brass"
+                : "border-rule-soft/40 text-paper-faint hover:text-paper",
+            )}
+          >
+            #{tag}
+          </button>
+        ))}
+        {allProjects.map((slug) => {
+          const app = APPS.find((a) => a.slug === slug);
+          return (
+            <button
+              key={slug}
+              type="button"
+              onClick={() => setFilter(filter === `proj:${slug}` ? "all" : `proj:${slug}`)}
+              className={cn(
+                "rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] border transition-colors",
+                filter === `proj:${slug}`
+                  ? "bg-brass/20 border-brass/40 text-brass"
+                  : "border-rule-soft/40 text-paper-faint hover:text-paper",
+              )}
+            >
+              {app?.short ?? slug}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Quick-add */}
+      <QuickAdd onAdd={handleAdd} />
+
+      {/* Todo list */}
+      {todos === undefined ? (
+        <div className="py-6 flex items-center justify-center">
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint animate-pulse">
+            loading…
+          </span>
+        </div>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={<ListChecks className="w-6 h-6" />}
+          title={filter === "all" ? "No tasks yet" : "Nothing here"}
+          hint={filter === "all" ? "Add a task above" : "Try a different filter"}
+        />
+      ) : (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext
+            items={filtered.map((t) => t._id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <ul className="flex flex-col gap-1">
+              {filtered.map((todo) => (
+                <TodoRow
+                  key={todo._id}
+                  todo={todo}
+                  sortMode={sortMode}
+                  onToggle={() => updateTodo({ id: todo._id, done: !todo.done })}
+                  onDelete={() => removeTodo({ id: todo._id })}
+                  onUpdateText={(text) => updateTodo({ id: todo._id, text })}
+                  onUpdatePriority={(priority) => updateTodo({ id: todo._id, priority })}
+                  onUpdateDue={(dueDate) => updateTodo({ id: todo._id, dueDate })}
+                  onUpdateTags={(tags) => updateTodo({ id: todo._id, tags })}
+                  onUpdateProject={(projectSlug) => updateTodo({ id: todo._id, projectSlug })}
+                />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Expanded detail view (Sheet) — same body, more room. Opened from the
+// header's expand icon (wealth-widget HistorySheet convention).
+// ---------------------------------------------------------------------------
+function ExpandedTodoSheet({
+  open,
+  onClose,
+  ...bodyProps
+}: { open: boolean; onClose: () => void } & TodoBodyProps) {
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`To-Do · ${bodyProps.todos?.length ?? 0} total`}
+      side="center"
+      className="max-w-2xl w-[min(94vw,640px)]"
+    >
+      <div className="flex flex-col gap-3">
+        <TodoBody {...bodyProps} />
+      </div>
+    </Sheet>
   );
 }

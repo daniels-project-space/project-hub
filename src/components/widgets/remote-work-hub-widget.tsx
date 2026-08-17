@@ -1,9 +1,10 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WidgetSlot } from "../widget-slot";
+import { Sheet } from "@/components/ui/sheet";
 
 type ProjectTile = { slug: string; name: string; description: string; repo: string };
 
@@ -20,6 +21,7 @@ export function RemoteWorkHubWidget() {
   const [activeIdx, setActiveIdx] = useState(0);
   const [projects, setProjects] = useState<ProjectTile[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   // Poll-diet 2026-07-03: the project list only changes when remote-work-hub
   // redeploys, so the old 60s interval re-fetched an immutable list all day.
@@ -105,14 +107,24 @@ export function RemoteWorkHubWidget() {
       label="Remote Work Hub"
       status={loadErr ? "hub unreachable" : `${count} project${count === 1 ? "" : "s"}`}
       action={
-        <a
-          href={activeUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:text-brass transition-colors flex items-center gap-1.5"
-        >
-          open in tab <ExternalLink className="w-3 h-3" />
-        </a>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-label="Expand all projects"
+            onClick={() => setExpanded(true)}
+            className="p-1 rounded text-paper-faint hover:text-brass transition-colors"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+          <a
+            href={activeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint hover:text-brass transition-colors flex items-center gap-1.5"
+          >
+            open in tab <ExternalLink className="w-3 h-3" />
+          </a>
+        </div>
       }
     >
       <div className="relative px-4 py-4">
@@ -173,6 +185,29 @@ export function RemoteWorkHubWidget() {
           </>
         )}
       </div>
+
+      <Sheet
+        open={expanded}
+        onClose={() => setExpanded(false)}
+        title="Remote Work Hub · All Projects"
+        side="right"
+      >
+        <div className="space-y-3">
+          {loadErr && (
+            <p className="font-mono text-[10px] text-paper-faint py-4 text-center">
+              hub unreachable
+            </p>
+          )}
+          {count === 0 && !loadErr && (
+            <p className="font-mono text-[10px] text-paper-faint py-4 text-center">
+              loading projects…
+            </p>
+          )}
+          {projects.map((p) => (
+            <ExpandedProjectRow key={p.slug} p={p} />
+          ))}
+        </div>
+      </Sheet>
     </WidgetSlot>
   );
 }
@@ -212,6 +247,49 @@ function ProjectCard({ p }: { p: ProjectTile }) {
             open <ExternalLink className="w-2.5 h-2.5" />
           </span>
         </div>
+      </div>
+    </a>
+  );
+}
+
+// Fuller row used inside the expanded Sheet — same visual language as
+// ProjectCard but full-width and with the untruncated description (the
+// compact carousel card line-clamps to 2 lines to fit the 300px tile).
+function ExpandedProjectRow({ p }: { p: ProjectTile }) {
+  const url = `${RWH_BASE}/projects/${p.slug}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`Open ${p.name} in Remote Work Hub`}
+      className="group block rounded-xl border border-rule-soft/70 p-4 transition-colors hover:border-brass/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-brass/40"
+      style={{
+        background: "linear-gradient(160deg, oklch(0.23 0.006 245 / 0.7), oklch(0.18 0.006 245 / 0.6))",
+        boxShadow: "inset 0 1px 0 oklch(1 0 0 / 0.04)",
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 shrink-0 rounded-md grid place-items-center border border-brass/30 bg-brass/[0.08] text-brass font-display italic text-sm">
+            {shortFromName(p.name)}
+          </div>
+          <div className="min-w-0">
+            <h3 className="font-display text-[17px] italic leading-tight text-paper truncate">{p.name}</h3>
+            <p className="font-mono text-[10px] text-paper-faint truncate">{p.repo}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-soft pulse-dot" />
+          <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-emerald-soft">live</span>
+        </div>
+      </div>
+      <p className="mt-2.5 text-[13px] text-paper-dim leading-relaxed">{p.description}</p>
+      <div className="mt-3 flex items-center justify-between">
+        <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-paper-faint">/{p.slug}</span>
+        <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.18em] text-paper-faint group-hover:text-brass transition-colors">
+          open <ExternalLink className="w-2.5 h-2.5" />
+        </span>
       </div>
     </a>
   );

@@ -21,9 +21,10 @@
  * READ-ONLY Binance calls only (account/balance — never trade).
  *
  * Run once:  node scripts/binance-bridge.mjs
- * Scheduled: systemd timer `binance-bridge.timer` (every ~20 min) — see the unit
- *            files installed under /etc/systemd/system/. We do NOT touch the user
- *            crontab (sentinel syncCrontab would clobber it).
+ * Scheduled: systemd timer `binance-bridge.timer` (every ~12h, 2x/day — 2026-07-03
+ *            poll diet, deliberate rate-limit decision, do not shorten) — see the
+ *            unit files installed under /etc/systemd/system/. We do NOT touch the
+ *            user crontab (sentinel syncCrontab would clobber it).
  */
 
 import { readFileSync } from "node:fs";
@@ -34,26 +35,17 @@ const ARIA = process.env.ARIA_BASE || "http://127.0.0.1:4001";
 const CONVEX_URL =
   process.env.CONVEX_URL || "https://fantastic-roadrunner-485.convex.cloud";
 
-// ── Binance creds (read-only) — reuse aria's .env (key allow-listed by Binance).
-// SCAN_BYPASS — credentials are read from file at runtime, never echoed.
+// ── Binance creds (read-only). Injected via env only — the systemd service
+// wraps ExecStart with `codex-vault-exec binance BINANCE_API_KEY=BINANCE_API_KEY
+// BINANCE_API_SECRET=BINANCE_API_SECRET -- ...` (central VPS vault, service
+// scope "binance"). The old `/home/ubuntu/aria/.env` fallback is REMOVED — that
+// directory no longer exists on this VPS (aria was retired).
 function loadBinanceCreds() {
   if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
     return {
       key: process.env.BINANCE_API_KEY,
       secret: process.env.BINANCE_API_SECRET,
     };
-  }
-  for (const p of ["/home/ubuntu/aria/.env"]) {
-    try {
-      const env = readFileSync(p, "utf8");
-      const pick = (k) => {
-        const m = env.match(new RegExp("^" + k + "=(.*)$", "m"));
-        return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
-      };
-      const key = pick("BINANCE_API_KEY");
-      const secret = pick("BINANCE_API_SECRET");
-      if (key && secret) return { key, secret };
-    } catch {}
   }
   return null;
 }

@@ -4,7 +4,7 @@ import { v } from "convex/values";
 export default defineSchema({
   // Widgets the dashboard renders. Each row = one widget instance.
   widgets: defineTable({
-    type: v.string(), // "notes" | "calendar" | "todo" | "wealth" | "projects" | etc.
+    type: v.string(), // "notes" | "calendar" | "todo" | "wealth" | "projects" | "expenses" | "hunts" | "idea" | "channelIdea" | "remoteWorkHub" | "travel" | "music" | etc.
     position: v.number(),
     enabled: v.boolean(),
     config: v.any(), // arbitrary widget-specific config
