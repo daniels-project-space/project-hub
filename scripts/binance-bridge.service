@@ -10,9 +10,11 @@ Type=oneshot
 # `ubuntu` user gets a bare "Permission denied" trying to exec it at all.
 User=root
 WorkingDirectory=/home/ubuntu/project-hub-app
-ExecStart=/root/.local/bin/codex-vault-exec binance BINANCE_API_KEY=BINANCE_API_KEY BINANCE_API_SECRET=BINANCE_API_SECRET -- /usr/bin/env node /home/ubuntu/project-hub-app/scripts/binance-bridge.mjs
-# Binance API key/secret are injected at exec time from the central VPS vault
-# (service scope "binance") via codex-vault-exec — never stored in this unit or
-# in a .env file. The bridge (auth) token is separate: read from
-# scripts/.binance-bridge-token (gitignored) or BINANCE_BRIDGE_TOKEN env.
+ExecStart=/root/.local/bin/vault-run --project binance-bridge -- /usr/bin/env node /home/ubuntu/project-hub-app/scripts/binance-bridge.mjs
+# Binance API key/secret are injected at exec time from the central VPS vault via
+# the manifest /root/.config/vault-manifests/binance-bridge.toml (service scope
+# "binance"), driven by `vault-run` (a thin composition layer over codex-vault-exec).
+# Values are never stored in this unit or in a .env file. Verify the keys exist with
+# `vault-doctor --project binance-bridge`. The bridge (auth) token is separate: read
+# from scripts/.binance-bridge-token (gitignored) or BINANCE_BRIDGE_TOKEN env.
 TimeoutStartSec=60
