@@ -20,9 +20,6 @@ type VaultForm = {
   keyName: string;
   value: string;
   description: string;
-  scopes: string;
-  aliases: string;
-  sourceFiles: string;
 };
 
 const emptyForm: VaultForm = {
@@ -30,14 +27,7 @@ const emptyForm: VaultForm = {
   keyName: "",
   value: "",
   description: "",
-  scopes: "",
-  aliases: "",
-  sourceFiles: "",
 };
-
-function splitList(value: string) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
 
 async function readResponse(response: Response): Promise<{ error?: string; entries?: VaultEntry[] }> {
   const payload: unknown = await response.json().catch(() => ({}));
@@ -138,9 +128,6 @@ export default function VaultPage() {
           keyName: form.keyName,
           value: form.value,
           description: form.description || undefined,
-          scopes: splitList(form.scopes),
-          aliases: splitList(form.aliases),
-          sourceFiles: splitList(form.sourceFiles),
         }),
       });
       const payload = await readResponse(response);
@@ -248,12 +235,12 @@ export default function VaultPage() {
             </section>
 
             <section className="rounded-xl border border-brass/25 bg-ink-2/55 p-5 sm:p-6">
-              <div className="mb-5 flex items-center gap-3"><span className="grid w-9 h-9 place-items-center rounded-lg bg-brass/[0.12] text-brass"><ShieldCheck className="w-4 h-4" /></span><div><h2 className="font-display text-2xl text-paper">Add a key</h2><p className="text-xs text-paper-faint">Saving the same service and key name rotates it.</p></div></div>
+              <div className="mb-5 flex items-center gap-3"><span className="grid w-9 h-9 place-items-center rounded-lg bg-brass/[0.12] text-brass"><ShieldCheck className="w-4 h-4" /></span><div><h2 className="font-display text-2xl text-paper">Add a secret</h2><p className="text-xs text-paper-faint">Four fields only. Saving the same provider and key name rotates it.</p></div></div>
               <form onSubmit={saveEntry} className="space-y-3">
-                <div className="grid grid-cols-2 gap-3"><label className="text-xs text-paper-dim">Service<input value={form.service} onChange={update("service")} required placeholder="openai" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label><label className="text-xs text-paper-dim">Key name<input value={form.keyName} onChange={update("keyName")} required placeholder="API_KEY" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 font-mono text-sm text-paper outline-none focus:border-brass" /></label></div>
+                <div className="grid grid-cols-2 gap-3"><label className="text-xs text-paper-dim">Provider<input value={form.service} onChange={update("service")} required list="vault-providers" placeholder="huggingface" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label><label className="text-xs text-paper-dim">Key name<input value={form.keyName} onChange={update("keyName")} required placeholder="HF_API_KEY" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 font-mono text-sm text-paper outline-none focus:border-brass" /></label></div>
+                <datalist id="vault-providers"><option value="huggingface" /><option value="novita" /><option value="openai" /><option value="github" /><option value="stripe" /></datalist>
                 <label className="block text-xs text-paper-dim">Secret value<textarea value={form.value} onChange={update("value")} required rows={4} autoComplete="new-password" spellCheck={false} className="mt-1.5 w-full resize-y rounded-md border border-rule-soft bg-ink px-3 py-2 font-mono text-xs text-paper outline-none focus:border-brass" /></label>
-                <label className="block text-xs text-paper-dim">Description <span className="text-paper-faint">(optional)</span><input value={form.description} onChange={update("description")} placeholder="Used by the reporting worker" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label>
-                <details className="group rounded-md border border-rule-soft/70 px-3 py-2"><summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.15em] text-paper-faint group-open:text-brass">Optional metadata</summary><div className="mt-3 space-y-3"><label className="block text-xs text-paper-dim">Scopes <span className="text-paper-faint">(comma separated)</span><input value={form.scopes} onChange={update("scopes")} className="mt-1 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label><label className="block text-xs text-paper-dim">Aliases <span className="text-paper-faint">(comma separated)</span><input value={form.aliases} onChange={update("aliases")} className="mt-1 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label><label className="block text-xs text-paper-dim">Source files <span className="text-paper-faint">(comma separated)</span><input value={form.sourceFiles} onChange={update("sourceFiles")} className="mt-1 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label></div></details>
+                <label className="block text-xs text-paper-dim">What is this for? <span className="text-paper-faint">(optional)</span><input value={form.description} onChange={update("description")} placeholder="Lito Music — gated LTX model downloads" className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label>
                 <button disabled={submitting} className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brass px-4 py-3 text-sm font-semibold text-ink disabled:opacity-60">{existingEntry ? <RotateCw className="w-4 h-4" /> : <Plus className="w-4 h-4" />}{submitting ? "Saving…" : existingEntry ? "Rotate key" : "Save key"}</button>
               </form>
             </section>
