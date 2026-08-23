@@ -110,6 +110,8 @@ export default function VeraStayPage() {
     setTourOpen(true);
   };
 
+  const enterTour = () => document.getElementById("tour")?.scrollIntoView({ behavior: "smooth", block: "start" });
+
   return (
     <main className={styles.page}>
       <section id="top" ref={heroRef} onMouseMove={setHeroPointer} className={styles.hero}>
@@ -137,7 +139,7 @@ export default function VeraStayPage() {
           <h1>Book the home<br />you can actually<br /><em>explore.</em></h1>
           <p className={styles.heroIntro}>Vera is a visual-first collection of remarkable homes. Walk every room, know the details, and book with confidence.</p>
           <div className={styles.heroActions}>
-            <button className={styles.solidAction} onClick={() => openTour()}><Play aria-hidden="true" /> Walk this home <ArrowUpRight aria-hidden="true" /></button>
+            <button className={styles.solidAction} onClick={enterTour}><Play aria-hidden="true" /> Walk this home <ArrowUpRight aria-hidden="true" /></button>
             <a className={styles.textAction} href="#collection">Explore the collection <ArrowUpRight aria-hidden="true" /></a>
           </div>
         </div>
@@ -166,7 +168,7 @@ export default function VeraStayPage() {
         </div>
       </section>
 
-      <section ref={storyRef} className={`${styles.story} ${tourVideoReady ? styles.hasTourVideo : ""}`} aria-label="Aster House visual walkthrough">
+      <section id="tour" ref={storyRef} className={`${styles.story} ${tourVideoReady ? styles.hasTourVideo : ""}`} aria-label="Aster House visual walkthrough">
         <div className={styles.storySticky}>
           <video ref={tourVideoRef} className={styles.storyVideo} muted playsInline preload="auto" poster={scenes[0].image} onLoadedMetadata={() => setTourVideoReady(true)} onError={() => setTourVideoReady(false)}>
             <source src="/videos/vera/aster-house-tour.mp4" type="video/mp4" />
