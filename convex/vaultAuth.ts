@@ -14,6 +14,7 @@ const MEDIA_ENGINE_CREDENTIAL_CLIENT = "media-engine";
  */
 export const JARVIS_ACTIONS_VAULT_CLIENT = "jarvis-actions";
 export const JARVIS_ACTIONS_VAULT_SERVICE = "jarvis-actions";
+const PROJECT_HUB_VAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 function constantTimeEqual(left: string | undefined, right: string | undefined): boolean {
   const a = left ?? "";
@@ -26,6 +27,67 @@ function constantTimeEqual(left: string | undefined, right: string | undefined):
       (b.charCodeAt(index % Math.max(1, b.length)) || 0);
   }
   return mismatch === 0 && a.length > 0;
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(`${normalized}${padding}`);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  let mismatch = left.length ^ right.length;
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    mismatch |= (left[index % Math.max(1, left.length)] ?? 0) ^ (right[index % Math.max(1, right.length)] ?? 0);
+  }
+  return mismatch === 0 && left.length > 0;
+}
+
+/**
+ * Verifies the short-lived, HttpOnly Project Hub owner session. The HMAC key is
+ * shared only between the Project Hub server and this Convex deployment, so a
+ * browser never receives a durable vault bearer.
+ */
+export async function requireProjectHubVaultSession(session: string | undefined): Promise<void> {
+  const secret = process.env.PROJECT_HUB_VAULT_SESSION_SECRET;
+  if (!secret || session === undefined || session.length > 512) {
+    throw new Error("Vault authentication required");
+  }
+  const [payload, suppliedSignature, ...extra] = session.split(".");
+  if (!payload || !suppliedSignature || extra.length > 0) throw new Error("Vault authentication required");
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const expectedSignature = new Uint8Array(
+      await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)),
+    );
+    if (!bytesEqual(fromBase64Url(suppliedSignature), expectedSignature)) {
+      throw new Error("Vault authentication required");
+    }
+
+    const decoded: unknown = JSON.parse(new TextDecoder().decode(fromBase64Url(payload)));
+    if (!decoded || typeof decoded !== "object" || !("expiresAt" in decoded) || typeof decoded.expiresAt !== "number") {
+      throw new Error("Vault authentication required");
+    }
+    const now = Date.now();
+    if (
+      !Number.isFinite(decoded.expiresAt)
+      || decoded.expiresAt <= now
+      || decoded.expiresAt > now + PROJECT_HUB_VAULT_SESSION_TTL_MS + 5 * 60 * 1000
+    ) {
+      throw new Error("Vault authentication required");
+    }
+  } catch {
+    throw new Error("Vault authentication required");
+  }
 }
 
 export function requireVaultRoot(rootToken: string | undefined): void {
@@ -57,6 +119,62 @@ async function findClient(ctx: any, vaultToken: string | undefined) {
     .query("vaultClients")
     .withIndex("by_token", (q: any) => q.eq("token", vaultToken))
     .first();
+}
+
+/**
+ * Full-catalogue writers may provision other machine clients. This
+ * is deliberately separate from the environment-only root bearer: the root
+ * token never has to be placed in an AI runtime merely to rotate a bridge
+ * client. The fixed Higgsfield endpoint keeps its own stricter authorization.
+ */
+async function requireVaultClientAdmin(ctx: any, credentials: VaultCredentials): Promise<void> {
+  if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
+  const client = await findClient(ctx, credentials.vaultToken);
+  if (client?.active && client.canWrite && serviceAllowed(client.services, "*")) return;
+  throw new Error("Vault authentication required");
+}
+
+type VaultClientInput = {
+  name: string;
+  token: string;
+  services: string[];
+  canWrite?: boolean;
+};
+
+async function upsertVaultClient(ctx: any, args: VaultClientInput) {
+  const name = args.name.trim().toLowerCase();
+  const services = [...new Set(args.services.map((service) => service.trim()).filter(Boolean))];
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name)) throw new Error("Invalid vault client name");
+  if (args.token.length < 32 || args.token.length > 256) throw new Error("Invalid vault client token");
+  if (services.length === 0 || services.length > 100) throw new Error("Invalid vault service policy");
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("vaultClients")
+    .withIndex("by_name", (q: any) => q.eq("name", name))
+    .first();
+  const row = {
+    name,
+    token: args.token,
+    services,
+    canWrite: args.canWrite === true,
+    active: true,
+    updatedAt: now,
+  };
+  if (existing) {
+    await ctx.db.patch(existing._id, row);
+    return existing._id;
+  }
+  return await ctx.db.insert("vaultClients", { ...row, createdAt: now });
+}
+
+async function revokeVaultClient(ctx: any, nameInput: string) {
+  const existing = await ctx.db
+    .query("vaultClients")
+    .withIndex("by_name", (q: any) => q.eq("name", nameInput.trim().toLowerCase()))
+    .first();
+  if (!existing) return false;
+  await ctx.db.patch(existing._id, { active: false, updatedAt: Date.now() });
+  return true;
 }
 
 /**
@@ -185,29 +303,26 @@ export const upsertClient = mutation({
   },
   handler: async (ctx, args) => {
     requireVaultRoot(args.rootToken);
-    const name = args.name.trim().toLowerCase();
-    const services = [...new Set(args.services.map((service) => service.trim()).filter(Boolean))];
-    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name)) throw new Error("Invalid vault client name");
-    if (args.token.length < 32 || args.token.length > 256) throw new Error("Invalid vault client token");
-    if (services.length === 0 || services.length > 100) throw new Error("Invalid vault service policy");
-    const now = Date.now();
-    const existing = await ctx.db
-      .query("vaultClients")
-      .withIndex("by_name", (q: any) => q.eq("name", name))
-      .first();
-    const row = {
-      name,
-      token: args.token,
-      services,
-      canWrite: args.canWrite === true,
-      active: true,
-      updatedAt: now,
-    };
-    if (existing) {
-      await ctx.db.patch(existing._id, row);
-      return existing._id;
-    }
-    return await ctx.db.insert("vaultClients", { ...row, createdAt: now });
+    return await upsertVaultClient(ctx, args);
+  },
+});
+
+/**
+ * An explicit machine-administration route for a wildcard writer. It lets the
+ * Codex/Claude bridge rotate its own high-entropy client bearers without ever
+ * transferring the environment-only vault root token to either AI runtime.
+ */
+export const provisionClient = mutation({
+  args: {
+    vaultToken: v.string(),
+    name: v.string(),
+    token: v.string(),
+    services: v.array(v.string()),
+    canWrite: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    return await upsertVaultClient(ctx, args);
   },
 });
 
@@ -215,13 +330,16 @@ export const revokeClient = mutation({
   args: { rootToken: v.string(), name: v.string() },
   handler: async (ctx, args) => {
     requireVaultRoot(args.rootToken);
-    const existing = await ctx.db
-      .query("vaultClients")
-      .withIndex("by_name", (q: any) => q.eq("name", args.name.trim().toLowerCase()))
-      .first();
-    if (!existing) return false;
-    await ctx.db.patch(existing._id, { active: false, updatedAt: Date.now() });
-    return true;
+    return await revokeVaultClient(ctx, args.name);
+  },
+});
+
+/** A full-catalogue writer can revoke a bridge client without the root bearer. */
+export const revokeClientByAdmin = mutation({
+  args: { vaultToken: v.string(), name: v.string() },
+  handler: async (ctx, args) => {
+    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    return await revokeVaultClient(ctx, args.name);
   },
 });
 

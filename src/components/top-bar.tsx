@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { useQuery } from "convex/react";
-import { LayoutGrid, Settings, Bell, Search } from "lucide-react";
+import { LayoutGrid, Settings, Bell, Search, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "../../convex/_generated/api";
 import { APPS, type AppEntry } from "@/lib/apps";
@@ -100,6 +100,14 @@ export function TopBar({
 
         {/* Right cluster */}
         <div className="flex items-center gap-1.5">
+          <Link
+            href="/vault"
+            aria-label="Open vault control"
+            title="Vault control"
+            className="w-8 h-8 grid place-items-center rounded-md text-paper-dim hover:text-brass hover:bg-brass/[0.08] transition-colors"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+          </Link>
           <div className="relative">
             <BarBtn
               icon={<LayoutGrid className="w-3.5 h-3.5" />}

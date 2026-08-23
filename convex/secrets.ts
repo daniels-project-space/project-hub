@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import {
   requireHiggsfieldCredentialBundleRead,
   requireHiggsfieldCredentialBundleWrite,
+  requireProjectHubVaultSession,
   requireVaultRead,
   requireVaultRoot,
   requireVaultWrite,
@@ -21,6 +22,10 @@ const MAX_CLIENT_ID_CHARS = 1024;
 const MAX_SCOPE_CHARS = 4096;
 const MAX_TOKEN_TYPE_CHARS = 128;
 const MAX_ISSUER_CHARS = 2048;
+const MAX_VAULT_VALUE_CHARS = 64 * 1024;
+const MAX_VAULT_DESCRIPTION_CHARS = 1024;
+const MAX_VAULT_METADATA_ITEMS = 32;
+const MAX_VAULT_METADATA_ITEM_CHARS = 256;
 
 type HiggsfieldSession = {
   version: 1;
@@ -119,6 +124,44 @@ function assertRevision(revision: number): void {
   }
 }
 
+function assertVaultIdentifier(value: string, field: "service" | "key name"): void {
+  const valid = field === "service"
+    ? /^[a-z0-9][a-z0-9._-]{0,99}$/i.test(value)
+    : /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value);
+  if (!valid) throw new Error(`Invalid vault ${field}`);
+}
+
+function normalizeVaultMetadata(values: string[], field: string): string[] {
+  if (values.length > MAX_VAULT_METADATA_ITEMS) throw new Error(`Too many vault ${field}`);
+  const normalized = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  if (normalized.some((value) => value.length > MAX_VAULT_METADATA_ITEM_CHARS)) {
+    throw new Error(`Invalid vault ${field}`);
+  }
+  return normalized;
+}
+
+function metadataFor(row: {
+  service: string;
+  keyName: string;
+  revision?: number;
+  description?: string;
+  scopes: string[];
+  aliases: string[];
+  sourceFiles: string[];
+}) {
+  // Deliberately explicit: do not add `value` here. This is the only catalogue
+  // shape the owner web control may receive.
+  return {
+    service: row.service,
+    keyName: row.keyName,
+    revision: row.revision ?? 0,
+    description: row.description ?? null,
+    scopes: row.scopes,
+    aliases: row.aliases,
+    sourceFiles: row.sourceFiles,
+  };
+}
+
 export const listByService = query({
   args: { service: v.string(), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { service, vaultToken }) => {
@@ -153,6 +196,96 @@ export const summary = query({
       byService[s.service] = (byService[s.service] ?? 0) + 1;
     }
     return { total: all.length, byService };
+  },
+});
+
+/**
+ * Metadata-only catalogue for trusted server controls. Secret values must use
+ * the narrower server-to-server fetch paths and never reach a browser.
+ */
+export const catalog = query({
+  args: { vaultToken: v.optional(v.string()), vaultSession: v.optional(v.string()) },
+  handler: async (ctx, { vaultToken, vaultSession }) => {
+    if (vaultSession !== undefined) {
+      await requireProjectHubVaultSession(vaultSession);
+    } else {
+      await requireVaultRead(ctx, { vaultToken }, "*");
+    }
+    const rows = await ctx.db.query("secrets").collect();
+    return rows
+      .map(metadataFor)
+      .sort((left, right) => left.service.localeCompare(right.service) || left.keyName.localeCompare(right.keyName));
+  },
+});
+
+/**
+ * Creates a key or rotates a single existing key while returning metadata only.
+ * The durable Higgsfield credential is intentionally excluded by
+ * `requireVaultWrite`; it remains on its dedicated CAS rotation route.
+ */
+export const upsertOne = mutation({
+  args: {
+    vaultToken: v.optional(v.string()),
+    vaultSession: v.optional(v.string()),
+    service: v.string(),
+    keyName: v.string(),
+    value: v.string(),
+    description: v.optional(v.string()),
+    scopes: v.array(v.string()),
+    aliases: v.array(v.string()),
+    sourceFiles: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const service = args.service.trim();
+    const keyName = args.keyName.trim();
+    // A secret is opaque: retain it byte-for-byte. Trimming can corrupt PEMs,
+    // webhook secrets, and provider values with significant whitespace.
+    const value = args.value;
+    assertVaultIdentifier(service, "service");
+    assertVaultIdentifier(keyName, "key name");
+    if (value.trim().length === 0 || value.length > MAX_VAULT_VALUE_CHARS) throw new Error("Invalid vault value");
+
+    const description = args.description?.trim() || undefined;
+    if (description && description.length > MAX_VAULT_DESCRIPTION_CHARS) {
+      throw new Error("Invalid vault description");
+    }
+    const scopes = normalizeVaultMetadata(args.scopes, "scopes");
+    const aliases = normalizeVaultMetadata(args.aliases, "aliases");
+    const sourceFiles = normalizeVaultMetadata(args.sourceFiles, "source files");
+
+    // Keep the durable OAuth refresh bundle off this generic web-control path
+    // even when the server holds a full-catalogue writer.
+    if (service === HIGGSFIELD_SERVICE) {
+      throw new Error("Higgsfield credentials require the fixed bundle endpoint");
+    }
+    if (args.vaultSession !== undefined) {
+      await requireProjectHubVaultSession(args.vaultSession);
+    } else {
+      await requireVaultWrite(ctx, { vaultToken: args.vaultToken }, [service]);
+    }
+    const matches = await ctx.db
+      .query("secrets")
+      .withIndex("by_service_and_key", (q) => q.eq("service", service).eq("keyName", keyName))
+      .collect();
+    if (matches.length > 1) throw new Error("Duplicate vault records require repair before rotation");
+
+    const existing = matches[0];
+    const entry = {
+      service,
+      keyName,
+      value,
+      revision: (existing?.revision ?? 0) + 1,
+      description,
+      scopes,
+      aliases,
+      sourceFiles,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, entry);
+      return { created: false, entry: metadataFor(entry) };
+    }
+    await ctx.db.insert("secrets", entry);
+    return { created: true, entry: metadataFor(entry) };
   },
 });
 
