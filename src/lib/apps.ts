@@ -10,10 +10,14 @@ export type AppEntry = {
   description: string;
   status: AppStatus;
   vercelUrl?: string;
+  /** An interactive concept preview hosted within Project Hub. */
+  previewUrl?: string;
   /** Defaults to a new tab. Use the current tab for app-style workspaces. */
   openInNewTab?: boolean;
   githubUrl?: string;
   category: "platform" | "creator" | "ops" | "ai" | "experiment";
+  /** Pinned to the start of the top app carousel. */
+  featured?: boolean;
 };
 
 export const APPS: AppEntry[] = [
@@ -42,8 +46,11 @@ export const APPS: AppEntry[] = [
     slug: "verified-stays",
     name: "Vera Stay",
     short: "VS",
-    description: "Visual-first verified-stay marketplace concept MVP — complete source and interaction prototype; public Vercel routing pending verification.",
+    description: "Visual-first verified-stay marketplace concept MVP — open the interactive preview from this dashboard.",
     status: "wip",
+    previewUrl: "/vera-stay",
+    openInNewTab: false,
+    featured: true,
     githubUrl: "https://github.com/daniels-project-space/verified-stays",
     category: "experiment",
   },

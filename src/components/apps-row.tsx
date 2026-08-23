@@ -19,7 +19,8 @@ export function AppsRow({ editMode = false }: { editMode?: boolean }) {
   const live = APPS.filter((a) => a.status === "live");
   const wip = APPS.filter((a) => a.status === "wip");
   const idea = APPS.filter((a) => a.status === "idea");
-  const ordered = [...live, ...wip, ...idea];
+  const featured = APPS.filter((a) => a.featured);
+  const ordered = [...featured, ...[...live, ...wip, ...idea].filter((a) => !a.featured)];
 
   const visible = ordered.filter((a) => !hiddenSet.has(a.slug));
   const hidden = ordered.filter((a) => hiddenSet.has(a.slug));

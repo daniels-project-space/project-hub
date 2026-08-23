@@ -36,6 +36,13 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M11 16h2" />
     </svg>
   ),
+  "verified-stays": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <path d="M3 11l9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M9 22v-6h6v6M7.5 12h.01M16.5 12h.01" />
+      <path d="M6 6.7h12" opacity=".55" />
+    </svg>
+  ),
   "app-factory": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M2 20h20V10l-5 3V10l-5 3V10l-5 3V6H2z" />
