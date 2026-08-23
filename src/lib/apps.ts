@@ -166,6 +166,16 @@ export const APPS: AppEntry[] = [
     category: "creator",
   },
   {
+    slug: "lito-music",
+    name: "Lito Music",
+    short: "LM",
+    description: "Private Music3 studio — account, workspace library, playlists, and guided prompting.",
+    status: "live",
+    vercelUrl: "https://lito-music.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/lito-music",
+    category: "creator",
+  },
+  {
     slug: "youtube-studio-ai",
     name: "YouTube Studio AI",
     short: "YS",

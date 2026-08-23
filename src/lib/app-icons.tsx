@@ -101,6 +101,13 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="18" cy="16" r="3" />
     </svg>
   ),
+  "lito-music": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 14.5V9.5M12 16.5V7.5M16 14.5V9.5" />
+      <path d="M6 12h12" />
+    </svg>
+  ),
   "the-council": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M3 21V10l9-6 9 6v11" />
