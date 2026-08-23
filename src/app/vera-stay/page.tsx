@@ -114,7 +114,7 @@ export default function VeraStayPage() {
     <main className={styles.page}>
       <section id="top" ref={heroRef} onMouseMove={setHeroPointer} className={styles.hero}>
         <div className={styles.heroMedia}>
-          <Image src={scenes[0].image} alt="Aster House on the coast at golden hour" fill priority sizes="100vw" className={styles.heroImage} />
+          <Image src={scenes[0].image} alt="Aster House on the coast at golden hour" fill priority loading="eager" sizes="100vw" className={styles.heroImage} />
         </div>
         <div className={styles.heroShade} />
         <div className={styles.heroGrain} />
