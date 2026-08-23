@@ -1,94 +1,220 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { ArrowUpRight, Check, ChevronLeft, Compass, MapPin, Play, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { ArrowDown, ArrowUpRight, ChevronLeft, ChevronRight, MapPin, MoveUpRight, Play, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import styles from "./vera-stay.module.css";
 
-const rooms = [
-  { label: "Arrival", detail: "A private, sea-facing approach with the entire home in view." },
-  { label: "Living room", detail: "Floor-to-ceiling windows, warm stone, and an uninterrupted horizon." },
-  { label: "Pool terrace", detail: "A sunset-ready pool deck measured directly from the tour." },
-  { label: "Primary suite", detail: "Wake up to the water — complete with storage and ensuite details." },
-];
-
-const stays = [
-  ["Aster House", "Milos, Greece", "€684 / night"],
-  ["Lune Cabin", "Vesterålen, Norway", "€412 / night"],
-  ["Casa Sol", "Puglia, Italy", "€531 / night"],
+const scenes = [
+  {
+    eyebrow: "01 · Arrival",
+    title: "Meet the horizon before you meet the house.",
+    detail: "An uninterrupted approach, a protected pool terrace, and the coast held in a single frame.",
+    image: "/images/vera/coast-house.png",
+    marker: "Pool terrace",
+  },
+  {
+    eyebrow: "02 · Living",
+    title: "Every important room, in its real light.",
+    detail: "Glass, limestone and sea air. See how the home holds the afternoon before you ever arrive.",
+    image: "/images/vera/living-room.png",
+    marker: "Living room",
+  },
+  {
+    eyebrow: "03 · Rest",
+    title: "Stay long enough for the view to become yours.",
+    detail: "A quiet suite opening straight to the water, with the last warm light moving across the stone.",
+    image: "/images/vera/primary-suite.png",
+    marker: "Primary suite",
+  },
 ] as const;
 
+const collection = [
+  { title: "Aster House", location: "Milos, Greece", price: "€684 / night", image: scenes[0].image },
+  { title: "Ila House", location: "Puglia, Italy", price: "€531 / night", image: scenes[1].image },
+  { title: "Tide House", location: "Paros, Greece", price: "€412 / night", image: scenes[2].image },
+] as const;
+
+const clamp = (value: number) => Math.min(1, Math.max(0, value));
+
 export default function VeraStayPage() {
+  const heroRef = useRef<HTMLElement>(null);
+  const storyRef = useRef<HTMLElement>(null);
+  const tourVideoRef = useRef<HTMLVideoElement>(null);
   const [tourOpen, setTourOpen] = useState(false);
-  const [room, setRoom] = useState(0);
-  const [requested, setRequested] = useState(false);
+  const [tourScene, setTourScene] = useState(0);
+  const [tourVideoReady, setTourVideoReady] = useState(false);
+
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const hero = heroRef.current;
+      const story = storyRef.current;
+      if (hero) {
+        hero.style.setProperty("--hero-progress", String(clamp(window.scrollY / (window.innerHeight * 0.92))));
+      }
+      if (story) {
+        const rect = story.getBoundingClientRect();
+        const distance = story.offsetHeight - window.innerHeight;
+        const progress = clamp((-rect.top) / Math.max(distance, 1));
+        story.style.setProperty("--story-progress", String(progress));
+        story.style.setProperty("--scene-one", String(clamp(1 - progress * 3.7)));
+        story.style.setProperty("--scene-two", String(clamp(Math.min((progress - 0.12) * 4.2, 1 - (progress - 0.57) * 4.2))));
+        story.style.setProperty("--scene-three", String(clamp((progress - 0.49) * 3.4)));
+        const video = tourVideoRef.current;
+        if (tourVideoReady && video?.duration) {
+          const nextTime = Math.min(Math.max(progress * video.duration, 0), Math.max(video.duration - 0.04, 0));
+          if (Math.abs(video.currentTime - nextTime) > 0.045) video.currentTime = nextTime;
+        }
+      }
+    };
+    const requestUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate);
+    return () => {
+      window.removeEventListener("scroll", requestUpdate);
+      window.removeEventListener("resize", requestUpdate);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [tourVideoReady]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => entry.isIntersecting && entry.target.classList.add(styles.isVisible)),
+      { threshold: 0.16 },
+    );
+    document.querySelectorAll(`.${styles.reveal}`).forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!tourOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => event.key === "Escape" && setTourOpen(false);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tourOpen]);
+
+  const setHeroPointer = (event: React.MouseEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.style.setProperty("--pointer-x", String((event.clientX - bounds.left) / bounds.width - 0.5));
+    event.currentTarget.style.setProperty("--pointer-y", String((event.clientY - bounds.top) / bounds.height - 0.5));
+  };
+
+  const openTour = (index = 0) => {
+    setTourScene(index);
+    setTourOpen(true);
+  };
 
   return (
-    <main className="min-h-dvh bg-[#151814] text-[#f3f1e9] selection:bg-[#dfe7bb] selection:text-[#151814]">
-      <section className="relative min-h-[760px] overflow-hidden border-b border-white/10">
-        <div className="absolute inset-0 bg-[#30372e]" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_22%_72%,rgba(205,213,159,0.28),transparent_30%),radial-gradient(ellipse_at_78%_22%,rgba(231,202,156,0.25),transparent_31%),linear-gradient(135deg,#1b211c_4%,#52614d_42%,#1d241f_100%)]" />
-        <div className="absolute -right-[11%] bottom-[-16%] h-[77%] w-[62%] rounded-[44%_44%_0_0] border border-white/20 bg-[linear-gradient(160deg,rgba(255,255,255,0.35),rgba(255,255,255,0.04)_16%,rgba(0,0,0,0.12)_70%)] shadow-[-32px_12px_80px_rgba(0,0,0,0.25)]" />
-        <div className="absolute bottom-0 right-[9%] h-[45%] w-[49%] rounded-t-[45%] bg-[linear-gradient(140deg,rgba(13,18,15,0.7),rgba(90,104,80,0.18))] blur-[1px]" />
-        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(12,15,12,0.74)_0%,rgba(12,15,12,0.31)_48%,rgba(12,15,12,0.12)_100%)]" />
-        <div className="absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.15)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.15)_1px,transparent_1px)] [background-size:64px_64px] [mask-image:linear-gradient(to_bottom,black,transparent_80%)]" />
+    <main className={styles.page}>
+      <section id="top" ref={heroRef} onMouseMove={setHeroPointer} className={styles.hero}>
+        <div className={styles.heroMedia}>
+          <Image src={scenes[0].image} alt="Aster House on the coast at golden hour" fill priority sizes="100vw" className={styles.heroImage} />
+        </div>
+        <div className={styles.heroShade} />
+        <div className={styles.heroGrain} />
 
-        <nav className="relative z-10 mx-auto flex max-w-[1440px] items-center justify-between px-6 py-7 sm:px-10 lg:px-14">
-          <Link href="/" className="group inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/65 transition hover:text-white">
-            <ChevronLeft className="h-3.5 w-3.5 transition-transform group-hover:-translate-x-0.5" />
-            Project Hub
+        <header className={styles.nav}>
+          <Link href="/" className={styles.wordmark} aria-label="Return to Project Hub">
+            <span className={styles.mark}>V</span><span>VERA</span>
           </Link>
-          <div className="absolute left-1/2 -translate-x-1/2 font-sans text-sm font-semibold tracking-[0.26em] sm:text-base">VERA</div>
-          <button onClick={() => setRequested(true)} className="hidden border border-white/35 px-4 py-2 font-mono text-[9px] uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-[#1b211c] sm:inline-flex">
-            List a home <ArrowUpRight className="ml-2 h-3 w-3" />
-          </button>
-        </nav>
+          <nav className={styles.navLinks} aria-label="Vera navigation">
+            <a href="#collection">Explore stays</a>
+            <a href="#standard">The standard</a>
+            <a href="#hosts">For hosts</a>
+          </nav>
+          <a href="#hosts" className={styles.listHome}>List your home <ArrowUpRight aria-hidden="true" /></a>
+        </header>
 
-        <div className="relative z-10 mx-auto flex min-h-[670px] max-w-[1440px] flex-col justify-center px-6 pb-24 pt-12 sm:px-10 lg:px-14">
-          <div className="max-w-3xl">
-            <p className="mb-6 flex items-center gap-2 font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-[#e5edc1]">
-              <span className="h-2 w-2 rounded-full bg-[#dce8a5] shadow-[0_0_14px_#dce8a5]" /> Verified spaces. Better stays.
-            </p>
-            <h1 className="max-w-3xl font-[family-name:var(--font-display)] text-[clamp(3.9rem,9vw,8.7rem)] leading-[0.83] tracking-[-0.07em] text-[#f5f3ec]">
-              Book the home<br />you can actually <em className="font-normal text-[#e5edc1]">explore.</em>
-            </h1>
-            <p className="mt-8 max-w-md text-base leading-7 text-white/76">Vera is a visual-first collection of remarkable homes. Walk every room, know the details, and book with confidence.</p>
-            <div className="mt-9 flex flex-wrap items-center gap-x-7 gap-y-4">
-              <button onClick={() => setTourOpen(true)} className="group inline-flex items-center gap-3 bg-[#f5f3ec] px-5 py-4 text-sm font-semibold text-[#1b211c] transition hover:bg-[#dfe7bb]">
-                <Play className="h-3.5 w-3.5 fill-current" /> Walk this home <ArrowUpRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-              </button>
-              <a href="#stays" className="inline-flex items-center gap-2 text-sm font-medium text-white/90 transition hover:text-[#e5edc1]">Explore the collection <ArrowUpRight className="h-4 w-4" /></a>
-            </div>
+        <div className={styles.heroRule} />
+        <div className={styles.heroContent}>
+          <p className={styles.eyebrow}><i /> Verified spaces. Better stays.</p>
+          <h1>Book the home<br />you can actually<br /><em>explore.</em></h1>
+          <p className={styles.heroIntro}>Vera is a visual-first collection of remarkable homes. Walk every room, know the details, and book with confidence.</p>
+          <div className={styles.heroActions}>
+            <button className={styles.solidAction} onClick={() => openTour()}><Play aria-hidden="true" /> Walk this home <ArrowUpRight aria-hidden="true" /></button>
+            <a className={styles.textAction} href="#collection">Explore the collection <ArrowUpRight aria-hidden="true" /></a>
           </div>
-          <div className="absolute bottom-7 left-6 flex items-end gap-4 sm:left-10 lg:left-14">
-            <span className="font-mono text-[10px] text-white/50">01 / 12</span>
-            <div><p className="font-mono text-[8px] uppercase tracking-[0.18em] text-white/45">Featured stay</p><p className="mt-1 text-sm text-white">Aster House, Milos</p></div>
-          </div>
-          <button onClick={() => setTourOpen(true)} className="absolute bottom-7 right-6 hidden items-center gap-3 bg-[#161917]/90 px-4 py-3 text-left shadow-2xl backdrop-blur sm:flex lg:right-14">
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-[#dfe7bb] text-[#1b211c]"><Compass className="h-4 w-4" /></span>
-            <span><b className="block text-xs">Open verified tour</b><small className="mt-0.5 block font-mono text-[8px] uppercase tracking-[0.1em] text-white/50">4 rooms, 2,400 sq ft</small></span>
-          </button>
+        </div>
+        <div className={styles.heroMeta}>
+          <span>01 / 12</span>
+          <div><small>Featured stay</small><strong>Aster House, Milos</strong></div>
+        </div>
+        <button className={styles.tourLauncher} onClick={() => openTour()}>
+          <span><MoveUpRight aria-hidden="true" /></span>
+          <b>Open verified tour<small>4 rooms, 2,400 sq ft</small></b>
+        </button>
+        <a href="#standard" className={styles.scrollCue} aria-label="Scroll to explore"><span>Scroll to enter</span><ArrowDown aria-hidden="true" /></a>
+      </section>
+
+      <section id="standard" className={styles.standard}>
+        <div className={`${styles.standardLead} ${styles.reveal}`}>
+          <span>Vera standard</span>
+          <h2>The picture should be the proof.</h2>
+        </div>
+        <div className={styles.standardList}>
+          {[
+            ["01", "Walk before you book", "Spatial scenes make the light, layout and scale clear."],
+            ["02", "See the essential details", "The details that decide a stay live in the tour, not fine print."],
+            ["03", "Choose with calm", "A smaller collection, presented with enough care to trust it."],
+          ].map(([number, title, copy]) => <article className={styles.reveal} key={number}><span>{number}</span><h3>{title}</h3><p>{copy}</p></article>)}
         </div>
       </section>
 
-      <section className="mx-auto grid max-w-[1440px] gap-px border-x border-white/10 bg-white/10 sm:grid-cols-3">
-        {[
-          ["01", "Tour first", "Walk the property before you request a stay. Every listing starts with a verified visual walkthrough."],
-          ["02", "Details, not guesswork", "Room dimensions, light, outdoor space and essential amenities — presented where they matter."],
-          ["03", "A considered collection", "A smaller standard of homes, thoughtfully presented for guests who care where they stay."],
-        ].map(([number, title, description]) => <article key={number} className="bg-[#151814] p-7 sm:p-9"><span className="font-mono text-[10px] text-[#dce8a5]">{number}</span><h2 className="mt-14 font-[family-name:var(--font-display)] text-4xl tracking-[-0.04em]">{title}</h2><p className="mt-4 max-w-xs leading-7 text-white/60">{description}</p></article>)}
+      <section ref={storyRef} className={`${styles.story} ${tourVideoReady ? styles.hasTourVideo : ""}`} aria-label="Aster House visual walkthrough">
+        <div className={styles.storySticky}>
+          <video ref={tourVideoRef} className={styles.storyVideo} muted playsInline preload="auto" poster={scenes[0].image} onLoadedMetadata={() => setTourVideoReady(true)} onError={() => setTourVideoReady(false)}>
+            <source src="/videos/vera/aster-house-tour.mp4" type="video/mp4" />
+          </video>
+          {scenes.map((scene, index) => (
+            <figure className={`${styles.storyScene} ${styles[`scene${index + 1}`]}`} key={scene.title}>
+              <Image src={scene.image} alt="" fill sizes="100vw" className={styles.storyImage} />
+              <div className={styles.storyShade} />
+            </figure>
+          ))}
+          <div className={styles.storyTopline}><span>Aster House / visual walkthrough</span><span>01—03</span></div>
+          <div className={styles.storyText}>
+            {scenes.map((scene, index) => <div className={styles[`storyCopy${index + 1}`]} key={scene.title}><p>{scene.eyebrow}</p><h2>{scene.title}</h2><span>{scene.detail}</span></div>)}
+          </div>
+          <div className={styles.storyProgress}><i /><i /><i /></div>
+          <button className={styles.storyOpen} onClick={() => openTour(1)}>Enter the tour <ArrowUpRight aria-hidden="true" /></button>
+        </div>
       </section>
 
-      <section id="stays" className="mx-auto max-w-[1440px] px-6 py-24 sm:px-10 lg:px-14">
-        <div className="flex flex-wrap items-end justify-between gap-6"><div><p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#dce8a5]">Current collection</p><h2 className="mt-3 font-[family-name:var(--font-display)] text-5xl tracking-[-0.05em] sm:text-6xl">Stay somewhere <em className="text-[#cfd9a2]">worth arriving.</em></h2></div><button onClick={() => setRequested(true)} className="inline-flex items-center gap-2 border-b border-[#dce8a5] pb-1 text-sm text-[#e5edc1]">Request early access <ArrowUpRight className="h-4 w-4" /></button></div>
-        <div className="mt-12 grid gap-5 md:grid-cols-3">{stays.map(([name, place, price], index) => <button key={name} onClick={() => { setRoom(index % rooms.length); setTourOpen(true); }} className="group text-left"><div className={`relative aspect-[4/5] overflow-hidden ${index === 0 ? "bg-[radial-gradient(circle_at_20%_25%,#e9d0a4,transparent_15%),linear-gradient(145deg,#596650,#162119_74%)]" : index === 1 ? "bg-[radial-gradient(circle_at_78%_18%,#dbe8ff,transparent_15%),linear-gradient(145deg,#4b6e83,#0f1920_70%)]" : "bg-[radial-gradient(circle_at_40%_30%,#f2c891,transparent_18%),linear-gradient(145deg,#9b6443,#251d16_72%)]"}`}><div className="absolute inset-x-[12%] bottom-0 h-[58%] rounded-t-[35%] border border-white/15 bg-black/15 transition duration-500 group-hover:scale-105" /><span className="absolute left-4 top-4 rounded-full border border-white/25 bg-black/20 px-2.5 py-1 font-mono text-[8px] uppercase tracking-[0.16em] text-white/80">Verified tour</span><span className="absolute right-4 top-4 font-mono text-[10px] text-white/50">0{index + 1}</span></div><div className="mt-4 flex items-start justify-between gap-3"><div><h3 className="text-lg">{name}</h3><p className="mt-1 flex items-center gap-1 text-sm text-white/50"><MapPin className="h-3 w-3" />{place}</p></div><b className="whitespace-nowrap text-sm font-medium text-[#e5edc1]">{price}</b></div></button>)}</div>
+      <section id="collection" className={styles.collection}>
+        <div className={`${styles.collectionHeading} ${styles.reveal}`}>
+          <div><span>Current collection</span><h2>Stay somewhere<br /><em>worth arriving.</em></h2></div>
+          <p>Every home begins with a visual walkthrough. The collection is designed to feel less like a feed and more like a considered invitation.</p>
+        </div>
+        <div className={styles.propertyGrid}>
+          {collection.map((stay, index) => <button className={`${styles.propertyCard} ${styles.reveal}`} onClick={() => openTour(index)} key={stay.title}>
+            <span className={styles.cardMedia}><Image src={stay.image} alt={`${stay.title} visual preview`} fill sizes="(max-width: 760px) 100vw, 33vw" /><i>Verified tour</i><em>0{index + 1}</em></span>
+            <span className={styles.cardInfo}><span><b>{stay.title}</b><small><MapPin aria-hidden="true" />{stay.location}</small></span><strong>{stay.price}</strong></span>
+          </button>)}
+        </div>
       </section>
 
-      <section className="border-y border-white/10 bg-[#20251e]"><div className="mx-auto flex max-w-[1440px] flex-col gap-8 px-6 py-16 sm:px-10 md:flex-row md:items-center md:justify-between lg:px-14"><div><p className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-[#dce8a5]"><Sparkles className="h-3.5 w-3.5" /> For considered hosts</p><h2 className="mt-3 max-w-2xl font-[family-name:var(--font-display)] text-4xl tracking-[-0.045em] sm:text-5xl">Your home deserves more than a thumbnail.</h2></div><button onClick={() => setRequested(true)} className="inline-flex w-fit items-center gap-2 bg-[#dfe7bb] px-5 py-4 text-sm font-semibold text-[#1b211c] transition hover:bg-[#f5f3ec]">Start a conversation <ArrowUpRight className="h-4 w-4" /></button></div></section>
+      <section id="hosts" className={styles.hosts}>
+        <Image src={scenes[1].image} alt="Warm living room looking towards the sea" fill sizes="100vw" className={styles.hostImage} />
+        <div className={styles.hostShade} />
+        <div className={`${styles.hostCopy} ${styles.reveal}`}><span>For considered hosts</span><h2>Your home deserves more than a thumbnail.</h2><p>Vera&apos;s launch collection is sourced with owner permission, a verified visual walkthrough, and an editorial property story.</p><a href="#collection">See the Vera standard <ArrowUpRight aria-hidden="true" /></a></div>
+      </section>
 
-      <footer className="mx-auto flex max-w-[1440px] items-center justify-between px-6 py-7 text-xs text-white/45 sm:px-10 lg:px-14"><Link href="/" className="font-semibold tracking-[0.2em] text-white">VERA</Link><span>Interactive concept MVP within Project Hub</span></footer>
+      <footer className={styles.footer}><Link href="/" className={styles.wordmark}><span className={styles.mark}>V</span><span>VERA</span></Link><span>Visual-first stay marketplace — concept experience</span><a href="#top" onClick={(event) => { event.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Back to top <ArrowUpRight aria-hidden="true" /></a></footer>
 
-      {tourOpen && <div className="fixed inset-0 z-50 grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="tour-title"><button className="absolute inset-0 bg-black/75 backdrop-blur-sm" aria-label="Close verified tour" onClick={() => setTourOpen(false)} /><section className="relative w-full max-w-5xl overflow-hidden border border-white/15 bg-[#191d18] shadow-2xl"><header className="flex items-start justify-between border-b border-white/10 p-5 sm:p-7"><div><p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#dce8a5]">Verified virtual walkthrough</p><h2 id="tour-title" className="mt-2 font-[family-name:var(--font-display)] text-4xl tracking-[-0.05em]">Aster House</h2></div><button onClick={() => setTourOpen(false)} className="grid h-9 w-9 place-items-center border border-white/15 text-white/70 transition hover:bg-white hover:text-[#151814]" aria-label="Close"><X className="h-4 w-4" /></button></header><div className="relative aspect-[16/8] overflow-hidden bg-[radial-gradient(ellipse_at_34%_76%,rgba(214,230,184,.52),transparent_26%),radial-gradient(circle_at_74%_22%,rgba(241,207,154,.45),transparent_20%),linear-gradient(135deg,#384837,#829073_50%,#1b2920)]"><div className="absolute bottom-0 right-[9%] h-[63%] w-[58%] rounded-t-[42%] border border-white/25 bg-black/15" /><div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.44),transparent_65%)]" /><span className="absolute bottom-5 left-5 font-mono text-[9px] uppercase tracking-[.18em] text-white/70">360° visual prototype</span><span className="absolute right-[22%] top-[39%] flex items-center gap-2 rounded-full border border-white/25 bg-black/35 px-3 py-2 text-xs backdrop-blur"><i className="h-2 w-2 rounded-full bg-[#dce8a5]" />Living room</span></div><div className="grid border-t border-white/10 sm:grid-cols-[1.2fr_1fr]"><div className="flex overflow-x-auto border-b border-white/10 sm:border-b-0 sm:border-r">{rooms.map((item, index) => <button key={item.label} onClick={() => setRoom(index)} className={`min-w-[116px] border-r border-white/10 px-4 py-5 text-left font-mono text-[9px] uppercase tracking-[.12em] transition ${room === index ? "bg-[#dfe7bb] text-[#151814]" : "text-white/50 hover:bg-white/5 hover:text-white"}`}><b className="mr-2 opacity-60">0{index + 1}</b>{item.label}</button>)}</div><p className="p-5 text-sm leading-6 text-white/65">{rooms[room].detail}</p></div></section></div>}
-      {requested && <div className="fixed bottom-6 right-6 z-[60] flex max-w-sm items-start gap-3 border border-[#dce8a5]/30 bg-[#242b20] p-4 shadow-2xl"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#dfe7bb] text-[#182015]"><Check className="h-4 w-4" /></span><p className="text-sm leading-5 text-white/80">Concept request saved. Live host onboarding will be connected when the marketplace backend is ready.</p><button className="text-white/55 hover:text-white" onClick={() => setRequested(false)} aria-label="Dismiss"><X className="h-4 w-4" /></button></div>}
+      {tourOpen && <div className={styles.modal} role="dialog" aria-modal="true" aria-label="Verified visual tour">
+        <button className={styles.modalBackdrop} onClick={() => setTourOpen(false)} aria-label="Close tour" />
+        <section className={styles.modalPanel}>
+          <header><div><span>Verified visual walkthrough</span><h2>Aster House</h2></div><button onClick={() => setTourOpen(false)} aria-label="Close tour"><X /></button></header>
+          <div className={styles.modalImage}>{tourVideoReady ? <video className={styles.modalVideo} src="/videos/vera/aster-house-tour.mp4" poster={scenes[tourScene].image} controls autoPlay muted playsInline /> : <Image src={scenes[tourScene].image} alt={scenes[tourScene].marker} fill sizes="min(94vw, 1180px)" />}<div /><button className={styles.locationPin} onClick={() => setTourScene((tourScene + 1) % scenes.length)}><i />{scenes[tourScene].marker}</button><span>Visual scene {String(tourScene + 1).padStart(2, "0")} / 03</span></div>
+          <div className={styles.modalFoot}><div className={styles.sceneTabs}>{scenes.map((scene, index) => <button className={index === tourScene ? styles.activeTab : ""} key={scene.title} onClick={() => setTourScene(index)}><b>0{index + 1}</b>{scene.eyebrow.split("· ")[1]}</button>)}</div><p>{scenes[tourScene].detail}</p><div className={styles.modalArrows}><button onClick={() => setTourScene((tourScene + scenes.length - 1) % scenes.length)} aria-label="Previous scene"><ChevronLeft /></button><button onClick={() => setTourScene((tourScene + 1) % scenes.length)} aria-label="Next scene"><ChevronRight /></button></div></div>
+        </section>
+      </div>}
     </main>
   );
 }
