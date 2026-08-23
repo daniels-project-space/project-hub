@@ -38,6 +38,16 @@ export const APPS: AppEntry[] = [
     githubUrl: "https://github.com/daniels-project-space/project-hub",
     category: "platform",
   },
+  {
+    slug: "verified-stays",
+    name: "Vera Stay",
+    short: "VS",
+    description: "Visual-first verified-stay marketplace concept MVP — tour-led property pages and host acquisition story.",
+    status: "live",
+    vercelUrl: "https://verified-stays-bananajoexxcs-projects.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/verified-stays",
+    category: "experiment",
+  },
 
   {
     slug: "rental-manager-v2",
