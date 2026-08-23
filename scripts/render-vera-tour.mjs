@@ -34,7 +34,7 @@ const outputPath = resolve(root, valueAfter("--output", "public/videos/vera/aste
 const workDirectory = resolve(root, ".vera-tour-work");
 const shouldRender = hasFlag("--render");
 const shouldVerify = hasFlag("--verify") || !shouldRender;
-const apiKey = process.env.LTX_API_KEY;
+const apiKey = process.env.LTX_API_KEY ?? process.env.LTXV_API_KEY;
 
 const scenes = [
   {
@@ -71,7 +71,7 @@ function sleep(milliseconds) {
 }
 
 async function jsonRequest(path, init = {}) {
-  assert(apiKey, "LTX_API_KEY is required only when you pass --render.");
+  assert(apiKey, "LTX_API_KEY or LTXV_API_KEY is required only when you pass --render.");
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
     headers: {
@@ -231,7 +231,7 @@ async function main() {
   process.stdout.write(`Output: ${outputPath}\n`);
 
   if (shouldVerify) return;
-  assert(apiKey, "LTX_API_KEY is required only when you pass --render.");
+  assert(apiKey, "LTX_API_KEY or LTXV_API_KEY is required only when you pass --render.");
 
   await rm(workDirectory, { recursive: true, force: true });
   await mkdir(workDirectory, { recursive: true });
