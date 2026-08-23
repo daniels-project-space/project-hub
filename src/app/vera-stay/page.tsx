@@ -60,9 +60,9 @@ export default function VeraStayPage() {
         const distance = story.offsetHeight - window.innerHeight;
         const progress = clamp((-rect.top) / Math.max(distance, 1));
         story.style.setProperty("--story-progress", String(progress));
-        story.style.setProperty("--scene-one", String(clamp(1 - progress * 3.7)));
-        story.style.setProperty("--scene-two", String(clamp(Math.min((progress - 0.12) * 4.2, 1 - (progress - 0.57) * 4.2))));
-        story.style.setProperty("--scene-three", String(clamp((progress - 0.49) * 3.4)));
+        story.style.setProperty("--scene-one", String(clamp((0.4 - progress) / 0.1)));
+        story.style.setProperty("--scene-two", String(clamp(Math.min((progress - 0.3) / 0.1, (0.7 - progress) / 0.1))));
+        story.style.setProperty("--scene-three", String(clamp((progress - 0.6) / 0.1)));
         const video = tourVideoRef.current;
         if (tourVideoReady && video?.duration) {
           const nextTime = Math.min(Math.max(progress * video.duration, 0), Math.max(video.duration - 0.04, 0));

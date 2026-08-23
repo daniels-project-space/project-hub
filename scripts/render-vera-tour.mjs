@@ -159,6 +159,18 @@ function run(command, args) {
   });
 }
 
+function capture(command, args) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let error = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { error += chunk; });
+    child.once("error", rejectRun);
+    child.once("exit", (code) => (code === 0 ? resolveRun(output) : rejectRun(new Error(`${command} exited with ${code}: ${error.trim()}`))));
+  });
+}
+
 async function stitch(clips) {
   await mkdir(dirname(outputPath), { recursive: true });
   const transition = 0.75;
@@ -189,10 +201,21 @@ async function stitch(clips) {
 
 async function verifyOutput() {
   const infoPath = join(workDirectory, "ffprobe.json");
-  await run("ffprobe", ["-v", "error", "-show_entries", "format=duration,size", "-of", "json", outputPath]);
+  const report = JSON.parse(await capture("ffprobe", [
+    "-v", "error",
+    "-select_streams", "v:0",
+    "-show_entries", "stream=codec_name,width,height,r_frame_rate:format=duration,size",
+    "-of", "json",
+    outputPath,
+  ]));
   const output = await stat(outputPath);
+  const stream = report.streams?.[0];
+  const renderedDuration = Number(report.format?.duration);
   assert(output.size > 1_000_000, "Stitched output is unexpectedly small.");
-  await writeFile(infoPath, JSON.stringify({ output: outputPath, bytes: output.size, completedAt: new Date().toISOString() }, null, 2));
+  assert(stream?.codec_name === "h264", "Stitched output must be H.264 for web playback.");
+  assert(stream?.width === 1920 && stream?.height === 1080, "Stitched output must stay at the requested 1920×1080 geometry.");
+  assert(Number.isFinite(renderedDuration) && renderedDuration >= duration * scenes.length - 5, "Stitched output duration is shorter than the planned visual tour.");
+  await writeFile(infoPath, JSON.stringify({ output: outputPath, bytes: output.size, duration: renderedDuration, stream, completedAt: new Date().toISOString() }, null, 2));
 }
 
 async function main() {
