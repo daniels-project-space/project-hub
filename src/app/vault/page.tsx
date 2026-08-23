@@ -49,6 +49,8 @@ export default function VaultPage() {
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [form, setForm] = useState<VaultForm>(emptyForm);
   const [search, setSearch] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -157,6 +159,31 @@ export default function VaultPage() {
     }
   }
 
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/vault/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: newPassword, confirmation: passwordConfirmation }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        setMessage(payload.error ?? "The vault password could not be changed.");
+        return;
+      }
+      setNewPassword("");
+      setPasswordConfirmation("");
+      setMessage("Vault password changed. Your current session remains open.");
+    } catch {
+      setMessage("The vault password could not be changed right now.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function signOut() {
     await fetch("/api/vault/session", { method: "DELETE" });
     setAuthenticated(false);
@@ -204,6 +231,15 @@ export default function VaultPage() {
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-paper-faint" />
                 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search service, key, scope, or source" type="search" className="w-full rounded-md border border-rule-soft bg-ink py-2 pl-9 pr-3 text-sm text-paper outline-none placeholder:text-paper-faint focus:border-brass" />
               </label>
+              <details className="mb-4 rounded-md border border-rule-soft/70 px-3 py-2">
+                <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.15em] text-paper-faint hover:text-brass">Change vault password</summary>
+                <form onSubmit={changePassword} className="mt-3 space-y-3">
+                  <p className="text-xs text-paper-faint">Choose at least 16 characters. The password is never shown after you save it.</p>
+                  <label className="block text-xs text-paper-dim">New password<input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={16} required className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label>
+                  <label className="block text-xs text-paper-dim">Confirm new password<input value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} type="password" autoComplete="new-password" minLength={16} required className="mt-1.5 w-full rounded-md border border-rule-soft bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-brass" /></label>
+                  <button disabled={submitting} className="inline-flex items-center gap-2 rounded-md border border-brass/45 px-3 py-2 text-sm font-medium text-brass disabled:opacity-60"><RotateCw className="w-3.5 h-3.5" />{submitting ? "Saving…" : "Change password"}</button>
+                </form>
+              </details>
               <div className="space-y-2 max-h-[560px] overflow-y-auto pr-1">
                 {filteredEntries.map((entry) => <article key={`${entry.service}/${entry.keyName}`} className="rounded-lg border border-rule-soft/70 bg-ink/55 px-4 py-3"><div className="flex items-start justify-between gap-4"><div><p className="font-mono text-xs text-paper">{entry.service}<span className="text-paper-faint"> / </span>{entry.keyName}</p>{entry.description && <p className="mt-1 text-xs text-paper-dim">{entry.description}</p>}</div><span className="shrink-0 rounded border border-rule-soft px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-paper-faint">v{entry.revision}</span></div>{entry.scopes.length > 0 && <p className="mt-2 font-mono text-[9px] uppercase tracking-wider text-paper-faint">{entry.scopes.join(" · ")}</p>}</article>)}
                 {entries.length === 0 && <p className="rounded-lg border border-dashed border-rule-soft px-4 py-8 text-center text-sm text-paper-faint">No key metadata yet.</p>}

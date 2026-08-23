@@ -1,7 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../convex/_generated/api";
 
 export const VAULT_SESSION_COOKIE = "project-hub-vault-session";
 export const VAULT_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const PASSWORD_SERVICE = "project-hub";
+const PASSWORD_KEY = "PROJECT_HUB_VAULT_PASSWORD";
 
 export class VaultControlConfigurationError extends Error {
   constructor() {
@@ -34,8 +38,48 @@ function sign(payload: string): string {
     .digest("base64url");
 }
 
-export function acceptsVaultPassword(password: string): boolean {
-  return constantTimeEqual(password, requiredEnvironment("PROJECT_HUB_VAULT_PASSWORD"));
+function runtimeVaultClient(): { client: ConvexHttpClient; token: string } | null {
+  const token = process.env.PROJECT_HUB_VAULT_RUNTIME_TOKEN;
+  if (!token) return null;
+  const url = requiredEnvironment("NEXT_PUBLIC_CONVEX_URL");
+  return { client: new ConvexHttpClient(url), token };
+}
+
+async function currentVaultPassword(): Promise<string> {
+  const runtime = runtimeVaultClient();
+  // The static value is a short-lived migration fallback only. Production uses
+  // the least-privilege runtime client below, which enables an owner-initiated
+  // rotation without publishing a general provider credential into this app.
+  if (!runtime) return requiredEnvironment(PASSWORD_KEY);
+  const record = await runtime.client.query(api.secrets.getOne, {
+    vaultToken: runtime.token,
+    service: PASSWORD_SERVICE,
+    keyName: PASSWORD_KEY,
+  });
+  if (!record?.value) throw new VaultControlConfigurationError();
+  return record.value;
+}
+
+export async function acceptsVaultPassword(password: string): Promise<boolean> {
+  return constantTimeEqual(password, await currentVaultPassword());
+}
+
+export async function rotateVaultPassword(password: string): Promise<void> {
+  if (password.length < 16 || Buffer.byteLength(password) > 1024) {
+    throw new Error("Choose a password between 16 and 1,024 bytes.");
+  }
+  const runtime = runtimeVaultClient();
+  if (!runtime) throw new VaultControlConfigurationError();
+  await runtime.client.mutation(api.secrets.upsertOne, {
+    vaultToken: runtime.token,
+    service: PASSWORD_SERVICE,
+    keyName: PASSWORD_KEY,
+    value: password,
+    description: "Project Hub owner vault-control password",
+    scopes: [PASSWORD_SERVICE],
+    aliases: [],
+    sourceFiles: ["project-hub/vault-control"],
+  });
 }
 
 export function createVaultSession(now = Date.now()): string {

@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   if (!password) return invalidRequest();
 
   try {
-    if (!acceptsVaultPassword(password)) {
+    if (!await acceptsVaultPassword(password)) {
       return NextResponse.json({ error: "The password is not valid." }, { status: 401, headers: noStore });
     }
     const response = NextResponse.json({ authenticated: true }, { headers: noStore });
