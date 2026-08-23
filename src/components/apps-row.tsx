@@ -22,8 +22,10 @@ export function AppsRow({ editMode = false }: { editMode?: boolean }) {
   const featured = APPS.filter((a) => a.featured);
   const ordered = [...featured, ...[...live, ...wip, ...idea].filter((a) => !a.featured)];
 
-  const visible = ordered.filter((a) => !hiddenSet.has(a.slug));
-  const hidden = ordered.filter((a) => hiddenSet.has(a.slug));
+  // Featured launches are intentionally always present. A stale per-user hide
+  // preference should not conceal a newly promoted destination in the dock.
+  const visible = ordered.filter((a) => a.featured || !hiddenSet.has(a.slug));
+  const hidden = ordered.filter((a) => !a.featured && hiddenSet.has(a.slug));
 
   const hide = (slug: string) =>
     set(HIDDEN_APPS_KEY, [...hiddenSlugs.filter((s) => s !== slug), slug]);
@@ -62,7 +64,7 @@ export function AppsRow({ editMode = false }: { editMode?: boolean }) {
             <div className={editMode ? "pointer-events-none select-none" : ""}>
               <AppTile app={app} />
             </div>
-            {editMode && (
+            {editMode && !app.featured && (
               <button
                 type="button"
                 aria-label={`Hide ${app.name} from carousel`}
