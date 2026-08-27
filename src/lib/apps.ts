@@ -168,7 +168,8 @@ export const APPS: AppEntry[] = [
     short: "ER",
     description:
       "US equity watchlist — SEC-sourced fundamentals, daily asymmetry scoring, buy zones on the chart.",
-    status: "wip",
+    status: "live",
+    vercelUrl: "https://equity-radar-danielmabro-news-projects.vercel.app",
     githubUrl: "https://github.com/daniels-project-space/equity-radar",
     category: "ops",
   },
