@@ -101,6 +101,14 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
     </svg>
   ),
+  "equity-radar": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="4.5" />
+      <path d="M12 12l6-4.5" />
+      <circle cx="16.5" cy="8.5" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   "music-house": (
     <svg viewBox="0 0 24 24" {...stroke}>
       <path d="M9 18V5l12-2v13" />

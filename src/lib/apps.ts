@@ -163,6 +163,16 @@ export const APPS: AppEntry[] = [
     category: "ops",
   },
   {
+    slug: "equity-radar",
+    name: "Equity Radar",
+    short: "ER",
+    description:
+      "US equity watchlist — SEC-sourced fundamentals, daily asymmetry scoring, buy zones on the chart.",
+    status: "wip",
+    githubUrl: "https://github.com/daniels-project-space/equity-radar",
+    category: "ops",
+  },
+  {
     slug: "music-house",
     name: "Music House",
     short: "MH",
