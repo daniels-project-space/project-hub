@@ -2,9 +2,23 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
 type VaultCredentials = { vaultToken?: string };
+type VaultClientRecord = {
+  _id: unknown;
+  name: string;
+  services: string[];
+  canWrite: boolean;
+  active: boolean;
+};
 
 const HIGGSFIELD_SERVICE = "higgsfield";
 const MEDIA_ENGINE_CREDENTIAL_CLIENT = "media-engine";
+/**
+ * The V2 private creation-asset vault is intentionally isolated from the
+ * generic Jarvis vault bearer. It is read-only and may only retrieve the
+ * fixed R2 credential bundle exposed by `privateCreationAssetV2:credentials`.
+ */
+export const PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT = "jarvis-private-creation-assets-v2";
+export const PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE = "cloudflare-private-r2-v2";
 
 /**
  * Jarvis has two intentionally separate Hub capabilities: the existing
@@ -90,9 +104,12 @@ export async function requireProjectHubVaultSession(session: string | undefined)
   }
 }
 
+export function isVaultRoot(rootToken: string | undefined): boolean {
+  return constantTimeEqual(rootToken, process.env.VAULT_ROOT_TOKEN);
+}
+
 export function requireVaultRoot(rootToken: string | undefined): void {
-  const expected = process.env.VAULT_ROOT_TOKEN;
-  if (!expected || !constantTimeEqual(rootToken, expected)) {
+  if (!isVaultRoot(rootToken)) {
     throw new Error("Vault authentication required");
   }
 }
@@ -113,12 +130,31 @@ function hasExplicitHiggsfieldScope(services: string[]): boolean {
   return services.includes(HIGGSFIELD_SERVICE) && services.every((policy) => !policy.includes("*"));
 }
 
+function hasExactPrivateCreationAssetV2Scope(client: VaultClientRecord | null): boolean {
+  return (
+    client !== null &&
+    client.active &&
+    client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT &&
+    client.canWrite === false &&
+    client.services.length === 1 &&
+    client.services[0] === PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE
+  );
+}
+
+function isPrivateCreationAssetV2ClientName(name: string): boolean {
+  return name.trim().toLowerCase() === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT;
+}
+
 async function findClient(ctx: any, vaultToken: string | undefined) {
   if (!vaultToken || vaultToken.length < 32 || vaultToken.length > 256) return null;
-  return await ctx.db
+  const clients: VaultClientRecord[] = await ctx.db
     .query("vaultClients")
     .withIndex("by_token", (q: any) => q.eq("token", vaultToken))
-    .first();
+    .collect();
+  // A bearer must resolve to one and only one capability identity. Historical
+  // duplicate rows fail closed rather than letting database ordering decide
+  // whether an isolated V2 bearer inherits a broader client policy.
+  return clients.length === 1 ? clients[0] : null;
 }
 
 /**
@@ -130,6 +166,11 @@ async function findClient(ctx: any, vaultToken: string | undefined) {
 async function requireVaultClientAdmin(ctx: any, credentials: VaultCredentials): Promise<void> {
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
   const client = await findClient(ctx, credentials.vaultToken);
+  // Never let the V2 credential-only identity inherit catalogue administration
+  // through an accidental wildcard/write provisioning change.
+  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+    throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+  }
   if (client?.active && client.canWrite && serviceAllowed(client.services, "*")) return;
   throw new Error("Vault authentication required");
 }
@@ -152,6 +193,13 @@ async function upsertVaultClient(ctx: any, args: VaultClientInput) {
     .query("vaultClients")
     .withIndex("by_name", (q: any) => q.eq("name", name))
     .first();
+  const tokenMatches = await ctx.db
+    .query("vaultClients")
+    .withIndex("by_token", (q: any) => q.eq("token", args.token))
+    .collect();
+  if (tokenMatches.some((client: VaultClientRecord) => client._id !== existing?._id)) {
+    throw new Error("Vault client token is already assigned");
+  }
   const row = {
     name,
     token: args.token,
@@ -229,6 +277,15 @@ export async function requireVaultRead(
     throw new Error("Higgsfield credentials require the fixed bundle endpoint");
   }
   const client = await findClient(ctx, credentials.vaultToken);
+  // A V2 bearer is never a general vault reader, even if it is accidentally
+  // provisioned with a broad policy. This blocks catalogue/list escape paths
+  // independently of the V2 endpoint's exact-scope check.
+  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+    throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+  }
+  if (service === PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE) {
+    throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+  }
   if (client?.active && serviceAllowed(client.services, service)) return;
   throw new Error("Vault authentication required");
 }
@@ -245,6 +302,14 @@ export async function requireVaultWrite(
     throw new Error("Higgsfield credentials require the fixed bundle endpoint");
   }
   const client = await findClient(ctx, credentials.vaultToken);
+  // The V2 credential bearer is deliberately read-only. Do not let a later
+  // provisioning mistake turn it into a generic vault writer.
+  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+    throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+  }
+  if (services.includes(PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE)) {
+    throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+  }
   if (client?.active && client.canWrite && services.every((service) => serviceAllowed(client.services, service))) {
     return;
   }
@@ -293,6 +358,20 @@ export async function requireHiggsfieldCredentialBundleWrite(
   return await requireHiggsfieldCredentialBundle(ctx, credentials, true);
 }
 
+/**
+ * Dedicated read-only capability for the isolated V2 R2 bucket. Unlike the
+ * generic read path, this intentionally does not inherit the root bearer or a
+ * wildcard service policy: callers must be the exact V2 machine identity.
+ */
+export async function requirePrivateCreationAssetV2CredentialRead(
+  ctx: any,
+  credentials: VaultCredentials,
+): Promise<void> {
+  const client = await findClient(ctx, credentials.vaultToken);
+  if (hasExactPrivateCreationAssetV2Scope(client)) return;
+  throw new Error("Vault authentication required");
+}
+
 export const upsertClient = mutation({
   args: {
     rootToken: v.string(),
@@ -321,7 +400,14 @@ export const provisionClient = mutation({
     canWrite: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    // A broad catalogue administrator may provision ordinary bridge clients,
+    // but must never create or rotate the identity trusted by the fixed V2
+    // credential endpoint. That lifecycle remains root-only.
+    if (isPrivateCreationAssetV2ClientName(args.name)) {
+      requireVaultRoot(args.vaultToken);
+    } else {
+      await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    }
     return await upsertVaultClient(ctx, args);
   },
 });
@@ -338,7 +424,13 @@ export const revokeClient = mutation({
 export const revokeClientByAdmin = mutation({
   args: { vaultToken: v.string(), name: v.string() },
   handler: async (ctx, args) => {
-    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    // Keep the same root-only lifecycle boundary for revocation; otherwise a
+    // generic catalogue writer could deny the isolated V2 storage path.
+    if (isPrivateCreationAssetV2ClientName(args.name)) {
+      requireVaultRoot(args.vaultToken);
+    } else {
+      await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    }
     return await revokeVaultClient(ctx, args.name);
   },
 });

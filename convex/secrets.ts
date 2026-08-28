@@ -1,6 +1,8 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
+  isVaultRoot,
+  PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE,
   requireHiggsfieldCredentialBundleRead,
   requireHiggsfieldCredentialBundleWrite,
   requireProjectHubVaultSession,
@@ -191,11 +193,17 @@ export const summary = query({
   handler: async (ctx, { vaultToken }) => {
     await requireVaultRead(ctx, { vaultToken }, "*");
     const all = await ctx.db.query("secrets").collect();
+    // Generic wildcard clients retain their established catalogue summary, but
+    // the isolated V2 service must not reveal even a service name/key count to
+    // the legacy Jarvis bearer. Root remains the explicit audit control path.
+    const visible = isVaultRoot(vaultToken)
+      ? all
+      : all.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
     const byService: Record<string, number> = {};
-    for (const s of all) {
+    for (const s of visible) {
       byService[s.service] = (byService[s.service] ?? 0) + 1;
     }
-    return { total: all.length, byService };
+    return { total: visible.length, byService };
   },
 });
 
@@ -206,13 +214,20 @@ export const summary = query({
 export const catalog = query({
   args: { vaultToken: v.optional(v.string()), vaultSession: v.optional(v.string()) },
   handler: async (ctx, { vaultToken, vaultSession }) => {
+    const isOwnerSession = vaultSession !== undefined;
     if (vaultSession !== undefined) {
       await requireProjectHubVaultSession(vaultSession);
     } else {
       await requireVaultRead(ctx, { vaultToken }, "*");
     }
     const rows = await ctx.db.query("secrets").collect();
-    return rows
+    // The browser owner session is a separate short-lived control flow. All
+    // machine clients other than root must be unable to enumerate the V2
+    // service or its key metadata through the generic catalogue.
+    const visible = isOwnerSession || isVaultRoot(vaultToken)
+      ? rows
+      : rows.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
+    return visible
       .map(metadataFor)
       .sort((left, right) => left.service.localeCompare(right.service) || left.keyName.localeCompare(right.keyName));
   },
@@ -449,7 +464,9 @@ export const deleteOne = mutation({
 export const truncate = mutation({
   args: { vaultToken: v.optional(v.string()) },
   handler: async (ctx, { vaultToken }) => {
-    await requireVaultWrite(ctx, { vaultToken }, ["*"]);
+    // A wildcard service policy is not permission to destroy all vault rows:
+    // it would otherwise erase the isolated V2 credential bundle.
+    requireVaultRoot(vaultToken);
     const all = await ctx.db.query("secrets").collect();
     for (const row of all) await ctx.db.delete(row._id);
     return { deleted: all.length };
