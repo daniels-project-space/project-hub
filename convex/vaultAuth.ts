@@ -145,6 +145,20 @@ function isPrivateCreationAssetV2ClientName(name: string): boolean {
   return name.trim().toLowerCase() === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT;
 }
 
+function hasPrivateCreationAssetV2ServicePolicy(services: string[]): boolean {
+  return services.some((service) => service.trim() === PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
+}
+
+function isPrivateCreationAssetV2ClientRecord(client: Pick<VaultClientRecord, "name" | "services">): boolean {
+  return isPrivateCreationAssetV2ClientName(client.name) || hasPrivateCreationAssetV2ServicePolicy(client.services);
+}
+
+function rejectGenericPrivateCreationAssetV2Client(name: string, services: string[] = []): void {
+  if (isPrivateCreationAssetV2ClientName(name) || hasPrivateCreationAssetV2ServicePolicy(services)) {
+    throw new Error("Private creation asset V2 client requires the root-only fixed rotation endpoint");
+  }
+}
+
 async function findClient(ctx: any, vaultToken: string | undefined) {
   if (!vaultToken || vaultToken.length < 32 || vaultToken.length > 256) return null;
   const clients: VaultClientRecord[] = await ctx.db
@@ -167,8 +181,9 @@ async function requireVaultClientAdmin(ctx: any, credentials: VaultCredentials):
   if (constantTimeEqual(credentials.vaultToken, process.env.VAULT_ROOT_TOKEN)) return;
   const client = await findClient(ctx, credentials.vaultToken);
   // Never let the V2 credential-only identity inherit catalogue administration
-  // through an accidental wildcard/write provisioning change.
-  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+  // through an accidental wildcard/write provisioning change or a historical
+  // differently cased reserved identity.
+  if (client?.active && isPrivateCreationAssetV2ClientRecord(client)) {
     throw new Error("Private creation asset V2 credentials require the fixed endpoint");
   }
   if (client?.active && client.canWrite && serviceAllowed(client.services, "*")) return;
@@ -278,9 +293,10 @@ export async function requireVaultRead(
   }
   const client = await findClient(ctx, credentials.vaultToken);
   // A V2 bearer is never a general vault reader, even if it is accidentally
-  // provisioned with a broad policy. This blocks catalogue/list escape paths
-  // independently of the V2 endpoint's exact-scope check.
-  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+  // provisioned with a broad policy. Normalize the reserved name and inspect
+  // the service policy so historical variants cannot escape through generic
+  // catalogue/list paths.
+  if (client?.active && isPrivateCreationAssetV2ClientRecord(client)) {
     throw new Error("Private creation asset V2 credentials require the fixed endpoint");
   }
   if (service === PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE) {
@@ -303,8 +319,9 @@ export async function requireVaultWrite(
   }
   const client = await findClient(ctx, credentials.vaultToken);
   // The V2 credential bearer is deliberately read-only. Do not let a later
-  // provisioning mistake turn it into a generic vault writer.
-  if (client?.active && client.name === PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT) {
+  // provisioning mistake or a historical case-variant row turn it into a
+  // generic vault writer.
+  if (client?.active && isPrivateCreationAssetV2ClientRecord(client)) {
     throw new Error("Private creation asset V2 credentials require the fixed endpoint");
   }
   if (services.includes(PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE)) {
@@ -382,6 +399,7 @@ export const upsertClient = mutation({
   },
   handler: async (ctx, args) => {
     requireVaultRoot(args.rootToken);
+    rejectGenericPrivateCreationAssetV2Client(args.name, args.services);
     return await upsertVaultClient(ctx, args);
   },
 });
@@ -402,13 +420,41 @@ export const provisionClient = mutation({
   handler: async (ctx, args) => {
     // A broad catalogue administrator may provision ordinary bridge clients,
     // but must never create or rotate the identity trusted by the fixed V2
-    // credential endpoint. That lifecycle remains root-only.
-    if (isPrivateCreationAssetV2ClientName(args.name)) {
-      requireVaultRoot(args.vaultToken);
-    } else {
-      await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
-    }
+    // credential endpoint. The generic path rejects it even for root; use the
+    // dedicated fixed-shape mutation below.
+    rejectGenericPrivateCreationAssetV2Client(args.name, args.services);
+    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
     return await upsertVaultClient(ctx, args);
+  },
+});
+
+/**
+ * The only client lifecycle path for the private creation-asset V2 bearer.
+ * It accepts neither a caller-selected name nor a service policy, preventing
+ * a root-only operational action from accidentally widening the bearer.
+ */
+export const rotatePrivateCreationAssetV2Client = mutation({
+  args: { rootToken: v.string(), token: v.string() },
+  handler: async (ctx, args) => {
+    requireVaultRoot(args.rootToken);
+    const reserved = (await ctx.db.query("vaultClients").collect())
+      .filter(isPrivateCreationAssetV2ClientRecord);
+    // A canonical V2-named row can be repaired into the exact fixed scope by
+    // this root-only path. Any differently named/cased or duplicate reserved
+    // row is ambiguous historic state and must be repaired before a new V2
+    // bearer is created, rather than silently adding another identity.
+    if (
+      reserved.length > 1
+      || (reserved.length === 1 && reserved[0]!.name !== PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT)
+    ) {
+      throw new Error("Private creation asset V2 client requires root repair before rotation");
+    }
+    return await upsertVaultClient(ctx, {
+      name: PRIVATE_CREATION_ASSET_V2_VAULT_CLIENT,
+      token: args.token,
+      services: [PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE],
+      canWrite: false,
+    });
   },
 });
 
@@ -416,6 +462,12 @@ export const revokeClient = mutation({
   args: { rootToken: v.string(), name: v.string() },
   handler: async (ctx, args) => {
     requireVaultRoot(args.rootToken);
+    rejectGenericPrivateCreationAssetV2Client(args.name);
+    const existing = (await ctx.db.query("vaultClients").collect())
+      .filter((client) => client.name === args.name.trim().toLowerCase());
+    if (existing.some(isPrivateCreationAssetV2ClientRecord)) {
+      throw new Error("Private creation asset V2 client requires the root-only fixed rotation endpoint");
+    }
     return await revokeVaultClient(ctx, args.name);
   },
 });
@@ -424,12 +476,14 @@ export const revokeClient = mutation({
 export const revokeClientByAdmin = mutation({
   args: { vaultToken: v.string(), name: v.string() },
   handler: async (ctx, args) => {
-    // Keep the same root-only lifecycle boundary for revocation; otherwise a
-    // generic catalogue writer could deny the isolated V2 storage path.
-    if (isPrivateCreationAssetV2ClientName(args.name)) {
-      requireVaultRoot(args.vaultToken);
-    } else {
-      await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    // A generic catalogue writer must never deny the isolated V2 storage
+    // path. The generic endpoint rejects V2 even for root.
+    rejectGenericPrivateCreationAssetV2Client(args.name);
+    await requireVaultClientAdmin(ctx, { vaultToken: args.vaultToken });
+    const existing = (await ctx.db.query("vaultClients").collect())
+      .filter((client) => client.name === args.name.trim().toLowerCase());
+    if (existing.some(isPrivateCreationAssetV2ClientRecord)) {
+      throw new Error("Private creation asset V2 client requires the root-only fixed rotation endpoint");
     }
     return await revokeVaultClient(ctx, args.name);
   },
@@ -440,7 +494,9 @@ export const listClients = query({
   handler: async (ctx, args) => {
     requireVaultRoot(args.rootToken);
     const clients = await ctx.db.query("vaultClients").collect();
-    return clients.map(({ token: _token, ...client }: any) => client);
+    return clients
+      .filter((client) => !isPrivateCreationAssetV2ClientRecord(client))
+      .map(({ token: _token, ...client }: any) => client);
   },
 });
 
@@ -453,6 +509,9 @@ export const whoami = query({
     }
     const client = await findClient(ctx, args.vaultToken);
     if (!client?.active) throw new Error("Vault authentication required");
+    if (isPrivateCreationAssetV2ClientRecord(client)) {
+      throw new Error("Private creation asset V2 credentials require the fixed endpoint");
+    }
     return { name: client.name, services: client.services, canWrite: client.canWrite };
   },
 });

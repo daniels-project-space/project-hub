@@ -1,7 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import {
-  isVaultRoot,
   PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE,
   requireHiggsfieldCredentialBundleRead,
   requireHiggsfieldCredentialBundleWrite,
@@ -164,9 +163,22 @@ function metadataFor(row: {
   };
 }
 
+/**
+ * The private-creation-assets V2 R2 bundle is not a generic catalogue
+ * credential. In particular, an authenticated browser owner session must not
+ * be able to select this service through `upsertOne`. Its exact fixed-key
+ * root-only rotation mutation lives in `privateCreationAssetV2.ts`.
+ */
+function rejectGenericPrivateCreationAssetV2Service(service: string): void {
+  if (service === PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE) {
+    throw new Error("Private creation asset V2 credentials require the root-only fixed rotation endpoint");
+  }
+}
+
 export const listByService = query({
   args: { service: v.string(), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { service, vaultToken }) => {
+    rejectGenericPrivateCreationAssetV2Service(service.trim());
     await requireVaultRead(ctx, { vaultToken }, service);
     return await ctx.db
       .query("secrets")
@@ -178,6 +190,7 @@ export const listByService = query({
 export const getOne = query({
   args: { service: v.string(), keyName: v.string(), vaultToken: v.optional(v.string()) },
   handler: async (ctx, { service, keyName, vaultToken }) => {
+    rejectGenericPrivateCreationAssetV2Service(service.trim());
     await requireVaultRead(ctx, { vaultToken }, service);
     return await ctx.db
       .query("secrets")
@@ -193,12 +206,10 @@ export const summary = query({
   handler: async (ctx, { vaultToken }) => {
     await requireVaultRead(ctx, { vaultToken }, "*");
     const all = await ctx.db.query("secrets").collect();
-    // Generic wildcard clients retain their established catalogue summary, but
-    // the isolated V2 service must not reveal even a service name/key count to
-    // the legacy Jarvis bearer. Root remains the explicit audit control path.
-    const visible = isVaultRoot(vaultToken)
-      ? all
-      : all.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
+    // The isolated V2 service is absent from every generic summary, including
+    // root's. The separate root-only V2 preflight audit exposes aggregate
+    // rollout state without turning the generic catalogue into a side channel.
+    const visible = all.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
     const byService: Record<string, number> = {};
     for (const s of visible) {
       byService[s.service] = (byService[s.service] ?? 0) + 1;
@@ -214,19 +225,17 @@ export const summary = query({
 export const catalog = query({
   args: { vaultToken: v.optional(v.string()), vaultSession: v.optional(v.string()) },
   handler: async (ctx, { vaultToken, vaultSession }) => {
-    const isOwnerSession = vaultSession !== undefined;
     if (vaultSession !== undefined) {
       await requireProjectHubVaultSession(vaultSession);
     } else {
       await requireVaultRead(ctx, { vaultToken }, "*");
     }
     const rows = await ctx.db.query("secrets").collect();
-    // The browser owner session is a separate short-lived control flow. All
-    // machine clients other than root must be unable to enumerate the V2
-    // service or its key metadata through the generic catalogue.
-    const visible = isOwnerSession || isVaultRoot(vaultToken)
-      ? rows
-      : rows.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
+    // The browser owner session is a separate short-lived control flow. No
+    // generic caller, including root, may enumerate the isolated V2 storage
+    // service or its key metadata here. Root has a dedicated aggregate-only
+    // preflight audit instead; values remain on the fixed V2 endpoint.
+    const visible = rows.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
     return visible
       .map(metadataFor)
       .sort((left, right) => left.service.localeCompare(right.service) || left.keyName.localeCompare(right.keyName));
@@ -273,6 +282,7 @@ export const upsertOne = mutation({
     if (service === HIGGSFIELD_SERVICE) {
       throw new Error("Higgsfield credentials require the fixed bundle endpoint");
     }
+    rejectGenericPrivateCreationAssetV2Service(service);
     if (args.vaultSession !== undefined) {
       await requireProjectHubVaultSession(args.vaultSession);
     } else {
@@ -319,6 +329,7 @@ export const bulkInsert = mutation({
     ),
   },
   handler: async (ctx, { items, vaultToken }) => {
+    for (const item of items) rejectGenericPrivateCreationAssetV2Service(item.service.trim());
     await requireVaultWrite(ctx, { vaultToken }, [...new Set(items.map((item) => item.service))]);
     let inserted = 0;
     for (const item of items) {
@@ -455,6 +466,7 @@ export const deleteOne = mutation({
       await requireVaultWrite(ctx, { vaultToken }, ["*"]);
       return { deleted: null };
     }
+    rejectGenericPrivateCreationAssetV2Service(row.service);
     await requireVaultWrite(ctx, { vaultToken }, [row.service]);
     await ctx.db.delete(id);
     return { deleted: id };
@@ -468,7 +480,8 @@ export const truncate = mutation({
     // it would otherwise erase the isolated V2 credential bundle.
     requireVaultRoot(vaultToken);
     const all = await ctx.db.query("secrets").collect();
-    for (const row of all) await ctx.db.delete(row._id);
-    return { deleted: all.length };
+    const deletable = all.filter((row) => row.service !== PRIVATE_CREATION_ASSET_V2_VAULT_SERVICE);
+    for (const row of deletable) await ctx.db.delete(row._id);
+    return { deleted: deletable.length };
   },
 });
