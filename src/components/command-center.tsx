@@ -10,6 +10,7 @@ import {
 import { WeatherChip } from "@/components/weather-chip";
 import { useSettings } from "@/components/settings-provider";
 import { APPS } from "@/lib/apps";
+import { useTodos } from "@/lib/todos-client";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ function StatCell({
 export function CommandCenter() {
   const wealthData = useQuery(api.wealth.getWealth);
   const events = useQuery(api.events.list);
-  const todos = useQuery(api.todos.list);
+  const { todos } = useTodos();
   const hunts = useQuery(api.hunts.list);
   const alerts = useQuery(api.alerts.list);
 

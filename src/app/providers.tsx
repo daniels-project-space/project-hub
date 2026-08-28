@@ -2,6 +2,7 @@
 import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { ReactNode, useState } from "react";
 import { SettingsProvider } from "@/components/settings-provider";
+import { TodosProvider } from "@/lib/todos-client";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(
@@ -9,7 +10,9 @@ export function Providers({ children }: { children: ReactNode }) {
   );
   return (
     <ConvexProvider client={client}>
-      <SettingsProvider>{children}</SettingsProvider>
+      <TodosProvider>
+        <SettingsProvider>{children}</SettingsProvider>
+      </TodosProvider>
     </ConvexProvider>
   );
 }

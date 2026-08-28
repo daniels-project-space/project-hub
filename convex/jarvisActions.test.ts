@@ -66,6 +66,7 @@ describe("Jarvis bounded Hub action façade", () => {
     const c = t();
     await provisionActionsClient(c);
     const activeId = await c.mutation(api.todos.add, {
+      vaultToken: ROOT_TOKEN,
       text: "Plan train",
       priority: 2,
       dueDate: 1_800_000_000_000,
@@ -73,8 +74,8 @@ describe("Jarvis bounded Hub action façade", () => {
       projectSlug: "travel",
       ownerId: "owner-private",
     });
-    const completedId = await c.mutation(api.todos.add, { text: "Old task" });
-    await c.mutation(api.todos.update, { id: completedId, done: true });
+    const completedId = await c.mutation(api.todos.add, { vaultToken: ROOT_TOKEN, text: "Old task" });
+    await c.mutation(api.todos.update, { vaultToken: ROOT_TOKEN, id: completedId, done: true });
     await c.mutation(api.widgets.upsert, {
       type: "travel",
       position: 0,
@@ -111,7 +112,7 @@ describe("Jarvis bounded Hub action façade", () => {
       done: true,
     });
 
-    const [todo] = await c.query(api.todos.list, {});
+    const [todo] = await c.query(api.todos.list, { vaultToken: ROOT_TOKEN });
     expect(todo).toMatchObject({
       _id: created.id,
       text: "Download Barcelona offline map",

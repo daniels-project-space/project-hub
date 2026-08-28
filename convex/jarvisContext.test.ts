@@ -41,7 +41,7 @@ describe("JARVIS cross-app context", () => {
       token: OTHER_TOKEN,
       services: ["openai"],
     });
-    await c.mutation(api.todos.add, { text: "private work item" });
+    await c.mutation(api.todos.add, { vaultToken: ROOT_TOKEN, text: "private work item" });
 
     const snapshot = await c.query(api.jarvisContext.snapshot, {
       vaultToken: JARVIS_TOKEN,

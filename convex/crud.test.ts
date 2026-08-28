@@ -1,15 +1,46 @@
 import { convexTest } from "convex-test";
-import { describe, it, expect } from "vitest";
+import { getFunctionName } from "convex/server";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
+import { createVaultSession } from "../src/lib/vault-control";
 
 // convex-test needs the module map so it can load query/mutation handlers.
 // Must include the _generated dir so findModulesRoot can locate the root.
 const modules = import.meta.glob("./**/*.*s");
 
-function t() {
+const ROOT_TOKEN = "r".repeat(40);
+const PROJECT_HUB_TOKEN = "p".repeat(40);
+const SESSION_SECRET = "s".repeat(48);
+type AnyFunctionReference = Parameters<typeof getFunctionName>[0];
+
+function rawT() {
+  vi.stubEnv("VAULT_ENFORCE_AUTH", "true");
+  vi.stubEnv("VAULT_ROOT_TOKEN", ROOT_TOKEN);
+  vi.stubEnv("PROJECT_HUB_VAULT_SESSION_SECRET", SESSION_SECRET);
   return convexTest(schema, modules);
 }
+
+// Keep the historical CRUD assertions focused on CRUD behavior while making
+// their caller explicit: the Hub's server route forwards this owner session.
+// The raw-client regression below proves the public Convex path is closed.
+function t() {
+  const c = rawT();
+  const vaultSession = createVaultSession();
+  const isTodoFunction = (reference: AnyFunctionReference) => getFunctionName(reference).startsWith("todos:");
+  return {
+    query: (reference: AnyFunctionReference, args: Record<string, unknown>) => c.query(
+      reference as never,
+      isTodoFunction(reference) ? { ...args, vaultSession } : args,
+    ),
+    mutation: (reference: AnyFunctionReference, args: Record<string, unknown>) => c.mutation(
+      reference as never,
+      isTodoFunction(reference) ? { ...args, vaultSession } : args,
+    ),
+  };
+}
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("notes CRUD + reorder", () => {
   it("add assigns incrementing positions; list returns position-asc order", async () => {
@@ -136,6 +167,34 @@ describe("events CRUD", () => {
 });
 
 describe("todos CRUD + reorder + round-trip", () => {
+  it("rejects every legacy direct Todo call and accepts an owner session or scoped server capability", async () => {
+    const c = rawT();
+    await expect(c.query(api.todos.list, {})).rejects.toThrow("Vault authentication required");
+    await expect(c.mutation(api.todos.add, { text: "blocked" })).rejects.toThrow("Vault authentication required");
+    await expect(c.mutation(api.todos.create, { text: "blocked" })).rejects.toThrow("Vault authentication required");
+
+    const vaultSession = createVaultSession();
+    const id = await c.mutation(api.todos.add, { vaultSession, text: "owner-access" });
+    await expect(c.mutation(api.todos.update, { id, done: true })).rejects.toThrow("Vault authentication required");
+    await expect(c.mutation(api.todos.remove, { id })).rejects.toThrow("Vault authentication required");
+    await expect(c.mutation(api.todos.reorder, { ids: [id] })).rejects.toThrow("Vault authentication required");
+    await expect(c.mutation(api.todos.seedFromV1, { items: [] })).rejects.toThrow("Vault authentication required");
+
+    await c.mutation(api.todos.update, { vaultSession, id, done: true });
+    expect((await c.query(api.todos.list, { vaultSession }))[0].done).toBe(true);
+
+    await c.mutation(api.vaultAuth.upsertClient, {
+      rootToken: ROOT_TOKEN,
+      name: "project-hub-worker",
+      token: PROJECT_HUB_TOKEN,
+      services: ["project-hub"],
+      canWrite: true,
+    });
+    const serverId = await c.mutation(api.todos.add, { vaultToken: PROJECT_HUB_TOKEN, text: "server-access" });
+    expect(serverId).toBeTruthy();
+    expect((await c.query(api.todos.list, { vaultToken: PROJECT_HUB_TOKEN })).map((todo) => todo._id)).toContain(serverId);
+  });
+
   it("add defaults done=false, priority=0, tags=[]; list position-asc", async () => {
     const c = t();
     await c.mutation(api.todos.add, { text: "t1" });
@@ -195,7 +254,7 @@ describe("todos CRUD + reorder + round-trip", () => {
     expect(before[N - 1].text).toBe(`todo-${N - 1}`);
 
     const reversed = [...ids].reverse();
-    await c.mutation(api.todos.reorder, { ids: reversed as any });
+    await c.mutation(api.todos.reorder, { ids: reversed as never });
 
     const after = await c.query(api.todos.list, {});
     expect(after).toHaveLength(N);
@@ -293,8 +352,8 @@ describe("adversarial / edge inputs", () => {
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) ids.push(await c.mutation(api.todos.add, { text: `c${i}` }));
     // Fire two reorders without awaiting between them.
-    const r1 = c.mutation(api.todos.reorder, { ids: [...ids].reverse() as any });
-    const r2 = c.mutation(api.todos.reorder, { ids: ids as any });
+    const r1 = c.mutation(api.todos.reorder, { ids: [...ids].reverse() as never });
+    const r2 = c.mutation(api.todos.reorder, { ids: ids as never });
     await Promise.all([r1, r2]);
     const after = await c.query(api.todos.list, {});
     // Whatever wins, positions must remain a dense 0..4 with no dupes.

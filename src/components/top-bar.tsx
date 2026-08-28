@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { api } from "../../convex/_generated/api";
 import { APPS, type AppEntry } from "@/lib/apps";
 import { getAppIcon } from "@/lib/app-icons";
+import { useTodos } from "@/lib/todos-client";
 import { SettingsPanel } from "@/components/settings-panel";
 import {
   buildSearchIndex,
@@ -164,7 +165,7 @@ function SiteSearch() {
   // Convex lists (fetched here; cheap, cached by Convex client).
   const projects = useQuery(api.projects.list);
   const notes = useQuery(api.notes.list);
-  const todos = useQuery(api.todos.list);
+  const { todos } = useTodos();
   const events = useQuery(api.events.list);
   const hunts = useQuery(api.hunts.list);
   const alerts = useQuery(api.alerts.list);

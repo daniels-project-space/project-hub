@@ -25,8 +25,6 @@ import {
   ChevronDown,
   Maximize2,
 } from "lucide-react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { WidgetSlot } from "../widget-slot";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -36,6 +34,7 @@ import { EditableValue } from "@/components/ui/editable-value";
 import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { APPS } from "@/lib/apps";
+import { type HubTodo, type TodoAccessState, useTodos } from "@/lib/todos-client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,18 +42,7 @@ import { APPS } from "@/lib/apps";
 type SortMode = "manual" | "due" | "priority" | "project";
 type FilterMode = "all" | "active" | "done" | `tag:${string}` | `proj:${string}`;
 
-interface Todo {
-  _id: Id<"todos">;
-  text: string;
-  done: boolean;
-  priority: number;
-  dueDate?: number;
-  tags: string[];
-  projectSlug?: string;
-  position: number;
-  createdAt: number;
-  ownerId?: string;
-}
+type Todo = HubTodo;
 
 // ---------------------------------------------------------------------------
 // Priority helpers
@@ -450,11 +438,7 @@ function QuickAdd({ onAdd }: { onAdd: (text: string, priority: number, dueDate: 
 // Main widget
 // ---------------------------------------------------------------------------
 export function TodoWidget() {
-  const todos = useQuery(api.todos.list) as Todo[] | undefined;
-  const addTodo = useMutation(api.todos.add);
-  const updateTodo = useMutation(api.todos.update);
-  const removeTodo = useMutation(api.todos.remove);
-  const reorderTodos = useMutation(api.todos.reorder);
+  const { todos, access, add: addTodo, update: updateTodo, remove: removeTodo, reorder: reorderTodos } = useTodos();
 
   const [sortMode, setSortMode] = useState<SortMode>("manual");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -552,7 +536,7 @@ export function TodoWidget() {
       const oldIdx = ids.indexOf(active.id as Id<"todos">);
       const newIdx = ids.indexOf(over.id as Id<"todos">);
       const next = arrayMove(ids, oldIdx, newIdx);
-      reorderTodos({ ids: next });
+      void reorderTodos(next);
       return next;
     });
   };
@@ -567,7 +551,7 @@ export function TodoWidget() {
     tags: string[],
     projectSlug: string | undefined,
   ) => {
-    addTodo({ text, priority, dueDate, tags, projectSlug });
+    void addTodo({ text, priority, dueDate, tags, projectSlug });
   };
 
   // ---------------------------------------------------------------------------
@@ -600,6 +584,7 @@ export function TodoWidget() {
           setSortMode={setSortMode}
           filter={filter}
           setFilter={setFilter}
+          access={access}
           todos={todos}
           activeCount={activeCount}
           doneCount={doneCount}
@@ -610,7 +595,7 @@ export function TodoWidget() {
           handleDragEnd={handleDragEnd}
           handleAdd={handleAdd}
           updateTodo={updateTodo}
-          removeTodo={removeTodo}
+          removeTodo={({ id }) => removeTodo(id)}
         />
       </div>
 
@@ -621,6 +606,7 @@ export function TodoWidget() {
         setSortMode={setSortMode}
         filter={filter}
         setFilter={setFilter}
+        access={access}
         todos={todos}
         activeCount={activeCount}
         doneCount={doneCount}
@@ -631,7 +617,7 @@ export function TodoWidget() {
         handleDragEnd={handleDragEnd}
         handleAdd={handleAdd}
         updateTodo={updateTodo}
-        removeTodo={removeTodo}
+        removeTodo={({ id }) => removeTodo(id)}
       />
     </WidgetSlot>
   );
@@ -647,6 +633,7 @@ type TodoBodyProps = {
   setSortMode: (m: SortMode) => void;
   filter: FilterMode;
   setFilter: (f: FilterMode) => void;
+  access: TodoAccessState;
   todos: Todo[] | undefined;
   activeCount: number;
   doneCount: number;
@@ -662,7 +649,15 @@ type TodoBodyProps = {
     tags: string[],
     projectSlug: string | undefined,
   ) => void;
-  updateTodo: (args: Partial<Todo> & { id: Id<"todos"> }) => unknown;
+  updateTodo: (args: {
+    id: Id<"todos">;
+    text?: string;
+    done?: boolean;
+    priority?: number;
+    dueDate?: number;
+    tags?: string[];
+    projectSlug?: string;
+  }) => unknown;
   removeTodo: (args: { id: Id<"todos"> }) => unknown;
 };
 
@@ -671,6 +666,7 @@ function TodoBody({
   setSortMode,
   filter,
   setFilter,
+  access,
   todos,
   activeCount,
   doneCount,
@@ -683,6 +679,22 @@ function TodoBody({
   updateTodo,
   removeTodo,
 }: TodoBodyProps) {
+  if (access === "unauthorized") {
+    return (
+      <div className="py-6 text-center text-sm text-paper-dim">
+        To-do data is private. <a href="/vault" className="text-brass hover:underline">Unlock it from Vault</a>.
+      </div>
+    );
+  }
+
+  if (access === "error") {
+    return (
+      <div className="py-6 text-center text-sm text-paper-dim">
+        To-do control is unavailable right now. Reload after checking Vault access.
+      </div>
+    );
+  }
+
   return (
     <>
       {/* Sort controls */}
