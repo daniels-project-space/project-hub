@@ -94,6 +94,38 @@ describe("Jarvis bounded Hub action façade", () => {
     expect(widgets[0]).not.toHaveProperty("config");
   });
 
+  it("returns only bounded aggregate wealth through the dedicated read capability", async () => {
+    const c = t();
+    await provisionActionsClient(c, { canWrite: false });
+    await c.run(async (ctx) => {
+      await ctx.db.insert("assets", {
+        label: "Private account label",
+        category: "cash",
+        source: "manual",
+        currency: "GBP",
+        externalRef: "private-provider-reference",
+        lastValueGBP: 12_345,
+        lastPricedAt: 1_800_000_000_000,
+      });
+    });
+
+    const wealth = await c.query(api.jarvisActions.getWealth, {
+      vaultToken: ACTIONS_TOKEN,
+    });
+
+    expect(wealth).toMatchObject({
+      totalGBP: 12_345,
+      assetCount: 1,
+      oldestPricedAt: 1_800_000_000_000,
+      categories: [{ category: "cash", totalGBP: 12_345 }],
+    });
+    expect(JSON.stringify(wealth)).not.toContain("Private account label");
+    expect(JSON.stringify(wealth)).not.toContain("private-provider-reference");
+    await expect(c.query(api.jarvisActions.getWealth, {})).rejects.toThrow(
+      "Vault authentication required",
+    );
+  });
+
   it("permits only bounded to-do creation and updates for a write-enabled actions client", async () => {
     const c = t();
     await provisionActionsClient(c);

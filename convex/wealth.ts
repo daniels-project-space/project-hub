@@ -20,6 +20,7 @@ import {
   internalQuery,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 
 const GBP = "GBP";
@@ -786,9 +787,7 @@ export const getFxRate = query({
  * carrying lastPricedAt so the UI can show staleness. Phase A additive fields:
  * `usdPerGbp` (persisted FX), `live` (intraday total), `currentTotalGBP`.
  */
-export const getWealth = query({
-  args: {},
-  handler: async (ctx) => {
+export async function readWealth(ctx: QueryCtx) {
     const assets = await ctx.db.query("assets").collect();
     const byCategory: Record<string, { total: number; assets: any[] }> = {};
     let total = 0;
@@ -919,7 +918,11 @@ export const getWealth = query({
       daysInMonth: cashflow.daysInMonth,
       netCashflowGbp: cashflow.netCashflowGbp,
     };
-  },
+}
+
+export const getWealth = query({
+  args: {},
+  handler: readWealth,
 });
 
 /** getLivePrices — key holdings + spot from priceCache (live-prices card). */

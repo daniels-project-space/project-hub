@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireJarvisActionsRead, requireJarvisActionsWrite } from "./vaultAuth";
+import { readWealth } from "./wealth";
 
 const MAX_TODOS = 50;
 const MAX_WIDGETS = 32;
@@ -90,6 +91,40 @@ export const listWidgets = query({
       w,
       h,
     }));
+  },
+});
+
+/**
+ * Read the same current wealth calculation used by Project Hub while exposing
+ * only aggregate totals. Asset rows, exchange references, quantities, wallet
+ * identifiers, and provider metadata remain inside Project Hub.
+ */
+export const getWealth = query({
+  args: { vaultToken: v.optional(v.string()) },
+  handler: async (ctx, { vaultToken }) => {
+    await requireJarvisActionsRead(ctx, { vaultToken });
+    const wealth = await readWealth(ctx);
+    const source = wealth.live?.byCategory ?? wealth.byCategory;
+    const categories = Object.entries(source)
+      .slice(0, 24)
+      .map(([category, bucket]) => ({
+        category: String(category).slice(0, 40),
+        totalGBP: Number((bucket as { total?: number }).total ?? 0),
+      }))
+      .filter((category) => Number.isFinite(category.totalGBP));
+    return {
+      totalGBP: wealth.currentTotalGBP,
+      asOf: wealth.currentTotalTs,
+      oldestPricedAt: wealth.oldestPricedAt,
+      assetCount: wealth.assetCount,
+      usdPerGbp: wealth.live?.usdPerGbp ?? wealth.usdPerGbp,
+      categories,
+      cashflow: {
+        confirmedRentalGbp: wealth.confirmedRentalGbp,
+        expensesAccruedGbp: wealth.expensesAccruedGbp,
+        netCashflowGbp: wealth.netCashflowGbp,
+      },
+    };
   },
 });
 
