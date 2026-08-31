@@ -42,6 +42,15 @@ function normalizeTodoTags(tags: string[] | undefined): string[] {
   return [...new Set(normalized)];
 }
 
+function publicWealthCategoryTotal(value: unknown): number | null {
+  const total = typeof value === "number"
+    ? value
+    : typeof value === "object" && value !== null && !Array.isArray(value)
+      ? Number((value as { total?: unknown }).total)
+      : Number.NaN;
+  return Number.isFinite(total) ? total : null;
+}
+
 /**
  * Small, active-only to-do inventory for Jarvis. This intentionally does not
  * expose owner identifiers, arbitrary widget config, completed history, or a
@@ -107,11 +116,15 @@ export const getWealth = query({
     const source = wealth.live?.byCategory ?? wealth.byCategory;
     const categories = Object.entries(source)
       .slice(0, 24)
-      .map(([category, bucket]) => ({
-        category: String(category).slice(0, 40),
-        totalGBP: Number((bucket as { total?: number }).total ?? 0),
-      }))
-      .filter((category) => Number.isFinite(category.totalGBP));
+      .flatMap(([category, bucket]) => {
+        // `currentPrices.byCategory` is Record<string, number>; the slower
+        // asset aggregate uses Record<string, { total, assets }>. Preserve the
+        // fresh live map without ever exposing its underlying asset records.
+        const totalGBP = publicWealthCategoryTotal(bucket);
+        return totalGBP === null
+          ? []
+          : [{ category: String(category).slice(0, 40), totalGBP }];
+      });
     return {
       totalGBP: wealth.currentTotalGBP,
       asOf: wealth.currentTotalTs,

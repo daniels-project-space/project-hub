@@ -126,6 +126,37 @@ describe("Jarvis bounded Hub action façade", () => {
     );
   });
 
+  it("preserves non-zero live category totals from the current-price snapshot", async () => {
+    const c = t();
+    await provisionActionsClient(c, { canWrite: false });
+    await c.run(async (ctx) => {
+      await ctx.db.insert("assets", {
+        label: "Private account label",
+        category: "cash",
+        source: "manual",
+        currency: "GBP",
+        lastValueGBP: 12_345,
+      });
+      await ctx.db.insert("currentPrices", {
+        kind: "live",
+        totalGBP: 15_000,
+        byCategory: { cash: 12_000, crypto: 3_000 },
+        usdPerGbp: 1.3,
+        ts: 1_800_000_000_000,
+      });
+    });
+
+    await expect(c.query(api.jarvisActions.getWealth, { vaultToken: ACTIONS_TOKEN }))
+      .resolves.toMatchObject({
+        totalGBP: 15_000,
+        asOf: 1_800_000_000_000,
+        categories: [
+          { category: "cash", totalGBP: 12_000 },
+          { category: "crypto", totalGBP: 3_000 },
+        ],
+      });
+  });
+
   it("permits only bounded to-do creation and updates for a write-enabled actions client", async () => {
     const c = t();
     await provisionActionsClient(c);
