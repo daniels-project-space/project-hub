@@ -51,8 +51,6 @@ function formatMoney(
   return `${sign}${sym}${abs.toFixed(0)}`;
 }
 
-const MONTH_LABEL = new Date().toLocaleDateString("en-GB", { month: "short" });
-
 function formatEventTime(start: number, allDay: boolean): string {
   if (allDay) return "all day";
   return new Date(start).toLocaleTimeString("en-GB", {
@@ -169,6 +167,9 @@ export function CommandCenter() {
   const today = new Date();
   const greeting = timeGreeting();
   const dateDisplay = formatDateDisplay(today);
+  const monthLabel = mounted
+    ? today.toLocaleDateString("en-GB", { month: "short" })
+    : "";
   const upcoming = getUpcomingEvents(
     events as Parameters<typeof getUpcomingEvents>[0],
     now,
@@ -261,7 +262,7 @@ export function CommandCenter() {
             loading={wealthData === undefined}
           />
           <StatCell
-            label={`Rental · ${MONTH_LABEL}`}
+            label={monthLabel ? `Rental · ${monthLabel}` : "Rental"}
             value={formatMoney(
               wealthData?.confirmedRentalGbp ?? 0,
               nwCurrency,
