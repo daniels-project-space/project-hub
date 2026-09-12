@@ -33,7 +33,7 @@ export default function HomePage() {
     >
       <TopBar onOpenLayoutEditor={openLayoutEditor} />
 
-      <section className="max-w-[1440px] mx-auto px-8 lg:px-14 py-8">
+      <section className="max-w-[1440px] mx-auto px-4 sm:px-8 lg:px-14 py-8">
         {/* Carousel is the top content now (hero text removed). */}
         <AppsRow editMode={editMode} />
 
@@ -76,7 +76,7 @@ export default function HomePage() {
         </section>
       </section>
 
-      <footer className="max-w-[1440px] mx-auto px-8 lg:px-14 pb-10">
+      <footer className="max-w-[1440px] mx-auto px-4 sm:px-8 lg:px-14 pb-10">
         <div className="rule-hairline mb-4" />
         <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.28em] text-paper-faint">
           <span>project-hub · convex · vercel · github</span>

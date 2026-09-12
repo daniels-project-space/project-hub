@@ -232,12 +232,12 @@ export function CommandCenter() {
 
       <div className="px-5 py-5">
         {/* Greeting row — date on the left, geolocated weather chip on the right */}
-        <div className="flex items-start justify-between gap-4 mb-5">
+        <div className="flex flex-col items-start gap-4 mb-5 sm:flex-row sm:justify-between">
           <div className="min-w-0">
             <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-brass/75 mb-1">
               {mounted ? greeting : "Hello"},&nbsp;Daniel
             </p>
-            <h2 className="font-display text-[26px] md:text-[32px] leading-[1.05] tracking-tight text-paper">
+            <h2 className="font-display text-[25px] sm:text-[28px] md:text-[32px] leading-[1.05] tracking-tight text-paper">
               {mounted ? dateDisplay : " "}
             </h2>
           </div>
