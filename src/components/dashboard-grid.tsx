@@ -89,10 +89,26 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
   const [order, setOrder] = useState<Id<"widgets">[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hostVisible, setHostVisible] = useState<Set<string>>(() => new Set());
+  const [loadingTimedOut, setLoadingTimedOut] = useState(false);
   useEffect(() => {
     // Convex is the external layout source; resync the optimistic drag mirror.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (widgets) setOrder(widgets.map((w) => w._id));
+  }, [widgets]);
+
+  // A websocket that is blocked by an extension, captive portal or a stale
+  // deployment used to leave the dashboard saying only "loading widgets..."
+  // forever. Keep the brief cold-start window quiet, then make the recovery
+  // action explicit without inventing a local widget layout that could drift
+  // from Convex.
+  useEffect(() => {
+    if (widgets !== undefined) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLoadingTimedOut(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setLoadingTimedOut(true), 6_000);
+    return () => window.clearTimeout(timer);
   }, [widgets]);
 
   // ── RECONCILE saved layout against the widget REGISTRY ──────────────────
@@ -180,8 +196,32 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
   if (widgets === undefined) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="md:col-span-4 text-paper-faint text-xs font-mono py-8 text-center">
-          loading widgets...
+        <div className="md:col-span-4 rounded-xl border border-rule-soft/50 bg-paper/[0.02] px-5 py-10 text-center">
+          {loadingTimedOut ? (
+            <>
+              <p className="font-display text-xl text-paper">Dashboard data is taking longer than expected.</p>
+              <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-paper-faint">
+                Project Hub could not finish its live Convex connection. Nothing was lost; retry the connection to load
+                your saved widget layout.
+              </p>
+              <button
+                className="mt-5 rounded-md border border-brass/50 bg-brass-dim px-3 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-brass transition-colors hover:bg-brass/20"
+                onClick={() => window.location.reload()}
+                type="button"
+              >
+                Retry connection
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-paper-faint">Connecting dashboard</p>
+              <div aria-hidden="true" className="mx-auto mt-5 grid max-w-3xl grid-cols-1 gap-3 md:grid-cols-3">
+                {["w-3/4", "w-1/2", "w-2/3"].map((width) => (
+                  <span className={`h-24 rounded-lg bg-paper/[0.04] ${width}`} key={width} />
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
