@@ -50,6 +50,10 @@ type TodoResponse = {
   error?: string;
 };
 
+type VaultSessionResponse = {
+  authenticated?: boolean;
+};
+
 type TodosController = {
   todos: HubTodo[] | undefined;
   access: TodoAccessState;
@@ -89,6 +93,19 @@ function useTodosController(): TodosController {
 
   const refresh = useCallback(async (): Promise<boolean> => {
     try {
+      // Check the lightweight session endpoint first. The todo route is
+      // intentionally private, so anonymous dashboard opens should not emit
+      // an expected 401 request every 30 seconds.
+      const sessionResponse = await fetch("/api/vault/session", { cache: "no-store" });
+      const sessionBody = await responseBody(sessionResponse) as VaultSessionResponse;
+      if (!sessionResponse.ok) {
+        setState("error", []);
+        return false;
+      }
+      if (sessionBody.authenticated !== true) {
+        setState("unauthorized", []);
+        return false;
+      }
       const response = await fetch("/api/vault/todos", { cache: "no-store" });
       const body = await responseBody(response);
       if (response.status === 401) {

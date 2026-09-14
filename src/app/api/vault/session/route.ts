@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   acceptsVaultPassword,
   createVaultSession,
+  hasValidVaultSession,
   VAULT_SESSION_COOKIE,
   VAULT_SESSION_TTL_SECONDS,
   VaultControlConfigurationError,
@@ -42,6 +43,20 @@ export async function POST(request: NextRequest) {
       maxAge: VAULT_SESSION_TTL_SECONDS,
     });
     return response;
+  } catch (error) {
+    if (error instanceof VaultControlConfigurationError) {
+      return NextResponse.json({ error: "Vault control is not configured yet." }, { status: 503, headers: noStore });
+    }
+    return NextResponse.json({ error: "Vault access is temporarily unavailable." }, { status: 503, headers: noStore });
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    return NextResponse.json(
+      { authenticated: hasValidVaultSession(request.cookies.get(VAULT_SESSION_COOKIE)?.value) },
+      { headers: noStore },
+    );
   } catch (error) {
     if (error instanceof VaultControlConfigurationError) {
       return NextResponse.json({ error: "Vault control is not configured yet." }, { status: 503, headers: noStore });
