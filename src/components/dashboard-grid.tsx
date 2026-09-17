@@ -107,7 +107,10 @@ export function DashboardGrid({ editMode = false }: { editMode?: boolean }) {
       setLoadingTimedOut(false);
       return;
     }
-    const timer = window.setTimeout(() => setLoadingTimedOut(true), 6_000);
+    // Surface recovery before a user concludes that the page failed to open.
+    // Convex may still finish after this point; the button remains a safe
+    // explicit retry and no local layout is invented while the query is absent.
+    const timer = window.setTimeout(() => setLoadingTimedOut(true), 3_500);
     return () => window.clearTimeout(timer);
   }, [widgets]);
 
