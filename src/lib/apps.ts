@@ -204,6 +204,16 @@ export const APPS: AppEntry[] = [
     category: "creator",
   },
   {
+    slug: "clicklift",
+    name: "Clicklift",
+    short: "CL",
+    description: "Standalone AI thumbnail studio — source-aware concepts, 2K candidates, mobile-quality QA, private gallery, and subscription credits.",
+    status: "live",
+    vercelUrl: "https://clicklift-bice.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/clicklift",
+    category: "creator",
+  },
+  {
     slug: "the-council",
     name: "The Council",
     short: "TC",
