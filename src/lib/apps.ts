@@ -270,6 +270,16 @@ export const APPS: AppEntry[] = [
     githubUrl: "https://github.com/daniels-project-space/app-factory-v2",
     category: "experiment",
   },
+  {
+    slug: "book-forge",
+    name: "Book Forge",
+    short: "BF",
+    description: "AI publishing studio for original Kindle books, formatted review packets, and gated audiobook exports.",
+    status: "wip",
+    vercelUrl: "https://book-forge-six.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/book-forge",
+    category: "creator",
+  },
 ];
 
 export const APP_BY_SLUG: Record<string, AppEntry> = Object.fromEntries(
