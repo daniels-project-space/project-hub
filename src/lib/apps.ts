@@ -43,6 +43,16 @@ export const APPS: AppEntry[] = [
     category: "platform",
   },
   {
+    slug: "render-engine",
+    name: "Render Engine",
+    short: "RE",
+    description: "Shared rendering dashboard with project-owned R2 outputs. Final GPU lanes are in qualification.",
+    status: "wip",
+    vercelUrl: "https://render-engine-sable.vercel.app",
+    githubUrl: "https://github.com/daniels-project-space/render-engine",
+    category: "platform",
+  },
+  {
     slug: "verified-stays",
     name: "Vera Stay",
     short: "VS",
