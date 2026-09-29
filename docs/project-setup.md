@@ -21,10 +21,11 @@ storage identities isolated.
    their named app deployments, then deploy the UI to the linked Vercel
    project. Check each provider's deployment result and exact production
    alias; a successful local build or push alone does not prove a release.
-5. Add or update the app in `src/lib/apps.ts`. Use `live` and a `vercelUrl`
-   only after the exact production alias is verified. Until then use `wip`,
-   omit `vercelUrl`, and include the canonical `githubUrl`. Keep `idea` for
-   projects without an implementation checkout.
+5. Add or update the app in `src/lib/apps.ts`. Add `vercelUrl` after verifying
+   the exact production alias. Keep status separate: `wip` means the app still
+   has unfinished readiness gates, even when its dashboard is deployed; use
+   `live` only after those gates pass. Include the canonical `githubUrl` and
+   keep `idea` for projects without an implementation checkout.
 6. If the app is also represented in the Convex `projects` table, update that
    record independently. The static app catalog and user-managed Convex
    project records serve different purposes.
@@ -32,9 +33,11 @@ storage identities isolated.
 ## Render Engine registration
 
 Render Engine is present in the app catalog as **WIP** and links to its
-canonical source: `daniels-project-space/render-engine`. Its dashboard alias
-is `https://render-engine-sable.vercel.app`; its catalog status remains WIP
-until its Final GPU lanes complete their qualification checks.
+canonical source: `daniels-project-space/render-engine`. Its verified
+dashboard alias is `https://render-engine-sable.vercel.app`; its catalog status
+remains WIP until its Final GPU lanes complete their qualification checks.
+The live Project Hub Convex `projects` row also has slug `render-engine`, the
+same dashboard and source URLs, and status `wip`.
 
 The Render Engine repository declares its own Convex deployment
 (`prod:jovial-camel-68`), Trigger.dev project (`proj_xklptoivqrifdunydcoo`),
