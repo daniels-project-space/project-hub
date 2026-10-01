@@ -254,6 +254,7 @@ export const upsertOne = mutation({
     service: v.string(),
     keyName: v.string(),
     value: v.string(),
+    createOnly: v.optional(v.boolean()),
     description: v.optional(v.string()),
     scopes: v.array(v.string()),
     aliases: v.array(v.string()),
@@ -295,6 +296,12 @@ export const upsertOne = mutation({
     if (matches.length > 1) throw new Error("Duplicate vault records require repair before rotation");
 
     const existing = matches[0];
+    if (args.createOnly && existing) {
+      if (existing.value !== value) throw new Error("Vault key already exists with a different value");
+      // A retry after a caller's timeout can safely confirm that the intended
+      // value was committed without rotating it or rewriting its metadata.
+      return { created: false, entry: metadataFor(existing) };
+    }
     const entry = {
       service,
       keyName,
