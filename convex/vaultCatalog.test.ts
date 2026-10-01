@@ -94,4 +94,30 @@ describe("vault metadata catalogue", () => {
       sourceFiles: [],
     })).rejects.toThrow("fixed bundle endpoint");
   });
+
+  it("supports create-only project enrollment writes and idempotent same-value recovery", async () => {
+    const c = t();
+    const fields = { keyName: "RENDER_ENGINE_PROJECT_TOKEN", value: "a".repeat(64), scopes: ["music-house", "render-engine"], aliases: [], sourceFiles: [] };
+    await expect(c.mutation(api.secrets.upsertOne, {
+      vaultToken: ROOT_TOKEN, service: "music-house", ...fields, createOnly: true,
+    })).resolves.toMatchObject({ created: true, entry: { service: "music-house", keyName: fields.keyName, revision: 1 } });
+
+    // Retrying after an uncertain HTTP response confirms the exact value and
+    // leaves the secret revision and metadata unchanged.
+    await expect(c.mutation(api.secrets.upsertOne, {
+      vaultToken: ROOT_TOKEN, service: "music-house", ...fields, createOnly: true,
+    })).resolves.toMatchObject({ created: false, entry: { revision: 1 } });
+    await expect(c.mutation(api.secrets.upsertOne, {
+      vaultToken: ROOT_TOKEN, service: "music-house", ...fields, value: "b".repeat(64), createOnly: true,
+    })).rejects.toThrow("already exists with a different value");
+    await expect(c.query(api.secrets.getOne, {
+      vaultToken: ROOT_TOKEN, service: "music-house", keyName: fields.keyName,
+    })).resolves.toMatchObject({ value: fields.value, revision: 1 });
+
+    // The common key name is still a distinct record in a different project
+    // namespace; create-only never claims a global key name.
+    await expect(c.mutation(api.secrets.upsertOne, {
+      vaultToken: ROOT_TOKEN, service: "vera-stay", ...fields, createOnly: true,
+    })).resolves.toMatchObject({ created: true, entry: { service: "vera-stay", revision: 1 } });
+  });
 });
