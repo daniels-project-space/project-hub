@@ -10,6 +10,12 @@ const stroke = {
 
 const ICONS: Record<string, ReactNode> = {
   // Platform / agents
+  "hyper-render-service": (
+    <svg viewBox="0 0 24 24" {...stroke}>
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+      <path d="M9 9v6m6-6v6m-6-3h6M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3M19 9h3m-3 6h3" />
+    </svg>
+  ),
   jarvis: (
     <svg viewBox="0 0 24 24" {...stroke}>
       <circle cx="12" cy="12" r="9" />

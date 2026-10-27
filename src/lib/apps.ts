@@ -23,6 +23,17 @@ export type AppEntry = {
 export const APPS: AppEntry[] = [
   // Live / deployed
   {
+    slug: "hyper-render-service",
+    name: "Hyper Render Service",
+    short: "HR",
+    description: "Hyper render queue, project priorities and live GPU usage.",
+    status: "live",
+    vercelUrl: "https://hyper-render-service.vercel.app/",
+    githubUrl: "https://github.com/daniels-project-space/hyper-render-service",
+    category: "platform",
+    featured: true,
+  },
+  {
     slug: "remote-work-hub",
     name: "Remote Work Hub",
     short: "RW",
