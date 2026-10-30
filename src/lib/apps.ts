@@ -233,6 +233,7 @@ export const APPS: AppEntry[] = [
     vercelUrl: "https://clicklift-bice.vercel.app",
     githubUrl: "https://github.com/daniels-project-space/clicklift",
     category: "creator",
+    featured: true,
   },
   {
     slug: "the-council",
