@@ -163,10 +163,8 @@ const ICONS: Record<string, ReactNode> = {
     </svg>
   ),
   clicklift: (
-    <svg viewBox="0 0 24 24" {...stroke}>
-      <rect x="3" y="4" width="18" height="16" rx="3" />
-      <path d="M6.5 16l4.2-4.5 2.8 2.7 2.1-2 2.9 3.8" />
-      <path d="M8 8h.01M16.5 3v3M15 4.5h3" />
+    <svg viewBox="0 0 24 26" {...stroke}>
+      <path d="M2.4 0 22.8 12.48 2.4 26l3.36-11.18L0 12.48l5.76-2.34z" fill="currentColor" stroke="none" />
     </svg>
   ),
   "media-engine": (
