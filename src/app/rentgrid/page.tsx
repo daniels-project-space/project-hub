@@ -3,12 +3,10 @@ import Link from "next/link";
 import { getAppIcon } from "@/lib/app-icons";
 import styles from "./rentgrid.module.css";
 
-const preview =
-  "https://rentgrid-git-development-danielmabro-news-projects.vercel.app";
 const stages = [
   {
     label: "Working foundation",
-    state: "Development preview",
+    state: "Local development",
     items: ["Inventory", "Internal bookings", "Workspace settings"],
   },
   {
@@ -29,7 +27,7 @@ export default function RentGridProject() {
         <Link href="/" className={styles.back}>
           ← Project Hub
         </Link>
-        <span className={styles.badge}>WIP · Development preview</span>
+        <span className={styles.badge}>WIP · Local development</span>
       </header>
       <section className={styles.hero}>
         <div className={styles.intro}>
@@ -45,21 +43,10 @@ export default function RentGridProject() {
             An iOS-first workspace for rental owners and teams, with a Mac
             companion.
           </p>
-          <a
-            className={styles.primary}
-            href={preview}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open development preview ↗
-          </a>
           <span className={styles.access}>
-            Uses your existing Vercel access, followed by RentGrid sign-in.
+            Development previews stay local. Public release is pending.
           </span>
           <div className={styles.links}>
-            <a href={`${preview}/design`} target="_blank" rel="noreferrer">
-              Design references ↗
-            </a>
             <a
               href="https://github.com/daniels-project-space/rentgrid"
               target="_blank"
@@ -96,7 +83,7 @@ export default function RentGridProject() {
       </section>
       <footer className={styles.footer}>
         <p>
-          The development preview is working. Native device testing and public
+          The app is in local development. Native device testing and public
           App Store distribution are still ahead.
         </p>
         <p>

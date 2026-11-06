@@ -32,7 +32,7 @@ storage identities isolated.
 
 ## RentGrid registration
 
-RentGrid's WIP carousel entry opens `/rentgrid`, its project overview and design-reference page. The page links the verified protected development preview and canonical private source. It intentionally has no `vercelUrl` production entry while production/native/App Store release gates remain open. The preview persists data in RentGrid's isolated development Convex deployment; Hygglo remains planned.
+RentGrid's WIP carousel entry opens `/rentgrid`, its project overview and design-reference page. Development previews must remain local; do not create Vercel previews, public tunnels, or shared hosted builds. Its former hosted previews were deleted on 6 November 2026. The RentGrid source disables all Git deployments; this Hub branch also disables its own deployment. The Hub draft PR remains unmerged. The overview links only the canonical private source, with no hosted app or design-preview link. Production/native/App Store release gates remain open; Hygglo remains planned.
 
 ## Render Engine registration
 
