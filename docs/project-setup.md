@@ -30,6 +30,10 @@ storage identities isolated.
    record independently. The static app catalog and user-managed Convex
    project records serve different purposes.
 
+## RentGrid registration
+
+RentGrid's WIP carousel entry opens `/rentgrid`, its project overview and design-reference page. Development previews must remain local; do not create Vercel previews, public tunnels, or shared hosted builds. Its former hosted previews were deleted on 6 November 2026. The RentGrid source disables all Git deployments; this Hub branch also disables its own deployment. The Hub draft PR remains unmerged. The overview links only the canonical private source, with no hosted app or design-preview link. Production/native/App Store release gates remain open; Hygglo remains planned.
+
 ## Render Engine registration
 
 Render Engine is present in the app catalog as **WIP** and links to its

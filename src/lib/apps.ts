@@ -21,6 +21,18 @@ export type AppEntry = {
 };
 
 export const APPS: AppEntry[] = [
+  {
+    slug: "rentgrid",
+    name: "RentGrid",
+    short: "RG",
+    description: "iOS-first rental workspace. Inventory, bookings and a protected cloud preview; commercial release in development.",
+    status: "wip",
+    previewUrl: "/rentgrid",
+    openInNewTab: false,
+    githubUrl: "https://github.com/daniels-project-space/rentgrid",
+    category: "ops",
+    featured: true,
+  },
   // Live / deployed
   {
     slug: "hyper-render-service",
