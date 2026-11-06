@@ -30,6 +30,10 @@ storage identities isolated.
    record independently. The static app catalog and user-managed Convex
    project records serve different purposes.
 
+## RentGrid registration
+
+RentGrid's WIP carousel entry opens `/rentgrid`, its project overview and design-reference page. The page links the verified protected development preview and canonical private source. It intentionally has no `vercelUrl` production entry while production/native/App Store release gates remain open. The preview persists data in RentGrid's isolated development Convex deployment; Hygglo remains planned.
+
 ## Render Engine registration
 
 Render Engine is present in the app catalog as **WIP** and links to its

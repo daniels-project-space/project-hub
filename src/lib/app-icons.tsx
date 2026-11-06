@@ -9,6 +9,16 @@ const stroke = {
 };
 
 const ICONS: Record<string, ReactNode> = {
+  rentgrid: (
+    <svg viewBox="0 0 24 24" fill="none">
+      <g transform="translate(2 0) skewX(-9)">
+        <rect x="2" y="3" width="8" height="8" rx="2" fill="#39c8ed" />
+        <rect x="13" y="3" width="8" height="8" rx="2" fill="#238fff" />
+        <rect x="2" y="14" width="8" height="8" rx="2" fill="#25a8ed" />
+        <rect x="13" y="14" width="8" height="8" rx="2" fill="#1673ef" />
+      </g>
+    </svg>
+  ),
   // Platform / agents
   "hyper-render-service": (
     <svg viewBox="0 0 24 24" {...stroke}>
